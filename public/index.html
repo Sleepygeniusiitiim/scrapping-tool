@@ -401,7 +401,7 @@ async function startRun(nextRound) {
   const intent = $("intent").value.trim();
   if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
   store("csa_pw", $("pw").value);
-  Object.assign(state, { stop: false, runRecords: [], waveStats: {}, logLines: [] });
+  Object.assign(state, { stop: false, robotsHinted: false, runRecords: [], waveStats: {}, logLines: [] });
   $("progress").classList.remove("hidden"); $("planBox").classList.add("hidden");
   renderStats(); renderRun(); setRunning(true);
   const totals = { crawled: 0, records: 0 };
@@ -476,8 +476,20 @@ async function runPipeline(intent, totals, rounds) {
           respect_robots: settings.robots, snippet_fallback: settings.snippet });
         for (const k of ["crawled", "blocked", "failed", "records", "dropped"]) stats[k] += r.stats[k];
         totals.crawled += r.stats.crawled; totals.records += r.stats.records;
-        logEv("crawl", `Batch ${b + 1}: ${r.stats.crawled} scraped, ${r.stats.blocked} blocked, ${r.stats.failed} failed`, name);
+        const why = Object.entries(r.block_reasons || {}).map(([k, n]) => `${n}× ${k}`).join(", ");
+        logEv("crawl", `Batch ${b + 1}: ${r.stats.crawled} scraped, ${r.stats.blocked} blocked, ${r.stats.failed} failed` +
+          (why ? ` — ${why}` : ""), name);
+        if ((r.block_reasons || {})["disallowed by robots.txt"] && !state.robotsHinted) {
+          state.robotsHinted = true;
+          logEv("warning", "These pages were skipped because “Respect robots.txt” is ticked (LinkedIn and Facebook " +
+            "disallow crawlers). Untick it under “Wave depth & crawler settings” to read their public posts and " +
+            "comments. Skipped pages are retried by later runs.", name);
+        }
         r.warnings.forEach((w) => logEv("warning", w, name));
+        if (r.quota_error) {
+          logEv("error", r.quota_error + " Stopping — pages not yet read are kept and retried by the next run.", name);
+          state.stop = true;
+        }
         logEv("saved", `Batch ${b + 1}: ${r.stats.sent_to_gemini} pages sent to Gemini → ${r.stats.records} candidates saved` +
           ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email)` +
           (r.stats.via_scrapedo ? ` · ${r.stats.via_scrapedo} pages via Scrape.do` : ""), name);

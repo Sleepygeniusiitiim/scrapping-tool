@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 
 import supabase_db as db
 from fetcher import PHONE_RE, fetch_batch, scrapedo_token
-from gemini_client import Gemini, GeminiError
+from gemini_client import Gemini, GeminiError, GeminiQuotaError
 from schema import CandidateRecord, ComprehensiveSearchPlan, PageExtraction
 from search_module import google_search_scrapedo, platform_from_url, search_query
 
@@ -139,6 +139,11 @@ def _extract_prompt(intent: str, url: str, platform: str, content: str, snippet_
 # Helpers
 # ---------------------------------------------------------------------------
 _WORD = re.compile(r"[a-z0-9]+")
+# Signs that a search snippet is a person talking about themselves (worth a Gemini call).
+_CANDIDATE_SIGNAL = re.compile(
+    r"interested|my cv|resume|\bcv\b|looking for (?:a )?(?:job|opportunit)|open to work|years? (?:of )?experience|"
+    r"\bi am\b|\biam\b|\bi'm\b|\bmy (?:name|number|mail|email)|whatsapp|contact|@\w+\.\w+|\+?\d[\d\s-]{8,}\d",
+    re.IGNORECASE)
 
 
 def _is_grounded(evidence: Optional[str], content: str) -> bool:
@@ -326,9 +331,10 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
             jobs.append((o.url, o.markdown, False))
         elif snippet_fallback:
             h = hits.get(o.url, {})
-            snippet = h.get("snippet") or ""
-            if len(snippet) > 40:
-                jobs.append((o.url, f"Title: {h.get('title', '')}\nSnippet: {snippet}".strip(), True))
+            text = f"Title: {h.get('title', '')}\nSnippet: {h.get('snippet') or ''}".strip()
+            # Only snippets that look like a person's own post are worth a Gemini call.
+            if len(h.get("snippet") or "") > 40 and _CANDIDATE_SIGNAL.search(text):
+                jobs.append((o.url, text, True))
 
     results = await asyncio.gather(
         *(_extract_page(gemini, intent, u, c, snip) for (u, c, snip) in jobs), return_exceptions=True
@@ -336,18 +342,46 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
     records: List[CandidateRecord] = []
     warnings: List[str] = []
     dropped = 0
+    quota_error: Optional[str] = None
+    extracted, quota_hit = set(), set()
     for (u, _, _), r in zip(jobs, results):
+        if isinstance(r, GeminiQuotaError):
+            quota_error = str(r)
+            quota_hit.add(u)
+            continue
         if isinstance(r, Exception):
             if isinstance(r, GeminiError) and "API key" in str(r):
                 raise r
             warnings.append(f"Extraction failed for {u}: {str(r)[:160]}")
             continue
+        extracted.add(u)
         recs, d = r
         dropped += d
         records.extend(recs)
 
     if records:
         await asyncio.to_thread(db.save_candidates, records)
+
+    # How each URL ended. robots / quota are retried by later runs (see supabase_db).
+    statuses = {}
+    for o in outcomes:
+        if o.url in quota_hit:
+            statuses[o.url] = "quota"
+        elif o.error == "disallowed by robots.txt":
+            statuses[o.url] = "robots"
+        elif o.ok:
+            statuses[o.url] = "ok"
+        elif o.url in extracted:
+            statuses[o.url] = "snippet"
+        else:
+            statuses[o.url] = "walled" if o.blocked else "failed"
+    await asyncio.to_thread(db.set_url_status, statuses)
+
+    reasons: Dict[str, int] = {}
+    for o in outcomes:
+        if o.error:
+            key = "disallowed by robots.txt" if o.error == "disallowed by robots.txt" else o.error.split(";")[0][:60]
+            reasons[key] = reasons.get(key, 0) + 1
 
     return {
         "stats": {**stats, "records": len(records), "dropped": dropped, "sent_to_gemini": len(jobs),
@@ -356,5 +390,7 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
                   "via_scrapedo": sum(1 for o in outcomes if o.via == "scrape.do" and o.ok)},
         "records": [r.model_dump() for r in records],
         "errors": {o.url: o.error for o in outcomes if o.error},
+        "block_reasons": reasons,
         "warnings": warnings,
+        "quota_error": quota_error,
     }

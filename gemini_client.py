@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from typing import Optional, Type, TypeVar
 
 from google import genai
@@ -45,8 +46,16 @@ class GeminiError(RuntimeError):
     pass
 
 
+class GeminiQuotaError(GeminiError):
+    """The key's Gemini quota is used up (daily, or per-minute with a long wait)."""
+
+
+_RETRY_DELAY = re.compile(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s")
+_MAX_QUOTA_WAIT_S = 45.0
+
+
 class Gemini:
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL, mode: str = "auto", max_concurrency: int = 4):
+    def __init__(self, api_key: str, model: str = DEFAULT_MODEL, mode: str = "auto", max_concurrency: int = 2):
         if not api_key:
             raise GeminiError("GEMINI_API_KEY is required.")
         self.api_key = api_key.strip()
@@ -163,6 +172,20 @@ class Gemini:
                         self.model = nxt
                         config.thinking_config = self._thinking_config(thinking_budget)
                         attempt -= 1  # a model switch doesn't count as a retry
+                        continue
+                    if code == 429:
+                        # Every fallback model is out of quota too.
+                        if "perday" in low.replace(" ", "").replace("_", "") or "per day" in low:
+                            raise GeminiQuotaError(
+                                "Gemini daily quota for this API key is used up — wait until it resets "
+                                "(midnight Pacific time) or enable billing in Google AI Studio.") from exc
+                        m = _RETRY_DELAY.search(msg)
+                        wait = float(m.group(1)) if m else float(2 ** attempt)
+                        if wait > _MAX_QUOTA_WAIT_S or attempt >= max_retries:
+                            raise GeminiQuotaError(
+                                f"Gemini per-minute quota for this API key is used up (retry in ~{wait:.0f}s). "
+                                "Lower 'Batch size', or enable billing in Google AI Studio.") from exc
+                        await asyncio.sleep(wait + random.uniform(0.5, 2.0))
                         continue
                     if code in _RETRYABLE:
                         await asyncio.sleep(min(60.0, (2 ** attempt) + random.uniform(0, 1.5)))

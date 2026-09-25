@@ -46,6 +46,9 @@ DEFAULT_NEON_DATABASE_URL = (
     "neondb?sslmode=require&channel_binding=require"
 )
 
+RETRYABLE_STATUSES = ("robots", "quota")
+_RETRYABLE_SQL = ", ".join(f"'{x}'" for x in RETRYABLE_STATUSES)
+
 _IN_CHUNK = 200
 _WRITE_CHUNK = 200
 _RETRIES = 3
@@ -82,6 +85,10 @@ CREATE INDEX IF NOT EXISTS idx_candidates_source_url ON candidates (source_url);
 -- Contact details the candidate posted themselves (added after the first release).
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS phone TEXT;
+
+-- Why each URL ended: ok | snippet | walled | failed | robots | quota | pending.
+-- robots / quota (and pending left over from a crash) are retried by later runs.
+ALTER TABLE scraped_urls ADD COLUMN IF NOT EXISTS status TEXT;
 """
 
 
@@ -183,7 +190,8 @@ def check_connection() -> str:
 # URL ledger
 # ---------------------------------------------------------------------------
 def filter_fresh_urls(urls: List[str]) -> List[str]:
-    """Return only URLs that are NOT already in `scraped_urls` (order kept)."""
+    """Return only URLs not already handled (order kept). URLs that were skipped because of
+    robots.txt or the Gemini quota, or left pending by a crashed batch, count as fresh."""
     unique = list(dict.fromkeys(u for u in urls if u))
     if not unique:
         return []
@@ -195,7 +203,12 @@ def filter_fresh_urls(urls: List[str]) -> List[str]:
             with conn.cursor() as cur:
                 for chunk in _chunks(unique, _IN_CHUNK):
                     cur.execute(
-                        f"SELECT url FROM {SCRAPED_URLS_TABLE} WHERE url = ANY(%s);",
+                        f"""
+                        SELECT url FROM {SCRAPED_URLS_TABLE}
+                        WHERE url = ANY(%s)
+                          AND NOT (COALESCE(status, '') IN ({_RETRYABLE_SQL})
+                                   OR (status = 'pending' AND scraped_at < NOW() - INTERVAL '1 hour'));
+                        """,
                         (list(chunk),),
                     )
                     for (u,) in cur.fetchall():
@@ -211,7 +224,7 @@ def record_scraped_urls(urls: List[str], wave_tag: str) -> int:
     if not unique:
         return 0
     _ensure_schema()
-    rows = [(u, urlparse(u).netloc.lower(), wave_tag) for u in unique]
+    rows = [(u, urlparse(u).netloc.lower(), wave_tag, "pending") for u in unique]
 
     def _insert():
         with _connect() as conn:
@@ -220,9 +233,11 @@ def record_scraped_urls(urls: List[str], wave_tag: str) -> int:
                     psycopg2.extras.execute_values(
                         cur,
                         f"""
-                        INSERT INTO {SCRAPED_URLS_TABLE} (url, domain, wave_tag)
+                        INSERT INTO {SCRAPED_URLS_TABLE} (url, domain, wave_tag, status)
                         VALUES %s
-                        ON CONFLICT (url) DO NOTHING;
+                        ON CONFLICT (url) DO UPDATE SET status = 'pending', wave_tag = EXCLUDED.wave_tag,
+                                                        scraped_at = NOW()
+                        WHERE {SCRAPED_URLS_TABLE}.status IN ({_RETRYABLE_SQL}, 'pending');
                         """,
                         list(chunk),
                     )
@@ -230,6 +245,28 @@ def record_scraped_urls(urls: List[str], wave_tag: str) -> int:
 
     _with_retry(_insert, "Recording scraped URLs")
     return len(unique)
+
+
+def set_url_status(statuses: dict) -> None:
+    """Record how each URL ended ({url: status}); see the scraped_urls.status comment."""
+    if not statuses:
+        return
+    _ensure_schema()
+
+    def _update():
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    f"""
+                    UPDATE {SCRAPED_URLS_TABLE} AS t SET status = d.status
+                    FROM (VALUES %s) AS d(url, status) WHERE t.url = d.url;
+                    """,
+                    list(statuses.items()),
+                )
+            conn.commit()
+
+    _with_retry(_update, "Recording URL status")
 
 
 # ---------------------------------------------------------------------------
