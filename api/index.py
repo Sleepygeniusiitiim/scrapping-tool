@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 import pipeline  # noqa: E402
 import supabase_db as db  # noqa: E402
 from gemini_client import DEFAULT_MODEL, Gemini, GeminiError, GeminiQuotaError  # noqa: E402
-from openrouter_client import DEFAULT_OPENROUTER_MODEL, OpenRouter  # noqa: E402
+from openrouter_client import PROVIDERS, OpenRouter  # noqa: E402
 import outreach  # noqa: E402
 from schema import CandidateRecord  # noqa: E402
 
@@ -111,21 +111,33 @@ def _gemini(
     x_gemini_mode: Optional[str] = Header(default=None),
     x_openrouter_key: Optional[str] = Header(default=None),
     x_openrouter_model: Optional[str] = Header(default=None),
+    x_llm_provider: Optional[str] = Header(default=None),
+    x_llm_key: Optional[str] = Header(default=None),
+    x_llm_model: Optional[str] = Header(default=None),
 ):
-    """The LLM for this request: OpenRouter when a key is given (page or env), else Gemini."""
-    or_key = (x_openrouter_key or os.getenv("OPENROUTER_API_KEY") or "").strip()
-    if or_key:
-        model = (x_openrouter_model or os.getenv("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL).strip()
+    """The AI for this request: the provider chosen on the page (OpenRouter / Cerebras / Groq) with the
+    key from the page or its env var; otherwise the first provider with an env key; otherwise Gemini."""
+    provider = (x_llm_provider or os.getenv("LLM_PROVIDER") or "").strip().lower()
+    key, model = (x_llm_key or "").strip(), (x_llm_model or "").strip()
+    if not key and x_openrouter_key and provider in ("", "openrouter"):      # older pages
+        provider, key, model = "openrouter", x_openrouter_key.strip(), (x_openrouter_model or "").strip()
+    if provider in PROVIDERS and not key:
+        key = os.getenv(PROVIDERS[provider]["env"], "").strip()
+    if not key and provider in ("", "auto"):
+        provider = next((p for p, c in PROVIDERS.items() if os.getenv(c["env"], "").strip()), "")
+        key = os.getenv(PROVIDERS[provider]["env"], "").strip() if provider else ""
+    if key and provider in PROVIDERS:
+        model = model or os.getenv(provider.upper() + "_MODEL", "").strip()
         try:
-            return OpenRouter(or_key, model=model)
+            return OpenRouter(key, model=model, provider=provider)
         except GeminiError as exc:
             raise HTTPException(500, str(exc))
     api_key = (x_gemini_key or os.getenv("GEMINI_API_KEY") or "").strip()
     model = (x_gemini_model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL).strip()
     mode = (x_gemini_mode or os.getenv("GEMINI_MODE") or "auto").strip()
     if not api_key:
-        raise HTTPException(500, "No AI key: enter an OpenRouter key on the page, or set OPENROUTER_API_KEY "
-                                 "(or GEMINI_API_KEY) in Vercel.")
+        raise HTTPException(500, "No AI key: choose a provider and enter its key on the page, or set "
+                                 "OPENROUTER_API_KEY / CEREBRAS_API_KEY / GROQ_API_KEY (or GEMINI_API_KEY) in Vercel.")
     try:
         return Gemini(api_key, model=model, mode=mode)
     except GeminiError as exc:
@@ -197,6 +209,9 @@ async def health(
     x_gemini_mode: Optional[str] = Header(default=None),
     x_openrouter_key: Optional[str] = Header(default=None),
     x_openrouter_model: Optional[str] = Header(default=None),
+    x_llm_provider: Optional[str] = Header(default=None),
+    x_llm_key: Optional[str] = Header(default=None),
+    x_llm_model: Optional[str] = Header(default=None),
     x_database_url: Optional[str] = Header(default=None),
 ):
     out = {}
@@ -212,7 +227,8 @@ async def health(
     out["scrapedo"] = "configured" if os.getenv("SCRAPEDO_TOKEN", "").strip() else "not set"
     try:
         gem = _gemini(x_gemini_key=x_gemini_key, x_gemini_model=x_gemini_model, x_gemini_mode=x_gemini_mode,
-                      x_openrouter_key=x_openrouter_key, x_openrouter_model=x_openrouter_model)
+                      x_openrouter_key=x_openrouter_key, x_openrouter_model=x_openrouter_model,
+                      x_llm_provider=x_llm_provider, x_llm_key=x_llm_key, x_llm_model=x_llm_model)
         out["gemini"] = await gem.ping()
     except Exception as exc:
         out["gemini_error"] = str(getattr(exc, "detail", exc))

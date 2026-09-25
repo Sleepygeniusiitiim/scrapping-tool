@@ -75,25 +75,27 @@
         <label for="pw">App password (APP_PASSWORD on Vercel)</label>
         <input id="pw" type="password" autocomplete="current-password" placeholder="CSA-Neon-Vercel-2026!">
       </div>
+      <div style="flex:0.7;min-width:150px">
+        <label for="llmProvider">AI provider</label>
+        <select id="llmProvider">
+          <option value="openrouter">OpenRouter</option>
+          <option value="cerebras">Cerebras (fast, generous free tier)</option>
+          <option value="groq">Groq (fast, free tier)</option>
+        </select>
+      </div>
       <div style="flex:1.4;min-width:240px">
-        <label for="orKey">OpenRouter API key (sk-or-…)</label>
-        <input id="orKey" type="password" autocomplete="off" placeholder="Uses server OPENROUTER_API_KEY unless entered here">
+        <label for="orKey" id="orKeyLabel">API key</label>
+        <input id="orKey" type="password" autocomplete="off" placeholder="Uses the server key unless entered here">
       </div>
       <div style="flex:1;min-width:200px">
-        <label for="orModel">AI model (OpenRouter)</label>
-        <input id="orModel" list="orModels" autocomplete="off" placeholder="google/gemini-3.8-flash">
-        <datalist id="orModels">
-          <option value="google/gemini-3.8-flash">best quality (default)</option>
-          <option value="openai/gpt-6-luna">very cheap, good</option>
-          <option value="deepseek/deepseek-v4.1-flash">very cheap</option>
-          <option value="google/gemini-3.5-flash-lite">cheap Gemini</option>
-          <option value="qwen/qwen3.8-flash">cheap</option>
-        </datalist>
+        <label for="orModel">AI model</label>
+        <input id="orModel" list="orModels" autocomplete="off">
+        <datalist id="orModels"></datalist>
       </div>
       <button id="testBtn" style="align-self:flex-end">Test connections</button>
     </div>
     <details style="margin-top:8px">
-      <summary>Use a Gemini key instead (only when no OpenRouter key is set)</summary>
+      <summary>Use a Gemini key instead (only when the chosen provider has no key)</summary>
       <div style="margin-top:8px;max-width:520px">
         <label for="geminiKey">Gemini API Key (AIza… or AQ.…)</label>
         <input id="geminiKey" type="password" autocomplete="off" placeholder="Uses server GEMINI_API_KEY unless entered here">
@@ -201,10 +203,33 @@ function load(k) { try { return localStorage.getItem(k); } catch (_) { return nu
 $("pw").value = load("csa_pw") || "CSA-Neon-Vercel-2026!";
 $("pw").addEventListener("change", () => store("csa_pw", $("pw").value));
 $("geminiKey").value = load("csa_gemini_key") || "";
-$("orKey").value = load("csa_or_key") || "";
-$("orModel").value = load("csa_or_model") || "";
-$("orKey").addEventListener("change", () => store("csa_or_key", $("orKey").value.trim()));
-$("orModel").addEventListener("change", () => store("csa_or_model", $("orModel").value.trim()));
+// AI provider: key and model are remembered per provider in this browser.
+const LLM = {
+  openrouter: { key: "OpenRouter API key (sk-or-…)", env: "OPENROUTER_API_KEY", models: [
+    ["google/gemini-3.8-flash", "best quality (default)"], ["openai/gpt-6-luna", "very cheap, good"],
+    ["deepseek/deepseek-v4.1-flash", "very cheap"], ["google/gemini-3.5-flash-lite", "cheap Gemini"]] },
+  cerebras: { key: "Cerebras API key (csk-…)", env: "CEREBRAS_API_KEY", models: [
+    ["gpt-oss-120b", "default"], ["qwen-3.8-27b", "alternative"]] },
+  groq: { key: "Groq API key (gsk_…)", env: "GROQ_API_KEY", models: [
+    ["openai/gpt-oss-120b", "default"], ["llama-3.3-70b-versatile", "alternative"], ["openai/gpt-oss-20b", "fastest"]] },
+};
+function llmProvider() { return $("llmProvider").value; }
+function showProvider() {
+  const p = llmProvider(), cfg = LLM[p];
+  // Keys saved by the OpenRouter-only version of this page carry over.
+  $("orKey").value = load("csa_key_" + p) || (p === "openrouter" ? load("csa_or_key") || "" : "");
+  $("orModel").value = load("csa_model_" + p) || (p === "openrouter" ? load("csa_or_model") || "" : "");
+  $("orModel").placeholder = cfg.models[0][0];
+  $("orKeyLabel").textContent = cfg.key;
+  $("orKey").placeholder = `Uses server ${cfg.env} unless entered here`;
+  $("orModels").replaceChildren(...cfg.models.map(([v, t]) => { const o = document.createElement("option");
+    o.value = v; o.textContent = t; return o; }));
+}
+$("llmProvider").value = LLM[load("csa_llm_provider")] ? load("csa_llm_provider") : "openrouter";
+showProvider();
+$("llmProvider").addEventListener("change", () => { store("csa_llm_provider", llmProvider()); showProvider(); });
+$("orKey").addEventListener("change", () => store("csa_key_" + llmProvider(), $("orKey").value.trim()));
+$("orModel").addEventListener("change", () => store("csa_model_" + llmProvider(), $("orModel").value.trim()));
 $("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("geminiKey").value.trim()));
 
 // ---------- API ----------
@@ -217,8 +242,9 @@ async function api(path, body) {
     "X-Endpoint": path,
   };
   const ok = $("orKey").value.trim(), om = $("orModel").value.trim();
-  if (ok) headers["X-OpenRouter-Key"] = ok;
-  if (om) headers["X-OpenRouter-Model"] = om;
+  headers["X-LLM-Provider"] = llmProvider();
+  if (ok) headers["X-LLM-Key"] = ok;
+  if (om) headers["X-LLM-Model"] = om;
   const gk = $("geminiKey").value.trim();
   if (gk) headers["X-Gemini-Key"] = gk;
   const res = await fetch(url, {
@@ -398,7 +424,8 @@ $("loadDb").onclick = async () => {
 $("testBtn").onclick = async () => {
   store("csa_pw", $("pw").value);
   store("csa_gemini_key", $("geminiKey").value.trim());
-  store("csa_or_key", $("orKey").value.trim()); store("csa_or_model", $("orModel").value.trim());
+  store("csa_key_" + llmProvider(), $("orKey").value.trim());
+  store("csa_model_" + llmProvider(), $("orModel").value.trim());
   const out = $("testOut"); out.className = "status"; out.textContent = "Checking…";
   try {
     const r = await api("/api/health");
