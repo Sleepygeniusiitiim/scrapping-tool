@@ -1,12 +1,8 @@
-streamlit>=1.50
-crawl4ai>=0.7
-google-genai>=1.20
-# DuckDuckGo search: the `duckduckgo-search` package was renamed to `ddgs`.
-# The code prefers `ddgs` and falls back to `duckduckgo_search` if that is all
-# that is installed.
+streamlit>=1.40
+pandas>=2.2
+crawl4ai>=0.4.247
 ddgs>=9.0
-duckduckgo-search
-supabase>=2.10
+google-genai>=1.20
+psycopg2-binary>=2.9.9
 pydantic>=2.7
-pandas>=2.0
 python-dotenv>=1.0

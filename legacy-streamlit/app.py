@@ -58,10 +58,14 @@ ss.setdefault("db_records", None)     # cache of fetch_all_candidates()
 with st.sidebar:
     st.header("🔐 Credentials")
     gemini_key = st.text_input("GEMINI_API_KEY", value=os.getenv("GEMINI_API_KEY", ""), type="password")
-    supabase_url = st.text_input("SUPABASE_URL", value=os.getenv("SUPABASE_URL", ""))
-    supabase_key = st.text_input("SUPABASE_KEY", value=os.getenv("SUPABASE_KEY", ""), type="password",
-                                 help="service_role key recommended (bypasses RLS). Keep it private.")
-    st.caption("Values fall back to your `.env` file.")
+    supabase_url = st.text_input(
+        "DATABASE_URL (Neon DB)",
+        value=os.getenv("DATABASE_URL", db.DEFAULT_NEON_DATABASE_URL),
+        type="password",
+        help="Neon PostgreSQL connection string (postgresql://...).",
+    )
+    supabase_key = "neon"
+    st.caption("Values fall back to your `.env` file or default Neon DB connection.")
 
     with st.expander("Model settings"):
         model = st.text_input("Gemini model", value=DEFAULT_MODEL)
@@ -71,12 +75,12 @@ with st.sidebar:
         )
 
     if st.button("Test connections", width="stretch"):
-        with st.spinner("Checking Supabase…"):
+        with st.spinner("Checking Neon DB…"):
             try:
                 db.init_supabase(supabase_url, supabase_key)
                 st.success(db.check_connection())
             except Exception as exc:
-                st.error(f"Supabase: {exc}")
+                st.error(f"Neon DB: {exc}")
         with st.spinner("Checking Gemini…"):
             try:
                 st.success(asyncio.run(Gemini(gemini_key, model=model, mode=gemini_mode).ping()))

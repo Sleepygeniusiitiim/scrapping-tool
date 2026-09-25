@@ -59,13 +59,17 @@
 <body>
 <main>
   <h1>🔎 Candidate Sourcing Agent</h1>
-  <p class="sub">Gemini plans multi-wave search queries → DuckDuckGo → Supabase dedup → page fetch → Gemini extraction → Supabase.</p>
+  <p class="sub">Gemini plans multi-wave search queries → DuckDuckGo → Neon DB dedup → page fetch → Gemini extraction → Neon DB.</p>
 
   <section class="panel" id="login">
     <div class="row">
       <div style="flex:1;min-width:220px">
         <label for="pw">App password (APP_PASSWORD on Vercel)</label>
-        <input id="pw" type="password" autocomplete="current-password">
+        <input id="pw" type="password" autocomplete="current-password" placeholder="CSA-Neon-Vercel-2026!">
+      </div>
+      <div style="flex:1.4;min-width:240px">
+        <label for="geminiKey">Gemini API Key (AIza… or AQ.… — optional if set in Vercel/.env)</label>
+        <input id="geminiKey" type="password" autocomplete="off" placeholder="Uses server GEMINI_API_KEY unless entered here">
       </div>
       <button id="testBtn" style="align-self:flex-end">Test connections</button>
     </div>
@@ -112,11 +116,11 @@
   <h2>Results</h2>
   <div class="tabs" role="tablist">
     <button role="tab" aria-selected="true" data-tab="run">This run</button>
-    <button role="tab" aria-selected="false" data-tab="db">All saved candidates (Supabase)</button>
+    <button role="tab" aria-selected="false" data-tab="db">All saved candidates (Neon DB)</button>
   </div>
   <section id="tab-run"></section>
   <section id="tab-db" class="hidden">
-    <div class="row" style="margin-bottom:10px"><button id="loadDb">🔄 Load / refresh from Supabase</button>
+    <div class="row" style="margin-bottom:10px"><button id="loadDb">🔄 Load / refresh from Neon DB</button>
       <span class="status" id="dbStatus"></span></div>
     <div id="dbView"></div>
   </section>
@@ -137,14 +141,19 @@ const state = { running: false, stop: false, runRecords: [], dbRecords: null, wa
 // ---------- storage (per-browser convenience only) ----------
 function store(k, v) { try { v === undefined ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (_) {} }
 function load(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
-$("pw").value = load("csa_pw") || "";
+$("pw").value = load("csa_pw") || "CSA-Neon-Vercel-2026!";
 $("pw").addEventListener("change", () => store("csa_pw", $("pw").value));
+$("geminiKey").value = load("csa_gemini_key") || "";
+$("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("geminiKey").value.trim()));
 
 // ---------- API ----------
 async function api(path, body) {
+  const headers = { "Content-Type": "application/json", "X-App-Password": $("pw").value };
+  const gk = $("geminiKey").value.trim();
+  if (gk) headers["X-Gemini-Key"] = gk;
   const res = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
-    headers: { "Content-Type": "application/json", "X-App-Password": $("pw").value },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   let data = null;
@@ -214,7 +223,7 @@ function buildView(container, getRecords, key) {
   const actions = document.createElement("div"); actions.className = "row"; actions.style.margin = "10px 0";
   const btnCsv = document.createElement("button"); btnCsv.textContent = "⬇️ CSV";
   const btnJson = document.createElement("button"); btnJson.textContent = "⬇️ JSON";
-  const btnSave = document.createElement("button"); btnSave.textContent = "💾 Save edits to Supabase"; btnSave.disabled = true;
+  const btnSave = document.createElement("button"); btnSave.textContent = "💾 Save edits to Neon DB"; btnSave.disabled = true;
   const saveMsg = document.createElement("span"); saveMsg.className = "status";
   actions.append(btnCsv, btnJson, btnSave, saveMsg);
 
@@ -317,10 +326,13 @@ $("loadDb").onclick = async () => {
 
 $("testBtn").onclick = async () => {
   store("csa_pw", $("pw").value);
+  store("csa_gemini_key", $("geminiKey").value.trim());
   const out = $("testOut"); out.className = "status"; out.textContent = "Checking…";
   try {
     const r = await api("/api/health");
-    const parts = [r.supabase ? "✅ " + r.supabase : "❌ Supabase: " + r.supabase_error,
+    const dbMsg = r.database || r.supabase;
+    const dbErr = r.database_error || r.supabase_error;
+    const parts = [dbMsg ? "✅ " + dbMsg : "❌ Neon DB: " + dbErr,
                    r.gemini ? "✅ " + r.gemini : "❌ Gemini: " + r.gemini_error];
     out.textContent = parts.join("  ·  ");
   } catch (e) { out.className = "status err"; out.textContent = e.message; }

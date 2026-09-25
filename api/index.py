@@ -1,10 +1,11 @@
 """
 Vercel serverless API (FastAPI) for the Candidate Sourcing Agent.
 
-Secrets never reach the browser: GEMINI_API_KEY, SUPABASE_URL and
-SUPABASE_KEY are read from Vercel environment variables. Every endpoint
-requires the `X-App-Password` header to match APP_PASSWORD — the service_role
-key can read and write every stored candidate, so the API must not be open.
+Connected to Neon PostgreSQL (`DATABASE_URL`) and Google Gemini (`GEMINI_API_KEY`).
+Every endpoint verifies `X-App-Password` against `APP_PASSWORD` (defaulting to
+`CSA-Neon-Vercel-2026!` if not overridden in environment variables).
+Also supports passing `X-Gemini-Key` from the web UI if `GEMINI_API_KEY` is not
+set in server environment variables.
 """
 
 from __future__ import annotations
@@ -16,7 +17,14 @@ from pathlib import Path
 from typing import List, Optional
 
 # Shared modules live in the repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT_DIR / ".env")
+except Exception:
+    pass
 
 from fastapi import Depends, FastAPI, Header, HTTPException  # noqa: E402
 from fastapi.concurrency import run_in_threadpool  # noqa: E402
@@ -27,6 +35,8 @@ import supabase_db as db  # noqa: E402
 from gemini_client import DEFAULT_MODEL, Gemini, GeminiError  # noqa: E402
 from schema import CandidateRecord  # noqa: E402
 
+DEFAULT_APP_PASSWORD = "CSA-Neon-Vercel-2026!"
+
 app = FastAPI(title="Candidate Sourcing Agent API", docs_url=None, redoc_url=None)
 
 
@@ -34,25 +44,29 @@ app = FastAPI(title="Candidate Sourcing Agent API", docs_url=None, redoc_url=Non
 # Auth & clients
 # ---------------------------------------------------------------------------
 def require_password(x_app_password: Optional[str] = Header(default=None)) -> None:
-    expected = os.getenv("APP_PASSWORD", "")
-    if not expected:
-        raise HTTPException(503, "APP_PASSWORD is not set in the Vercel environment variables.")
-    if not x_app_password or not hmac.compare_digest(x_app_password, expected):
-        raise HTTPException(401, "Wrong password.")
+    expected = (os.getenv("APP_PASSWORD") or DEFAULT_APP_PASSWORD).strip()
+    provided = (x_app_password or "").strip()
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(401, "Wrong password. Use your Vercel APP_PASSWORD.")
 
 
-def _gemini() -> Gemini:
+def _gemini(
+    x_gemini_key: Optional[str] = Header(default=None),
+    x_gemini_model: Optional[str] = Header(default=None),
+    x_gemini_mode: Optional[str] = Header(default=None),
+) -> Gemini:
+    api_key = (x_gemini_key or os.getenv("GEMINI_API_KEY") or "").strip()
+    model = (x_gemini_model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL).strip()
+    mode = (x_gemini_mode or os.getenv("GEMINI_MODE") or "auto").strip()
     try:
-        return Gemini(os.getenv("GEMINI_API_KEY", ""),
-                      model=os.getenv("GEMINI_MODEL", DEFAULT_MODEL),
-                      mode=os.getenv("GEMINI_MODE", "auto"))
+        return Gemini(api_key, model=model, mode=mode)
     except GeminiError as exc:
         raise HTTPException(500, str(exc))
 
 
-def _db() -> None:
+def _db(x_database_url: Optional[str] = Header(default=None)) -> None:
     try:
-        db.init_supabase()
+        db.init_supabase(url=x_database_url)
     except db.SupabaseError as exc:
         raise HTTPException(500, str(exc))
 
@@ -103,24 +117,37 @@ class SaveIn(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/api/health", dependencies=auth)
-async def health():
+async def health(
+    x_gemini_key: Optional[str] = Header(default=None),
+    x_gemini_model: Optional[str] = Header(default=None),
+    x_gemini_mode: Optional[str] = Header(default=None),
+    x_database_url: Optional[str] = Header(default=None),
+):
     out = {}
     try:
-        _db()
-        out["supabase"] = await run_in_threadpool(db.check_connection)
+        _db(x_database_url)
+        status = await run_in_threadpool(db.check_connection)
+        out["database"] = status
+        out["supabase"] = status
     except Exception as exc:
-        out["supabase_error"] = str(getattr(exc, "detail", exc))
+        err = str(getattr(exc, "detail", exc))
+        out["database_error"] = err
+        out["supabase_error"] = err
     try:
-        out["gemini"] = await _gemini().ping()
+        gem = _gemini(x_gemini_key=x_gemini_key, x_gemini_model=x_gemini_model, x_gemini_mode=x_gemini_mode)
+        out["gemini"] = await gem.ping()
     except Exception as exc:
         out["gemini_error"] = str(getattr(exc, "detail", exc))
     return out
 
 
 @app.post("/api/plan", dependencies=auth)
-async def plan(body: PlanIn):
+async def plan(
+    body: PlanIn,
+    gemini: Gemini = Depends(_gemini),
+):
     try:
-        result = await pipeline.plan_search(_gemini(), body.intent, body.num_waves, body.queries_per_wave)
+        result = await pipeline.plan_search(gemini, body.intent, body.num_waves, body.queries_per_wave)
     except GeminiError as exc:
         raise HTTPException(502, f"Planning failed: {exc}")
     if not result["waves"]:
@@ -135,8 +162,8 @@ def search(body: QueryIn):
 
 
 @app.post("/api/dedup", dependencies=auth)
-def dedup(body: DedupIn):
-    _db()
+def dedup(body: DedupIn, x_database_url: Optional[str] = Header(default=None)):
+    _db(x_database_url)
     try:
         return {"fresh": pipeline.dedup_urls(body.urls)}
     except db.SupabaseError as exc:
@@ -144,12 +171,21 @@ def dedup(body: DedupIn):
 
 
 @app.post("/api/process", dependencies=auth)
-async def process(body: BatchIn):
-    _db()
+async def process(
+    body: BatchIn,
+    gemini: Gemini = Depends(_gemini),
+    x_database_url: Optional[str] = Header(default=None),
+):
+    _db(x_database_url)
     try:
         return await pipeline.process_batch(
-            _gemini(), body.intent, [i.model_dump() for i in body.items], body.wave_tag,
-            body.page_timeout_s, body.respect_robots, body.snippet_fallback,
+            gemini,
+            body.intent,
+            [i.model_dump() for i in body.items],
+            body.wave_tag,
+            body.page_timeout_s,
+            body.respect_robots,
+            body.snippet_fallback,
         )
     except db.SupabaseError as exc:
         raise HTTPException(502, str(exc))
@@ -158,8 +194,8 @@ async def process(body: BatchIn):
 
 
 @app.get("/api/candidates", dependencies=auth)
-def candidates():
-    _db()
+def candidates(x_database_url: Optional[str] = Header(default=None)):
+    _db(x_database_url)
     try:
         rows = db.fetch_all_candidates()
         return {"candidates": rows, "scraped_urls": db.count_scraped_urls()}
@@ -168,8 +204,8 @@ def candidates():
 
 
 @app.post("/api/candidates", dependencies=auth)
-def save(body: SaveIn):
-    _db()
+def save(body: SaveIn, x_database_url: Optional[str] = Header(default=None)):
+    _db(x_database_url)
     try:
         return {"saved": db.save_candidates(body.records)}
     except db.SupabaseError as exc:
@@ -180,4 +216,4 @@ def save(body: SaveIn):
 if not os.getenv("VERCEL"):
     from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-    app.mount("/", StaticFiles(directory=Path(__file__).resolve().parent.parent / "public", html=True), name="static")
+    app.mount("/", StaticFiles(directory=ROOT_DIR / "public", html=True), name="static")

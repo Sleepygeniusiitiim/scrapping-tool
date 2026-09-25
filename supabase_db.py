@@ -1,5 +1,5 @@
 """
-Supabase persistence layer.
+Neon PostgreSQL persistence layer (replacing Supabase).
 
 Responsibilities
 ----------------
@@ -8,20 +8,29 @@ Responsibilities
 * `candidates`   – structured records, upserted on `source_url` so a record
   can never be stored twice.
 
-All functions use a single module-level client created by `init_supabase()`
-(or lazily from SUPABASE_URL / SUPABASE_KEY in the environment).
+All functions use Neon PostgreSQL (`DATABASE_URL` / `NEON_DATABASE_URL`) with
+automatic connection retry and schema initialization.
 """
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import threading
 import time
-from typing import Iterable, List, Optional, Sequence
+import uuid
+from typing import Any, Iterable, List, Optional, Sequence
 from urllib.parse import urlparse
 
-from supabase import Client, create_client
+import psycopg2
+import psycopg2.extras
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 from schema import CandidateRecord
 
@@ -30,74 +39,120 @@ log = logging.getLogger(__name__)
 SCRAPED_URLS_TABLE = "scraped_urls"
 CANDIDATES_TABLE = "candidates"
 
-# PostgREST sends `.in_()` filters in the query string. Long URLs × many
-# values can exceed proxy / server URL-length limits, so we chunk lookups.
-_IN_CHUNK = 40
+DEFAULT_NEON_DATABASE_URL = (
+    "postgresql://neondb_owner:npg_jBms9Rc4oHgD@"
+    "ep-fancy-dust-b5rdd2ee-pooler.c-7.us-east-2.aws.neon.tech/"
+    "neondb?sslmode=require&channel_binding=require"
+)
+
+_IN_CHUNK = 200
 _WRITE_CHUNK = 200
-_PAGE_SIZE = 1000
 _RETRIES = 3
 
-_client: Optional[Client] = None
+_database_url: Optional[str] = None
+_schema_ready: bool = False
 _lock = threading.Lock()
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS scraped_urls (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    url TEXT UNIQUE NOT NULL,
+    domain TEXT,
+    wave_tag TEXT,
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS candidates (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    name TEXT,
+    "current_role" TEXT,
+    skills TEXT[],
+    current_location TEXT,
+    target_countries TEXT[],
+    evidence_snippet TEXT,
+    source_url TEXT UNIQUE NOT NULL,
+    platform TEXT,
+    discovered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scraped_urls_url ON scraped_urls (url);
+CREATE INDEX IF NOT EXISTS idx_candidates_source_url ON candidates (source_url);
+"""
 
 
 class SupabaseError(RuntimeError):
-    """Raised with a human-readable explanation of a Supabase failure."""
+    """Raised with a human-readable explanation of a Neon PostgreSQL database failure."""
+
+
+DatabaseError = SupabaseError
 
 
 # ---------------------------------------------------------------------------
-# Client management
+# Client / Connection management
 # ---------------------------------------------------------------------------
-def init_supabase(url: Optional[str] = None, key: Optional[str] = None) -> Client:
-    """Create (or replace) the shared client. Falls back to env vars."""
-    global _client
-    url = (url or os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
-    key = (key or os.getenv("SUPABASE_KEY") or "").strip()
-    if not url or not key:
-        raise SupabaseError("SUPABASE_URL and SUPABASE_KEY are required.")
-    try:
-        with _lock:
-            _client = create_client(url, key)
-    except Exception as exc:  # malformed URL / key format
-        raise SupabaseError(f"Could not create Supabase client: {exc}") from exc
-    return _client
+def _resolve_database_url(url: Optional[str] = None) -> str:
+    candidate = (url or "").strip()
+    if candidate.startswith(("postgres://", "postgresql://")):
+        return candidate
+    env_url = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("NEON_DATABASE_URL")
+        or os.getenv("POSTGRES_URL")
+        or DEFAULT_NEON_DATABASE_URL
+    ).strip()
+    return env_url
 
 
-def get_client() -> Client:
-    global _client
-    if _client is None:
-        init_supabase()
-    assert _client is not None
-    return _client
+def init_supabase(url: Optional[str] = None, key: Optional[str] = None) -> str:
+    """Configure the Neon PostgreSQL database URL and ensure schema tables exist."""
+    global _database_url, _schema_ready
+    resolved = _resolve_database_url(url)
+    if not resolved:
+        raise SupabaseError("DATABASE_URL (Neon PostgreSQL connection string) is required.")
+    with _lock:
+        if _database_url != resolved:
+            _database_url = resolved
+            _schema_ready = False
+    _ensure_schema()
+    return _database_url
 
 
-def _explain(exc: Exception) -> str:
-    """Translate common PostgREST errors into actionable messages."""
-    msg = str(exc)
-    if "42P01" in msg or "does not exist" in msg or "PGRST205" in msg:
-        return "Table not found — run schema.sql in the Supabase SQL editor first."
-    if "42501" in msg or "row-level security" in msg.lower() or "permission denied" in msg.lower():
-        return ("Permission denied (Row Level Security). Use the service_role key, "
-                "or run the optional RLS policies at the bottom of schema.sql.")
-    if "401" in msg or "Invalid API key" in msg or "JWT" in msg:
-        return "Supabase rejected the key — check SUPABASE_KEY."
-    return msg
+init_db = init_supabase
+
+
+def _connect():
+    global _database_url
+    if not _database_url:
+        _database_url = _resolve_database_url()
+    return psycopg2.connect(_database_url, connect_timeout=15)
+
+
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _lock:
+        if _schema_ready:
+            return
+        def _run():
+            with _connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(SCHEMA_SQL)
+                conn.commit()
+        _with_retry(_run, "Initializing Neon DB schema")
+        _schema_ready = True
 
 
 def _with_retry(fn, what: str):
-    """Run a Supabase call with small exponential backoff for transient errors."""
+    """Run a PostgreSQL operation with small exponential backoff for transient errors."""
     last: Optional[Exception] = None
     for attempt in range(_RETRIES):
         try:
             return fn()
-        except Exception as exc:  # network hiccups, 5xx, timeouts
+        except Exception as exc:
             last = exc
-            text = str(exc)
-            # Errors that will never succeed on retry → fail fast.
-            if any(code in text for code in ("42P01", "42501", "PGRST205", "Invalid API key", "42703", "23502")):
-                break
-            time.sleep(0.8 * (2 ** attempt))
-    raise SupabaseError(f"{what} failed: {_explain(last)}") from last
+            time.sleep(0.6 * (2 ** attempt))
+    raise SupabaseError(f"{what} failed: {last}") from last
 
 
 def _chunks(items: Sequence, size: int) -> Iterable[Sequence]:
@@ -107,10 +162,16 @@ def _chunks(items: Sequence, size: int) -> Iterable[Sequence]:
 
 def check_connection() -> str:
     """Cheap sanity check used by the UI 'Test connection' button."""
-    client = get_client()
-    _with_retry(lambda: client.table(SCRAPED_URLS_TABLE).select("id").limit(1).execute(), "scraped_urls check")
-    _with_retry(lambda: client.table(CANDIDATES_TABLE).select("id").limit(1).execute(), "candidates check")
-    return "Connected — both tables are reachable."
+    _ensure_schema()
+    def _ping():
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {SCRAPED_URLS_TABLE};")
+                urls_count = cur.fetchone()[0]
+                cur.execute(f"SELECT COUNT(*) FROM {CANDIDATES_TABLE};")
+                cands_count = cur.fetchone()[0]
+                return f"Connected to Neon DB (PostgreSQL) — {cands_count} candidates, {urls_count} URLs tracked."
+    return _with_retry(_ping, "Neon DB connection check")
 
 
 # ---------------------------------------------------------------------------
@@ -121,14 +182,21 @@ def filter_fresh_urls(urls: List[str]) -> List[str]:
     unique = list(dict.fromkeys(u for u in urls if u))
     if not unique:
         return []
-    client = get_client()
+    _ensure_schema()
     seen: set[str] = set()
-    for chunk in _chunks(unique, _IN_CHUNK):
-        res = _with_retry(
-            lambda c=chunk: client.table(SCRAPED_URLS_TABLE).select("url").in_("url", list(c)).execute(),
-            "URL dedup lookup",
-        )
-        seen.update(row["url"] for row in (res.data or []))
+
+    def _lookup():
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                for chunk in _chunks(unique, _IN_CHUNK):
+                    cur.execute(
+                        f"SELECT url FROM {SCRAPED_URLS_TABLE} WHERE url = ANY(%s);",
+                        (list(chunk),),
+                    )
+                    for (u,) in cur.fetchall():
+                        seen.add(u)
+
+    _with_retry(_lookup, "URL dedup lookup")
     return [u for u in unique if u not in seen]
 
 
@@ -137,15 +205,25 @@ def record_scraped_urls(urls: List[str], wave_tag: str) -> int:
     unique = list(dict.fromkeys(u for u in urls if u))
     if not unique:
         return 0
-    client = get_client()
-    rows = [{"url": u, "domain": urlparse(u).netloc.lower(), "wave_tag": wave_tag} for u in unique]
-    for chunk in _chunks(rows, _WRITE_CHUNK):
-        _with_retry(
-            lambda c=chunk: client.table(SCRAPED_URLS_TABLE)
-            .upsert(list(c), on_conflict="url", ignore_duplicates=True)
-            .execute(),
-            "Recording scraped URLs",
-        )
+    _ensure_schema()
+    rows = [(u, urlparse(u).netloc.lower(), wave_tag) for u in unique]
+
+    def _insert():
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                for chunk in _chunks(rows, _WRITE_CHUNK):
+                    psycopg2.extras.execute_values(
+                        cur,
+                        f"""
+                        INSERT INTO {SCRAPED_URLS_TABLE} (url, domain, wave_tag)
+                        VALUES %s
+                        ON CONFLICT (url) DO NOTHING;
+                        """,
+                        list(chunk),
+                    )
+            conn.commit()
+
+    _with_retry(_insert, "Recording scraped URLs")
     return len(unique)
 
 
@@ -156,46 +234,96 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
     """Upsert candidates on `source_url`. Returns number of rows sent."""
     if not candidates:
         return 0
-    # De-duplicate inside the batch too — Postgres rejects an upsert that
-    # touches the same conflict key twice in one statement.
+    _ensure_schema()
     by_url = {c.source_url: c.to_db_row() for c in candidates}
-    rows = list(by_url.values())
-    client = get_client()
-    for chunk in _chunks(rows, _WRITE_CHUNK):
-        _with_retry(
-            lambda c=chunk: client.table(CANDIDATES_TABLE).upsert(list(c), on_conflict="source_url").execute(),
-            "Saving candidates",
+    rows = [
+        (
+            r.get("name"),
+            r.get("current_role"),
+            list(r.get("skills") or []),
+            r.get("current_location"),
+            list(r.get("target_countries") or []),
+            r.get("evidence_snippet"),
+            r["source_url"],
+            r.get("platform"),
         )
+        for r in by_url.values()
+    ]
+
+    def _upsert():
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                for chunk in _chunks(rows, _WRITE_CHUNK):
+                    psycopg2.extras.execute_values(
+                        cur,
+                        f"""
+                        INSERT INTO {CANDIDATES_TABLE} (
+                            name, "current_role", skills, current_location,
+                            target_countries, evidence_snippet, source_url, platform
+                        )
+                        VALUES %s
+                        ON CONFLICT (source_url) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            "current_role" = EXCLUDED."current_role",
+                            skills = EXCLUDED.skills,
+                            current_location = EXCLUDED.current_location,
+                            target_countries = EXCLUDED.target_countries,
+                            evidence_snippet = EXCLUDED.evidence_snippet,
+                            platform = COALESCE(EXCLUDED.platform, {CANDIDATES_TABLE}.platform),
+                            discovered_at = NOW();
+                        """,
+                        list(chunk),
+                    )
+            conn.commit()
+
+    _with_retry(_upsert, "Saving candidates")
     return len(rows)
 
 
-def fetch_all_candidates() -> List[dict]:
-    """Return every stored candidate, newest first (paginated reads)."""
-    client = get_client()
-    out: List[dict] = []
-    start = 0
-    while True:
-        res = _with_retry(
-            lambda s=start: client.table(CANDIDATES_TABLE)
-            .select("*")
-            .order("discovered_at", desc=True)
-            .range(s, s + _PAGE_SIZE - 1)
-            .execute(),
-            "Fetching candidates",
-        )
-        batch = res.data or []
-        out.extend(batch)
-        if len(batch) < _PAGE_SIZE:
-            break
-        start += _PAGE_SIZE
+def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in row.items():
+        if isinstance(v, uuid.UUID):
+            out[k] = str(v)
+        elif isinstance(v, (datetime.datetime, datetime.date)):
+            out[k] = v.isoformat()
+        elif k in ("skills", "target_countries") and v is None:
+            out[k] = []
+        else:
+            out[k] = v
     return out
+
+
+def fetch_all_candidates() -> List[dict]:
+    """Return every stored candidate from Neon DB, newest first."""
+    _ensure_schema()
+
+    def _fetch():
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, name, "current_role", skills, current_location,
+                           target_countries, evidence_snippet, source_url,
+                           platform, discovered_at
+                    FROM {CANDIDATES_TABLE}
+                    ORDER BY discovered_at DESC;
+                    """
+                )
+                return [_serialize_row(dict(r)) for r in cur.fetchall()]
+
+    return _with_retry(_fetch, "Fetching candidates")
 
 
 def count_scraped_urls() -> int:
     """Total URLs in the ledger (for the UI header)."""
-    client = get_client()
-    res = _with_retry(
-        lambda: client.table(SCRAPED_URLS_TABLE).select("id", count="exact").limit(1).execute(),
-        "Counting scraped URLs",
-    )
-    return int(res.count or 0)
+    _ensure_schema()
+
+    def _count():
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {SCRAPED_URLS_TABLE};")
+                row = cur.fetchone()
+                return int(row[0] if row else 0)
+
+    return _with_retry(_count, "Counting scraped URLs")
