@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS candidates (
 
 CREATE INDEX IF NOT EXISTS idx_scraped_urls_url ON scraped_urls (url);
 CREATE INDEX IF NOT EXISTS idx_candidates_source_url ON candidates (source_url);
+
+-- Contact details the candidate posted themselves (added after the first release).
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS phone TEXT;
 """
 
 
@@ -244,6 +248,8 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
             r.get("current_location"),
             list(r.get("target_countries") or []),
             r.get("evidence_snippet"),
+            r.get("email"),
+            r.get("phone"),
             r["source_url"],
             r.get("platform"),
         )
@@ -259,7 +265,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                         f"""
                         INSERT INTO {CANDIDATES_TABLE} (
                             name, "current_role", skills, current_location,
-                            target_countries, evidence_snippet, source_url, platform
+                            target_countries, evidence_snippet, email, phone, source_url, platform
                         )
                         VALUES %s
                         ON CONFLICT (source_url) DO UPDATE SET
@@ -269,6 +275,8 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                             current_location = EXCLUDED.current_location,
                             target_countries = EXCLUDED.target_countries,
                             evidence_snippet = EXCLUDED.evidence_snippet,
+                            email = COALESCE(EXCLUDED.email, {CANDIDATES_TABLE}.email),
+                            phone = COALESCE(EXCLUDED.phone, {CANDIDATES_TABLE}.phone),
                             platform = COALESCE(EXCLUDED.platform, {CANDIDATES_TABLE}.platform),
                             discovered_at = NOW();
                         """,
@@ -304,7 +312,7 @@ def fetch_all_candidates() -> List[dict]:
                 cur.execute(
                     f"""
                     SELECT id, name, "current_role", skills, current_location,
-                           target_countries, evidence_snippet, source_url,
+                           target_countries, evidence_snippet, email, phone, source_url,
                            platform, discovered_at
                     FROM {CANDIDATES_TABLE}
                     ORDER BY discovered_at DESC;

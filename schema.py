@@ -13,6 +13,7 @@ model can never invent or mis-attribute a source.
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -43,6 +44,30 @@ def _clean_list(values: Optional[List[str]]) -> List[str]:
     return out
 
 
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
+
+
+def clean_email(value: Optional[str]) -> Optional[str]:
+    """Trim punctuation around an address; None unless it looks like one email."""
+    value = _clean_str(value)
+    if not value:
+        return None
+    value = value.strip(" .,;:()<>[]\"'").removeprefix("mailto:")
+    return value.lower() if _EMAIL_RE.match(value) else None
+
+
+def clean_phone(value: Optional[str]) -> Optional[str]:
+    """Keep a leading + and digits; None unless it has 8–15 digits (E.164 range)."""
+    value = _clean_str(value)
+    if not value:
+        return None
+    digits = re.sub(r"\D", "", value)
+    if not 8 <= len(digits) <= 15:
+        return None
+    first = re.search(r"\+?\d", value)
+    return ("+" if first and first.group().startswith("+") else "") + digits
+
+
 # ---------------------------------------------------------------------------
 # Stored record
 # ---------------------------------------------------------------------------
@@ -55,6 +80,8 @@ class CandidateRecord(BaseModel):
     current_location: Optional[str] = Field(None, description="City / state / country the person is in now")
     target_countries: List[str] = Field(default_factory=list, description="Countries they want to work in")
     evidence_snippet: Optional[str] = Field(None, description="Verbatim quote proving the match")
+    email: Optional[str] = Field(None, description="Email the person themselves posted on the page")
+    phone: Optional[str] = Field(None, description="Phone / WhatsApp number the person themselves posted")
     source_url: str = Field(..., description="Canonical page the record was extracted from")
     platform: Optional[str] = Field(None, description="linkedin / reddit / quora / forum / job_portal / …")
 
@@ -67,6 +94,16 @@ class CandidateRecord(BaseModel):
     @classmethod
     def _norm_list(cls, v):
         return _clean_list(v)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _norm_email(cls, v):
+        return clean_email(v)
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _norm_phone(cls, v):
+        return clean_phone(v)
 
     @field_validator("evidence_snippet", mode="before")
     @classmethod
@@ -119,6 +156,8 @@ class ExtractedCandidate(BaseModel):
     current_location: Optional[str] = None
     target_countries: List[str] = Field(default_factory=list)
     evidence_snippet: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
 
 
 class PageExtraction(BaseModel):

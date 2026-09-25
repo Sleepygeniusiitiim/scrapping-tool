@@ -189,6 +189,7 @@ async def health(
         err = str(getattr(exc, "detail", exc))
         out["database_error"] = err
         out["supabase_error"] = err
+    out["scrapedo"] = "configured" if os.getenv("SCRAPEDO_TOKEN", "").strip() else "not set"
     try:
         gem = _gemini(x_gemini_key=x_gemini_key, x_gemini_model=x_gemini_model, x_gemini_mode=x_gemini_mode)
         out["gemini"] = await gem.ping()
@@ -213,7 +214,7 @@ async def plan(
 
 @router.post("/search")
 def search(body: QueryIn):
-    backend = body.backend if body.backend in ("auto", "duckduckgo") else "auto"
+    backend = body.backend if body.backend in ("auto", "duckduckgo", "google") else "auto"
     return pipeline.run_query(body.query, body.max_results, body.region, backend)
 
 

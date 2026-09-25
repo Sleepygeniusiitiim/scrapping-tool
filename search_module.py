@@ -283,3 +283,53 @@ def search_wave(
         if i < len(queries) - 1:
             jitter_sleep()
     return results
+
+
+# ---------------------------------------------------------------------------
+# Google via Scrape.do (optional — needs SCRAPEDO_TOKEN)
+# ---------------------------------------------------------------------------
+SCRAPEDO_GOOGLE_ENDPOINT = "https://api.scrape.do/plugin/google/search"
+
+
+def google_search_scrapedo(query: str, token: str, max_results: int = 10, region: str = "in-en",
+                           timeout: int = 30) -> QueryOutcome:
+    """Google results as JSON through Scrape.do's SERP plugin. Never raises."""
+    import primp  # installed with ddgs
+
+    outcome = QueryOutcome(query=query)
+    gl = (region.split("-")[0] if region and region != "wt-wt" else "in") or "in"
+    client = primp.Client(timeout=timeout)
+    seen: set[str] = set()
+    for start in range(0, max(1, min(max_results, 30)), 10):
+        try:
+            r = client.get(SCRAPEDO_GOOGLE_ENDPOINT, params={
+                "token": token, "q": query, "gl": gl, "hl": "en", "start": str(start), "resolveGoto": "true"})
+        except Exception as exc:
+            outcome.error = f"Google (Scrape.do) {type(exc).__name__}: {str(exc)[:120]}"
+            break
+        if r.status_code == 401:
+            outcome.error = "Scrape.do rejected SCRAPEDO_TOKEN"
+            break
+        if r.status_code == 429:
+            outcome.rate_limited = True
+            outcome.error = "Scrape.do rate limit / out of credits"
+            break
+        if r.status_code >= 400:
+            outcome.error = f"Google (Scrape.do) HTTP {r.status_code}"
+            break
+        try:
+            items = r.json().get("organic_results") or []
+        except ValueError:
+            outcome.error = "Google (Scrape.do) returned non-JSON"
+            break
+        for item in items:
+            canon = canonicalize_url(item.get("link") or "")
+            if not canon or canon in seen or not is_useful_url(canon):
+                continue
+            seen.add(canon)
+            outcome.hits.append(SearchHit(url=canon, title=(item.get("title") or "").strip(),
+                                          snippet=(item.get("snippet") or "").strip(), query=query))
+        if len(items) < 10 or len(outcome.hits) >= max_results:
+            break
+    outcome.hits = outcome.hits[:max_results]
+    return outcome

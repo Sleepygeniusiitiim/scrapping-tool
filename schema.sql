@@ -1,6 +1,6 @@
 -- =====================================================================
--- Candidate Sourcing Agent — Supabase schema
--- Run this once in Supabase Dashboard → SQL Editor.
+-- Candidate Sourcing Agent — PostgreSQL schema (Neon)
+-- The app creates these tables itself on first connect; running this by hand is optional.
 -- =====================================================================
 
 -- Track scraped URLs to guarantee deduplication
@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS candidates (
     current_location TEXT,
     target_countries TEXT[],
     evidence_snippet TEXT,
+    email TEXT,                 -- only when the person posted it themselves
+    phone TEXT,                 -- only when the person posted it themselves
     source_url TEXT UNIQUE NOT NULL,
     platform TEXT,
     discovered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -33,6 +35,10 @@ CREATE TABLE IF NOT EXISTS candidates (
 --  original spec and are harmless no-ops if Postgres reuses them.)
 CREATE INDEX IF NOT EXISTS idx_scraped_urls_url ON scraped_urls (url);
 CREATE INDEX IF NOT EXISTS idx_candidates_source_url ON candidates (source_url);
+
+-- Upgrading an existing database (safe to re-run):
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS phone TEXT;
 
 -- ---------------------------------------------------------------------
 -- OPTIONAL — only if you use the *anon* key and Row Level Security (RLS)

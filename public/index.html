@@ -92,10 +92,10 @@
         <div><label for="region">Search region</label>
           <select id="region"><option>in-en</option><option>wt-wt</option><option>us-en</option><option>uk-en</option><option>de-de</option></select></div>
         <div><label for="backend">Search backend</label>
-          <select id="backend"><option>auto</option><option>duckduckgo</option></select></div>
+          <select id="backend"><option value="auto">auto (DuckDuckGo + Google top-up)</option><option value="google">google (Scrape.do)</option><option value="duckduckgo">duckduckgo only</option></select></div>
       </div>
       <div class="row" style="margin-top:10px">
-        <label><input id="robots" type="checkbox" checked>Respect robots.txt</label>
+        <label title="LinkedIn and Facebook disallow crawlers in robots.txt. Untick to read their public posts and comments — check that this fits your use and their terms."><input id="robots" type="checkbox" checked>Respect robots.txt (untick to read LinkedIn / Facebook posts)</label>
         <label><input id="snippet" type="checkbox" checked>Use search snippet when a page is walled/blocked</label>
       </div>
     </details>
@@ -129,10 +129,11 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const COLS = ["name", "current_role", "skills", "current_location", "target_countries",
+const COLS = ["name", "phone", "email", "current_role", "skills", "current_location", "target_countries",
               "platform", "evidence_snippet", "source_url"];
 const LIST_COLS = ["skills", "target_countries"];
-const EDITABLE = ["name", "current_role", "skills", "current_location", "target_countries", "evidence_snippet"];
+const EDITABLE = ["name", "phone", "email", "current_role", "skills", "current_location", "target_countries",
+                  "evidence_snippet"];
 const ICONS = { plan: "🧭", wave_start: "🌊", query: "🔍", dedup: "🧹", crawl: "🕷️", saved: "💾",
   wave_end: "✅", info: "ℹ️", warning: "⚠️", error: "❌", done: "🏁" };
 
@@ -339,7 +340,8 @@ $("testBtn").onclick = async () => {
     const dbMsg = r.database || r.supabase;
     const dbErr = r.database_error || r.supabase_error;
     const parts = [dbMsg ? "✅ " + dbMsg : "❌ Neon DB: " + dbErr,
-                   r.gemini ? "✅ " + r.gemini : "❌ Gemini: " + r.gemini_error];
+                   r.gemini ? "✅ " + r.gemini : "❌ Gemini: " + r.gemini_error,
+                   r.scrapedo === "configured" ? "✅ Scrape.do configured" : "⚪ Scrape.do not set (optional)"];
     out.textContent = parts.join("  ·  ");
   } catch (e) { out.className = "status err"; out.textContent = e.message; }
 };
@@ -402,7 +404,7 @@ async function runPipeline(intent, totals) {
         let added = 0;
         for (const h of r.hits) if (!hits.has(h.url)) { hits.set(h.url, h); added++; }
         if (r.error) logEv("warning", `Query skipped (${r.error.slice(0, 120)}): ${q}`, name);
-        else logEv("query", `${r.hits.length} results (+${added} new) ← ${q}`, name);
+        else logEv("query", `${r.hits.length} results (+${added} new) [${(r.sources || []).join("+")}] ← ${q}`, name);
       } catch (e) {
         if (e.status === 401 || e.status === 503) throw e;
         logEv("warning", `Query failed (${e.message.slice(0, 120)}): ${q}`, name);
@@ -432,7 +434,9 @@ async function runPipeline(intent, totals) {
         totals.crawled += r.stats.crawled; totals.records += r.stats.records;
         logEv("crawl", `Batch ${b + 1}: ${r.stats.crawled} scraped, ${r.stats.blocked} blocked, ${r.stats.failed} failed`, name);
         r.warnings.forEach((w) => logEv("warning", w, name));
-        logEv("saved", `Batch ${b + 1}: ${r.stats.sent_to_gemini} pages sent to Gemini → ${r.stats.records} candidates saved`, name);
+        logEv("saved", `Batch ${b + 1}: ${r.stats.sent_to_gemini} pages sent to Gemini → ${r.stats.records} candidates saved` +
+          ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email)` +
+          (r.stats.via_scrapedo ? ` · ${r.stats.via_scrapedo} pages via Scrape.do` : ""), name);
         state.runRecords.push(...r.records);
         renderStats(); renderRun();
       } catch (e) {

@@ -39,6 +39,23 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
 
 3. Redeploy so the variables take effect. Open the site, enter the password (`CSA-Neon-Vercel-2026!`), and click **Test connections**.
 
+## Contact details, comments and Scrape.do
+
+- **email / phone columns.** Filled only when the candidate wrote the detail themselves — in their
+  own post, profile or comment. Every value must appear verbatim on the page, and on pages with a
+  comment thread it must be in that person's own lines (a recruiter's number is never attached to a
+  commenter). Invented values are discarded.
+- **Comment sections.** LinkedIn posts, Quora answers and many forums embed the post and its comments
+  (with authors) as schema.org data; the app reads that first. Logged-out LinkedIn shows about the
+  first 10 comments of a post.
+- **LinkedIn / Facebook.** Their robots.txt disallows crawlers. Untick "Respect robots.txt" to read
+  public posts — check that this fits your use and their terms. These hosts are fetched one page at a
+  time with a pause, because parallel requests get a login wall.
+- **Scrape.do (optional).** Add `SCRAPEDO_TOKEN` in Vercel → Environment Variables. Pages that come
+  back blocked are fetched again through Scrape.do (residential proxies for LinkedIn/Facebook), and
+  when DuckDuckGo returns fewer than 3 results, Google results are added via Scrape.do's SERP API.
+  Choose "google (Scrape.do)" as the search backend to use Google only. Both use Scrape.do credits.
+
 ## Local development
 
 ```powershell
