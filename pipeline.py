@@ -107,11 +107,19 @@ Return every INDIVIDUAL PERSON on the page who matches the sourcing intent:
 """
 
 
-def _plan_prompt(intent: str, num_waves: int, queries_per_wave: int) -> str:
+def _plan_prompt(intent: str, num_waves: int, queries_per_wave: int, round_no: int = 1,
+                 exclude_queries: Optional[List[str]] = None) -> str:
+    # Each new round starts further along the blueprint, so rounds cover different source types.
+    offset = ((round_no - 1) * num_waves) % len(WAVE_BLUEPRINT)
+    blueprint = (WAVE_BLUEPRINT[offset:] + WAVE_BLUEPRINT[:offset])[:num_waves]
     lines = [f"Sourcing intent: {intent.strip()}", "",
              f"Produce exactly {num_waves} waves, in this order, each with exactly {queries_per_wave} queries:"]
-    for i, (name, platform, hint) in enumerate(WAVE_BLUEPRINT[:num_waves], start=1):
+    for i, (name, platform, hint) in enumerate(blueprint, start=1):
         lines.append(f'Wave {i}: wave_name="{name}", platform="{platform}" — {hint}.')
+    if exclude_queries:
+        lines += ["", f"This is search round {round_no}. These queries were already run — do NOT repeat them "
+                      "or near-copies; use different synonyms, machine brands, destinations, cities and phrasings:"]
+        lines += [f"- {q}" for q in exclude_queries[-120:]]
     lines.append("")
     lines.append("Return JSON matching the schema. Queries only — no explanations.")
     return "\n".join(lines)
@@ -145,8 +153,22 @@ def _is_grounded(evidence: Optional[str], content: str) -> bool:
     return hits / len(ev_words) >= GROUNDING_MIN_OVERLAP
 
 
+_AT = re.compile(r"\s*(?:\[at\]|\(at\)|\{at\}|\bat\b)\s*", re.IGNORECASE)
+_DOT = re.compile(r"\s*(?:\[dot\]|\(dot\)|\{dot\}|\bdot\b)\s*", re.IGNORECASE)
+
+
+def _compact(text: str) -> str:
+    """Lower-case, "at"/"dot" spelled out → @ / ., all whitespace removed."""
+    return re.sub(r"\s+", "", _DOT.sub(".", _AT.sub("@", text.lower())))
+
+
 def _email_on_page(email: Optional[str], content: str) -> bool:
-    return bool(email) and email.strip().lower() in content.lower()
+    """The address is on the page, allowing for stray spaces ("name 47@yahoo.com") and
+    spelled-out forms ("name at gmail dot com") that people use in comments."""
+    if not email:
+        return False
+    e = email.strip().lower()
+    return e in content.lower() or e in _compact(content)
 
 
 def _phone_on_page(phone: Optional[str], content: str) -> bool:
@@ -236,14 +258,18 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str,
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
-async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_wave: int) -> dict:
+async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_wave: int,
+                      round_no: int = 1, exclude_queries: Optional[List[str]] = None) -> dict:
     plan = await gemini.generate_structured(
-        _plan_prompt(intent, num_waves, queries_per_wave), ComprehensiveSearchPlan,
-        system_instruction=PLAN_SYSTEM, temperature=0.6, thinking_budget=512, max_retries=3,
+        _plan_prompt(intent, num_waves, queries_per_wave, round_no, exclude_queries), ComprehensiveSearchPlan,
+        system_instruction=PLAN_SYSTEM, temperature=0.6 if round_no == 1 else 0.9, thinking_budget=512,
+        max_retries=3,
     )
+    done = {q.strip().lower() for q in exclude_queries or []}
     waves = [w for w in plan.waves if w.queries][:num_waves]
     for w in waves:
-        w.queries = w.queries[:queries_per_wave]
+        w.queries = [q for q in w.queries if q.strip().lower() not in done][:queries_per_wave]
+    waves = [w for w in waves if w.queries]
     return {"waves": [w.model_dump() for w in waves]}
 
 

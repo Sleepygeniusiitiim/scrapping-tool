@@ -101,6 +101,7 @@
     </details>
     <div class="row" style="margin-top:14px">
       <button class="primary" id="startBtn">🚀 Start</button>
+      <button id="nextBtn" disabled title="Run new searches for the same intent, avoiding every query already used">🔁 Next round</button>
       <button id="stopBtn" disabled>⏹ Stop</button>
       <span class="status" id="runStatus"></span>
     </div>
@@ -355,11 +356,48 @@ function setRunning(on) {
   $("startBtn").disabled = on; $("stopBtn").disabled = !on;
   $("intent").disabled = on;
   $("runStatus").textContent = on ? "Agent running…" : "";
+  refreshNextBtn();
 }
 
-$("stopBtn").onclick = () => { state.stop = true; $("runStatus").textContent = "Stopping after the current batch…"; };
+// ---------- rounds: queries already used per intent (kept in this browser) ----------
+function roundsKey(intent) { return "csa_rounds:" + intent.trim().toLowerCase(); }
+function loadRounds(intent) {
+  try { return JSON.parse(load(roundsKey(intent)) || "null") || { round: 0, queries: [] }; }
+  catch (_) { return { round: 0, queries: [] }; }
+}
+function saveRounds(intent, data) { store(roundsKey(intent), JSON.stringify(data)); }
+function refreshNextBtn() {
+  const r = loadRounds($("intent").value);
+  $("nextBtn").disabled = state.running || r.round < 1;
+  $("nextBtn").textContent = r.round >= 1 ? `🔁 Next round (${r.round + 1})` : "🔁 Next round";
+}
+$("intent").addEventListener("input", refreshNextBtn);
 
-$("startBtn").onclick = async () => {
+// Same person twice in the live table (same URL, email, phone or name + place) → keep one row.
+function personKeys(r) {
+  const keys = ["u:" + r.source_url];
+  if (r.email) keys.push("e:" + r.email.toLowerCase());
+  if (r.phone) keys.push("p:" + String(r.phone).replace(/\D/g, "").slice(-10));
+  const n = (r.name || "").toLowerCase().replace(/[^a-z ]+/g, " ").trim().replace(/\s+/g, " ");
+  if (n.split(" ").length >= 2) keys.push("n:" + n + "|" + (r.current_location || "").toLowerCase().split(",")[0].trim());
+  return keys;
+}
+function addRunRecords(recs) {
+  for (const r of recs) {
+    const keys = new Set(personKeys(r));
+    const prev = state.runRecords.find((x) => personKeys(x).some((k) => keys.has(k)));
+    if (!prev) { state.runRecords.push(r); continue; }
+    for (const [f, v] of Object.entries(r)) {
+      if (Array.isArray(v)) prev[f] = [...new Set([...(prev[f] || []), ...v])];
+      else if ((prev[f] == null || prev[f] === "") && v != null) prev[f] = v;
+    }
+  }
+}
+
+$("startBtn").onclick = () => startRun(false);
+$("nextBtn").onclick = () => startRun(true);
+
+async function startRun(nextRound) {
   const intent = $("intent").value.trim();
   if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
   store("csa_pw", $("pw").value);
@@ -367,22 +405,28 @@ $("startBtn").onclick = async () => {
   $("progress").classList.remove("hidden"); $("planBox").classList.add("hidden");
   renderStats(); renderRun(); setRunning(true);
   const totals = { crawled: 0, records: 0 };
+  const rounds = nextRound ? loadRounds(intent) : { round: 0, queries: [] };
   try {
-    await runPipeline(intent, totals);
+    await runPipeline(intent, totals, rounds);
     logEv("done", `${state.stop ? "Stopped by user." : "All waves complete."} ${totals.records} candidates saved from ${totals.crawled} scraped pages.`);
   } catch (e) {
     logEv("error", e.message);
   } finally { setRunning(false); renderRun(); }
-};
+}
 
-async function runPipeline(intent, totals) {
+async function runPipeline(intent, totals, rounds) {
   const settings = { numWaves: num("numWaves"), qpw: num("qpw"), maxRes: num("maxRes"), maxUrls: num("maxUrls"),
     batch: num("batch"), timeout: num("timeout"), region: $("region").value, backend: $("backend").value,
     robots: $("robots").checked, snippet: $("snippet").checked };
 
   logEv("info", "Asking Gemini for a multi-wave search plan…");
-  const plan = await api("/api/plan", { intent, num_waves: settings.numWaves, queries_per_wave: settings.qpw });
+  const roundNo = rounds.round + 1;
+  if (roundNo > 1) logEv("info", `Round ${roundNo}: planning new searches that avoid ${rounds.queries.length} queries already used.`);
+  const plan = await api("/api/plan", { intent, num_waves: settings.numWaves, queries_per_wave: settings.qpw,
+    round: roundNo, exclude_queries: rounds.queries });
   const waves = plan.waves;
+  saveRounds(intent, { round: roundNo, queries: rounds.queries.concat(waves.flatMap((w) => w.queries)) });
+  refreshNextBtn();
   logEv("plan", `Plan ready: ${waves.length} waves, ${waves.reduce((n, w) => n + w.queries.length, 0)} queries.`);
   $("planText").textContent = waves.map((w, i) => `Wave ${i + 1}: ${w.wave_name} · ${w.platform}\n  ` + w.queries.join("\n  ")).join("\n\n");
   $("planBox").classList.remove("hidden");
@@ -437,7 +481,7 @@ async function runPipeline(intent, totals) {
         logEv("saved", `Batch ${b + 1}: ${r.stats.sent_to_gemini} pages sent to Gemini → ${r.stats.records} candidates saved` +
           ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email)` +
           (r.stats.via_scrapedo ? ` · ${r.stats.via_scrapedo} pages via Scrape.do` : ""), name);
-        state.runRecords.push(...r.records);
+        addRunRecords(r.records);
         renderStats(); renderRun();
       } catch (e) {
         if (e.status === 401 || e.status === 503 || /API key/.test(e.message)) throw e;
@@ -450,7 +494,7 @@ async function runPipeline(intent, totals) {
   }
 }
 
-renderStats(); renderRun();
+renderStats(); renderRun(); refreshNextBtn();
 </script>
 </body>
 </html>

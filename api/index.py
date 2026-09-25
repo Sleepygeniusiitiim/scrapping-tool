@@ -137,6 +137,8 @@ class PlanIn(BaseModel):
     intent: str = Field(..., min_length=3, max_length=2000)
     num_waves: int = Field(3, ge=1, le=6)
     queries_per_wave: int = Field(5, ge=1, le=10)
+    round: int = Field(1, ge=1, le=100)
+    exclude_queries: List[str] = Field(default_factory=list, max_length=500)
 
 
 class QueryIn(BaseModel):
@@ -204,7 +206,8 @@ async def plan(
     gemini: Gemini = Depends(_gemini),
 ):
     try:
-        result = await pipeline.plan_search(gemini, body.intent, body.num_waves, body.queries_per_wave)
+        result = await pipeline.plan_search(gemini, body.intent, body.num_waves, body.queries_per_wave,
+                                             body.round, body.exclude_queries)
     except GeminiError as exc:
         raise HTTPException(502, f"Planning failed: {exc}")
     if not result["waves"]:

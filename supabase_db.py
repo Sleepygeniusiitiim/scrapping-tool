@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -234,12 +235,91 @@ def record_scraped_urls(urls: List[str], wave_tag: str) -> int:
 # ---------------------------------------------------------------------------
 # Candidates
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Duplicate people
+# ---------------------------------------------------------------------------
+def _norm_name(name: Optional[str]) -> str:
+    return " ".join(re.sub(r"[^a-z ]+", " ", (name or "").lower()).split())
+
+
+def _phone_key(phone: Optional[str]) -> str:
+    digits = re.sub(r"\D", "", phone or "")
+    return digits[-10:] if len(digits) >= 8 else ""
+
+
+def _places_agree(a: Optional[str], b: Optional[str]) -> bool:
+    """Unknown on either side, or the first word of one location appears in the other."""
+    if not a or not b:
+        return True
+    a, b = a.lower(), b.lower()
+    return a.split(",")[0].strip() in b or b.split(",")[0].strip() in a
+
+
+def _same_person(new: dict, old: dict) -> bool:
+    if new.get("email") and old.get("email") and new["email"].lower() == old["email"].lower():
+        return True
+    if _phone_key(new.get("phone")) and _phone_key(new.get("phone")) == _phone_key(old.get("phone")):
+        return True
+    n = _norm_name(new.get("name"))
+    # Same full name (two words or more) in a compatible place, not contradicted by different contacts.
+    if len(n.split()) < 2 or n != _norm_name(old.get("name")):
+        return False
+    if new.get("email") and old.get("email") and new["email"].lower() != old["email"].lower():
+        return False
+    new_phone, old_phone = _phone_key(new.get("phone")), _phone_key(old.get("phone"))
+    if new_phone and old_phone and new_phone != old_phone:
+        return False
+    return _places_agree(new.get("current_location"), old.get("current_location"))
+
+
+def _merge_duplicates(rows: List[dict]) -> List[dict]:
+    """Point each incoming row at the stored row for the same person (so the upsert merges into
+    it instead of adding a duplicate), and fold duplicates within the batch together."""
+    names = sorted({_norm_name(r.get("name")) for r in rows if _norm_name(r.get("name"))})
+    emails = sorted({r["email"].lower() for r in rows if r.get("email")})
+    phones = sorted({_phone_key(r.get("phone")) for r in rows if _phone_key(r.get("phone"))})
+    existing: List[dict] = []
+    if names or emails or phones:
+        def _lookup():
+            with _connect() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT source_url, name, current_location, email, phone FROM {CANDIDATES_TABLE}
+                        WHERE btrim(lower(regexp_replace(regexp_replace(COALESCE(name, ''), '[^a-zA-Z ]+', ' ', 'g'),
+                                                         '\\s+', ' ', 'g'))) = ANY(%s)
+                           OR lower(email) = ANY(%s)
+                           OR right(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), 10) = ANY(%s);
+                        """,
+                        (names, emails, phones),
+                    )
+                    return [dict(r) for r in cur.fetchall()]
+        existing = _with_retry(_lookup, "Duplicate lookup")
+    out: List[dict] = []
+    for row in rows:
+        match = next((o for o in out if _same_person(row, o)), None)
+        if match is not None:            # duplicate inside this batch → fold in
+            for k, v in row.items():
+                if k in ("skills", "target_countries"):
+                    match[k] = list(dict.fromkeys((match.get(k) or []) + (v or [])))
+                elif match.get(k) in (None, "") and v not in (None, ""):
+                    match[k] = v
+            continue
+        stored = next((o for o in existing if _same_person(row, o)), None)
+        if stored is not None:
+            row = {**row, "source_url": stored["source_url"]}
+        out.append(row)
+    return out
+
+
 def save_candidates(candidates: List[CandidateRecord]) -> int:
     """Upsert candidates on `source_url`. Returns number of rows sent."""
     if not candidates:
         return 0
     _ensure_schema()
-    by_url = {c.source_url: c.to_db_row() for c in candidates}
+    by_url: dict[str, dict] = {}
+    for r in _merge_duplicates([c.to_db_row() for c in candidates]):
+        by_url[r["source_url"]] = r
     rows = [
         (
             r.get("name"),
@@ -269,12 +349,15 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                         )
                         VALUES %s
                         ON CONFLICT (source_url) DO UPDATE SET
-                            name = EXCLUDED.name,
-                            "current_role" = EXCLUDED."current_role",
-                            skills = EXCLUDED.skills,
-                            current_location = EXCLUDED.current_location,
-                            target_countries = EXCLUDED.target_countries,
-                            evidence_snippet = EXCLUDED.evidence_snippet,
+                            name = COALESCE(EXCLUDED.name, {CANDIDATES_TABLE}.name),
+                            "current_role" = COALESCE(EXCLUDED."current_role", {CANDIDATES_TABLE}."current_role"),
+                            skills = ARRAY(SELECT DISTINCT unnest(COALESCE({CANDIDATES_TABLE}.skills, '{{}}')
+                                                                   || COALESCE(EXCLUDED.skills, '{{}}'))),
+                            current_location = COALESCE(EXCLUDED.current_location, {CANDIDATES_TABLE}.current_location),
+                            target_countries = ARRAY(SELECT DISTINCT unnest(
+                                COALESCE({CANDIDATES_TABLE}.target_countries, '{{}}')
+                                || COALESCE(EXCLUDED.target_countries, '{{}}'))),
+                            evidence_snippet = COALESCE(EXCLUDED.evidence_snippet, {CANDIDATES_TABLE}.evidence_snippet),
                             email = COALESCE(EXCLUDED.email, {CANDIDATES_TABLE}.email),
                             phone = COALESCE(EXCLUDED.phone, {CANDIDATES_TABLE}.phone),
                             platform = COALESCE(EXCLUDED.platform, {CANDIDATES_TABLE}.platform),
