@@ -117,8 +117,11 @@ def _gemini(
 
 
 def _db(x_database_url: Optional[str] = Header(default=None)) -> None:
+    # The connection string comes from the server environment only. Accepting it
+    # from a request header would let any caller point the server at another host.
+    del x_database_url
     try:
-        db.init_supabase(url=x_database_url)
+        db.init_supabase()
     except db.SupabaseError as exc:
         raise HTTPException(500, str(exc))
 

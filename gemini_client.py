@@ -25,7 +25,8 @@ from pydantic import BaseModel, ValidationError
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+# gemini-2.5-* is closed to new projects; 3.x Flash is the current generation.
+DEFAULT_MODEL = "gemini-3.8-flash"
 T = TypeVar("T", bound=BaseModel)
 
 _RETRYABLE = {408, 429, 500, 502, 503, 504}
@@ -63,6 +64,12 @@ class Gemini:
         log.info("Gemini key rejected on first endpoint; switched to %s mode", self.mode)
         return True
 
+    def _thinking_config(self, thinking_budget: int) -> types.ThinkingConfig:
+        """Gemini 2.x takes a token budget; Gemini 3.x takes a thinking level."""
+        if self.model.startswith("gemini-2"):
+            return types.ThinkingConfig(thinking_budget=thinking_budget)
+        return types.ThinkingConfig(thinking_level="low" if thinking_budget <= 0 else "medium")
+
     # -- core call ---------------------------------------------------------
     async def generate_structured(
         self,
@@ -79,7 +86,7 @@ class Gemini:
             temperature=temperature,
             response_mime_type="application/json",
             response_schema=schema,
-            thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+            thinking_config=self._thinking_config(thinking_budget),
         )
         last_exc: Optional[Exception] = None
         async with self._sem:
@@ -108,6 +115,13 @@ class Gemini:
                             attempt -= 1  # the switch doesn't count as a retry
                             continue
                         raise GeminiError(f"Gemini rejected the API key ({code}): {msg[:300]}") from exc
+                    if code == 404 and self.model != DEFAULT_MODEL:
+                        # Configured model retired / unavailable → fall back once.
+                        log.warning("Gemini model %s unavailable; falling back to %s", self.model, DEFAULT_MODEL)
+                        self.model = DEFAULT_MODEL
+                        config.thinking_config = self._thinking_config(thinking_budget)
+                        attempt -= 1
+                        continue
                     if code in _RETRYABLE:
                         await asyncio.sleep(min(60.0, (2 ** attempt) + random.uniform(0, 1.5)))
                         continue
