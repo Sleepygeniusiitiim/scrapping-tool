@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 import pipeline  # noqa: E402
 import supabase_db as db  # noqa: E402
 from gemini_client import DEFAULT_MODEL, Gemini, GeminiError  # noqa: E402
+from openrouter_client import DEFAULT_OPENROUTER_MODEL, OpenRouter  # noqa: E402
 from schema import CandidateRecord  # noqa: E402
 
 DEFAULT_APP_PASSWORD = "CSA-Neon-Vercel-2026!"
@@ -106,10 +107,23 @@ def _gemini(
     x_gemini_key: Optional[str] = Header(default=None),
     x_gemini_model: Optional[str] = Header(default=None),
     x_gemini_mode: Optional[str] = Header(default=None),
-) -> Gemini:
+    x_openrouter_key: Optional[str] = Header(default=None),
+    x_openrouter_model: Optional[str] = Header(default=None),
+):
+    """The LLM for this request: OpenRouter when a key is given (page or env), else Gemini."""
+    or_key = (x_openrouter_key or os.getenv("OPENROUTER_API_KEY") or "").strip()
+    if or_key:
+        model = (x_openrouter_model or os.getenv("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL).strip()
+        try:
+            return OpenRouter(or_key, model=model)
+        except GeminiError as exc:
+            raise HTTPException(500, str(exc))
     api_key = (x_gemini_key or os.getenv("GEMINI_API_KEY") or "").strip()
     model = (x_gemini_model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL).strip()
     mode = (x_gemini_mode or os.getenv("GEMINI_MODE") or "auto").strip()
+    if not api_key:
+        raise HTTPException(500, "No AI key: enter an OpenRouter key on the page, or set OPENROUTER_API_KEY "
+                                 "(or GEMINI_API_KEY) in Vercel.")
     try:
         return Gemini(api_key, model=model, mode=mode)
     except GeminiError as exc:
@@ -179,6 +193,8 @@ async def health(
     x_gemini_key: Optional[str] = Header(default=None),
     x_gemini_model: Optional[str] = Header(default=None),
     x_gemini_mode: Optional[str] = Header(default=None),
+    x_openrouter_key: Optional[str] = Header(default=None),
+    x_openrouter_model: Optional[str] = Header(default=None),
     x_database_url: Optional[str] = Header(default=None),
 ):
     out = {}
@@ -193,7 +209,8 @@ async def health(
         out["supabase_error"] = err
     out["scrapedo"] = "configured" if os.getenv("SCRAPEDO_TOKEN", "").strip() else "not set"
     try:
-        gem = _gemini(x_gemini_key=x_gemini_key, x_gemini_model=x_gemini_model, x_gemini_mode=x_gemini_mode)
+        gem = _gemini(x_gemini_key=x_gemini_key, x_gemini_model=x_gemini_model, x_gemini_mode=x_gemini_mode,
+                      x_openrouter_key=x_openrouter_key, x_openrouter_model=x_openrouter_model)
         out["gemini"] = await gem.ping()
     except Exception as exc:
         out["gemini_error"] = str(getattr(exc, "detail", exc))
@@ -203,7 +220,7 @@ async def health(
 @router.post("/plan")
 async def plan(
     body: PlanIn,
-    gemini: Gemini = Depends(_gemini),
+    gemini = Depends(_gemini),
 ):
     try:
         result = await pipeline.plan_search(gemini, body.intent, body.num_waves, body.queries_per_wave,
@@ -233,7 +250,7 @@ def dedup(body: DedupIn, x_database_url: Optional[str] = Header(default=None)):
 @router.post("/process")
 async def process(
     body: BatchIn,
-    gemini: Gemini = Depends(_gemini),
+    gemini = Depends(_gemini),
     x_database_url: Optional[str] = Header(default=None),
 ):
     _db(x_database_url)

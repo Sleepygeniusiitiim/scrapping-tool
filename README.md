@@ -56,6 +56,14 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
   when DuckDuckGo returns fewer than 3 results, Google results are added via Scrape.do's SERP API.
   Choose "google (Scrape.do)" as the search backend to use Google only. Both use Scrape.do credits.
 
+## AI provider: OpenRouter (or Gemini)
+
+Enter an OpenRouter key (`sk-or-…`) on the home page, or set `OPENROUTER_API_KEY` in Vercel.
+The default model is `google/gemini-3.8-flash`; OpenRouter falls back to `openai/gpt-6-luna` and
+`deepseek/deepseek-v4.1-flash` if it is unavailable. Choose another model in the "AI model" box
+(any OpenRouter model id). Without an OpenRouter key the app uses `GEMINI_API_KEY` as before.
+Out of credits (402) or daily limits stop the run cleanly; unread pages are retried next run.
+
 ## Local development
 
 ```powershell

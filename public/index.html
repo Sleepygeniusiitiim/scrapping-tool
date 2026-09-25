@@ -59,7 +59,7 @@
 <body>
 <main>
   <h1>🔎 Candidate Sourcing Agent</h1>
-  <p class="sub">Gemini plans multi-wave search queries → DuckDuckGo → Neon DB dedup → page fetch → Gemini extraction → Neon DB.</p>
+  <p class="sub">AI plans multi-wave search queries → DuckDuckGo → Neon DB dedup → page fetch → AI extraction → Neon DB.</p>
 
   <section class="panel" id="login">
     <div class="row">
@@ -68,11 +68,29 @@
         <input id="pw" type="password" autocomplete="current-password" placeholder="CSA-Neon-Vercel-2026!">
       </div>
       <div style="flex:1.4;min-width:240px">
-        <label for="geminiKey">Gemini API Key (AIza… or AQ.… — optional if set in Vercel/.env)</label>
-        <input id="geminiKey" type="password" autocomplete="off" placeholder="Uses server GEMINI_API_KEY unless entered here">
+        <label for="orKey">OpenRouter API key (sk-or-…)</label>
+        <input id="orKey" type="password" autocomplete="off" placeholder="Uses server OPENROUTER_API_KEY unless entered here">
+      </div>
+      <div style="flex:1;min-width:200px">
+        <label for="orModel">AI model (OpenRouter)</label>
+        <input id="orModel" list="orModels" autocomplete="off" placeholder="google/gemini-3.8-flash">
+        <datalist id="orModels">
+          <option value="google/gemini-3.8-flash">best quality (default)</option>
+          <option value="openai/gpt-6-luna">very cheap, good</option>
+          <option value="deepseek/deepseek-v4.1-flash">very cheap</option>
+          <option value="google/gemini-3.5-flash-lite">cheap Gemini</option>
+          <option value="qwen/qwen3.8-flash">cheap</option>
+        </datalist>
       </div>
       <button id="testBtn" style="align-self:flex-end">Test connections</button>
     </div>
+    <details style="margin-top:8px">
+      <summary>Use a Gemini key instead (only when no OpenRouter key is set)</summary>
+      <div style="margin-top:8px;max-width:520px">
+        <label for="geminiKey">Gemini API Key (AIza… or AQ.…)</label>
+        <input id="geminiKey" type="password" autocomplete="off" placeholder="Uses server GEMINI_API_KEY unless entered here">
+      </div>
+    </details>
     <p class="status" id="testOut"></p>
   </section>
 
@@ -146,6 +164,10 @@ function load(k) { try { return localStorage.getItem(k); } catch (_) { return nu
 $("pw").value = load("csa_pw") || "CSA-Neon-Vercel-2026!";
 $("pw").addEventListener("change", () => store("csa_pw", $("pw").value));
 $("geminiKey").value = load("csa_gemini_key") || "";
+$("orKey").value = load("csa_or_key") || "";
+$("orModel").value = load("csa_or_model") || "";
+$("orKey").addEventListener("change", () => store("csa_or_key", $("orKey").value.trim()));
+$("orModel").addEventListener("change", () => store("csa_or_model", $("orModel").value.trim()));
 $("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("geminiKey").value.trim()));
 
 // ---------- API ----------
@@ -157,6 +179,9 @@ async function api(path, body) {
     "X-App-Password": $("pw").value,
     "X-Endpoint": path,
   };
+  const ok = $("orKey").value.trim(), om = $("orModel").value.trim();
+  if (ok) headers["X-OpenRouter-Key"] = ok;
+  if (om) headers["X-OpenRouter-Model"] = om;
   const gk = $("geminiKey").value.trim();
   if (gk) headers["X-Gemini-Key"] = gk;
   const res = await fetch(url, {
@@ -335,13 +360,14 @@ $("loadDb").onclick = async () => {
 $("testBtn").onclick = async () => {
   store("csa_pw", $("pw").value);
   store("csa_gemini_key", $("geminiKey").value.trim());
+  store("csa_or_key", $("orKey").value.trim()); store("csa_or_model", $("orModel").value.trim());
   const out = $("testOut"); out.className = "status"; out.textContent = "Checking…";
   try {
     const r = await api("/api/health");
     const dbMsg = r.database || r.supabase;
     const dbErr = r.database_error || r.supabase_error;
     const parts = [dbMsg ? "✅ " + dbMsg : "❌ Neon DB: " + dbErr,
-                   r.gemini ? "✅ " + r.gemini : "❌ Gemini: " + r.gemini_error,
+                   r.gemini ? "✅ " + r.gemini : "❌ AI: " + r.gemini_error,
                    r.scrapedo === "configured" ? "✅ Scrape.do configured" : "⚪ Scrape.do not set (optional)"];
     out.textContent = parts.join("  ·  ");
   } catch (e) { out.className = "status err"; out.textContent = e.message; }
