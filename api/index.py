@@ -10,6 +10,7 @@ set in server environment variables.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import os
 import sys
@@ -33,8 +34,9 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 import pipeline  # noqa: E402
 import supabase_db as db  # noqa: E402
-from gemini_client import DEFAULT_MODEL, Gemini, GeminiError  # noqa: E402
+from gemini_client import DEFAULT_MODEL, Gemini, GeminiError, GeminiQuotaError  # noqa: E402
 from openrouter_client import DEFAULT_OPENROUTER_MODEL, OpenRouter  # noqa: E402
+import outreach  # noqa: E402
 from schema import CandidateRecord  # noqa: E402
 
 DEFAULT_APP_PASSWORD = "CSA-Neon-Vercel-2026!"
@@ -287,6 +289,85 @@ def save(body: SaveIn, x_database_url: Optional[str] = Header(default=None)):
         return {"saved": db.save_candidates(body.records)}
     except db.SupabaseError as exc:
         raise HTTPException(502, str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Assisted outreach (nothing is sent from here — recruiters send each message)
+# ---------------------------------------------------------------------------
+class DraftIn(BaseModel):
+    candidate_ids: List[str] = Field(..., min_length=1, max_length=20)
+    brief: outreach.OutreachBrief
+
+
+class StatusIn(BaseModel):
+    candidate_id: str
+    status: str = Field(..., pattern="^(new|drafted|sent|replied|not_interested)$")
+    message: Optional[str] = Field(None, max_length=2000)
+
+
+class ReplyIn(BaseModel):
+    candidate_id: str
+    reply_text: str = Field(..., min_length=1, max_length=5000)
+
+
+@router.post("/outreach/draft")
+async def outreach_draft(body: DraftIn, gemini=Depends(_gemini)):
+    _db()
+    try:
+        cands = await run_in_threadpool(db.get_candidates, body.candidate_ids)
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+    results = await asyncio.gather(*(outreach.draft_message(gemini, c, body.brief) for c in cands),
+                                   return_exceptions=True)
+    out = []
+    for c, r in zip(cands, results):
+        if isinstance(r, Exception):
+            if isinstance(r, GeminiError) and ("API key" in str(r) or isinstance(r, GeminiQuotaError)):
+                raise HTTPException(502, str(r))
+            out.append({"id": c["id"], "error": str(r)[:200]})
+            continue
+        row = await run_in_threadpool(db.update_candidate, c["id"],
+                                      {"outreach_message": r, "outreach_status": "drafted"})
+        out.append(row)
+    return {"drafts": out}
+
+
+@router.post("/outreach/status")
+def outreach_status(body: StatusIn):
+    _db()
+    fields = {"outreach_status": body.status}
+    if body.message is not None:
+        fields["outreach_message"] = body.message
+    if body.status == "sent":
+        fields["outreach_sent_at"] = "now()"
+    try:
+        return db.update_candidate(body.candidate_id, fields)
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.post("/outreach/reply")
+async def outreach_reply(body: ReplyIn, gemini=Depends(_gemini)):
+    _db()
+    try:
+        reading = await outreach.read_reply(gemini, body.reply_text)
+    except GeminiError as exc:
+        raise HTTPException(502, str(exc))
+    fields = {"reply_text": body.reply_text, "replied_at": "now()",
+              "outreach_status": "not_interested" if reading.interested is False else "replied"}
+    if reading.email or reading.phone:
+        # Shared by the candidate in reply to us — replaces anything scraped.
+        if reading.email:
+            fields["email"] = reading.email
+        if reading.phone:
+            fields["phone"] = reading.phone
+        fields["contact_source"] = "shared_in_reply"
+        fields["contact_shared_at"] = "now()"
+    try:
+        row = await run_in_threadpool(db.update_candidate, body.candidate_id, fields)
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+    return {"candidate": row, "reading": reading.model_dump()}
 
 
 # Mount routes at both `/api/*` and root `/*` so Vercel serverless rewrites

@@ -89,6 +89,17 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS phone TEXT;
 -- Why each URL ended: ok | snippet | walled | failed | robots | quota | pending.
 -- robots / quota (and pending left over from a crash) are retried by later runs.
 ALTER TABLE scraped_urls ADD COLUMN IF NOT EXISTS status TEXT;
+
+-- Where the contact came from: posted_on_page (the candidate posted it publicly while showing
+-- interest) or shared_in_reply (the candidate sent it in reply to our outreach message).
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS contact_source TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS contact_shared_at TIMESTAMP WITH TIME ZONE;
+-- Assisted outreach: new | drafted | sent | replied | not_interested
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS outreach_status TEXT DEFAULT 'new';
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS outreach_message TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS outreach_sent_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS reply_text TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP WITH TIME ZONE;
 """
 
 
@@ -402,6 +413,13 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                         """,
                         list(chunk),
                     )
+                # Contacts saved by the crawler were posted publicly by the candidate.
+                cur.execute(
+                    f"""
+                    UPDATE {CANDIDATES_TABLE} SET contact_source = 'posted_on_page', contact_shared_at = discovered_at
+                    WHERE contact_source IS NULL AND (email IS NOT NULL OR phone IS NOT NULL);
+                    """
+                )
             conn.commit()
 
     _with_retry(_upsert, "Saving candidates")
@@ -433,7 +451,9 @@ def fetch_all_candidates() -> List[dict]:
                     f"""
                     SELECT id, name, "current_role", skills, current_location,
                            target_countries, evidence_snippet, email, phone, source_url,
-                           platform, discovered_at
+                           platform, discovered_at, contact_source, contact_shared_at,
+                           COALESCE(outreach_status, 'new') AS outreach_status, outreach_message,
+                           outreach_sent_at, reply_text, replied_at
                     FROM {CANDIDATES_TABLE}
                     ORDER BY discovered_at DESC;
                     """
@@ -441,6 +461,74 @@ def fetch_all_candidates() -> List[dict]:
                 return [_serialize_row(dict(r)) for r in cur.fetchall()]
 
     return _with_retry(_fetch, "Fetching candidates")
+
+
+# ---------------------------------------------------------------------------
+# Assisted outreach
+# ---------------------------------------------------------------------------
+_OUTREACH_FIELDS = {"outreach_status", "outreach_message", "outreach_sent_at", "reply_text", "replied_at",
+                    "email", "phone", "contact_source", "contact_shared_at"}
+
+
+def get_candidates(ids: List[str]) -> List[dict]:
+    """Candidates by id (for drafting messages)."""
+    if not ids:
+        return []
+    _ensure_schema()
+
+    def _fetch():
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, name, "current_role", skills, current_location, target_countries,
+                           evidence_snippet, email, phone, source_url, platform,
+                           COALESCE(outreach_status, 'new') AS outreach_status, outreach_message
+                    FROM {CANDIDATES_TABLE} WHERE id::text = ANY(%s);
+                    """,
+                    (list(ids),),
+                )
+                return [_serialize_row(dict(r)) for r in cur.fetchall()]
+
+    return _with_retry(_fetch, "Loading candidates")
+
+
+def update_candidate(candidate_id: str, fields: dict) -> dict:
+    """Update outreach / contact fields of one candidate; returns the updated row.
+    Values equal to the string "now()" are set to the current time."""
+    fields = {k: v for k, v in fields.items() if k in _OUTREACH_FIELDS}
+    if not fields:
+        raise SupabaseError("Nothing to update.")
+    _ensure_schema()
+    sets, params = [], []
+    for k, v in fields.items():
+        if v == "now()":
+            sets.append(f"{k} = NOW()")
+        else:
+            sets.append(f"{k} = %s")
+            params.append(v)
+    params.append(candidate_id)
+
+    def _update():
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {CANDIDATES_TABLE} SET {", ".join(sets)} WHERE id::text = %s
+                    RETURNING id, name, email, phone, contact_source, contact_shared_at,
+                              COALESCE(outreach_status, 'new') AS outreach_status, outreach_message,
+                              outreach_sent_at, reply_text, replied_at;
+                    """,
+                    params,
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return row
+
+    row = _with_retry(_update, "Updating candidate")
+    if not row:
+        raise SupabaseError("Candidate not found.")
+    return _serialize_row(dict(row))
 
 
 def count_scraped_urls() -> int:

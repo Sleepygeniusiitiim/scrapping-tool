@@ -52,6 +52,14 @@
   .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
   .tabs button[aria-selected=true] { border-color: var(--accent); color: var(--accent); }
   .hidden { display: none !important; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .card h3 { margin: 0; font-size: 15px; }
+  .card .meta { color: var(--muted); font-size: 13px; }
+  .card textarea { min-height: 90px; margin-top: 8px; }
+  .badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); }
+  .badge.sent { border-color: var(--warn); color: var(--warn); }
+  .badge.replied { border-color: var(--ok); color: var(--ok); }
+  .badge.not_interested { color: var(--muted); }
   .filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); margin-bottom: 10px; }
   a { color: var(--accent); word-break: break-all; }
 </style>
@@ -136,12 +144,41 @@
   <div class="tabs" role="tablist">
     <button role="tab" aria-selected="true" data-tab="run">This run</button>
     <button role="tab" aria-selected="false" data-tab="db">All saved candidates (Neon DB)</button>
+    <button role="tab" aria-selected="false" data-tab="outreach">Outreach</button>
   </div>
   <section id="tab-run"></section>
   <section id="tab-db" class="hidden">
     <div class="row" style="margin-bottom:10px"><button id="loadDb">🔄 Load / refresh from Neon DB</button>
       <span class="status" id="dbStatus"></span></div>
     <div id="dbView"></div>
+  </section>
+  <section id="tab-outreach" class="hidden">
+    <div class="panel">
+      <p class="status" style="margin-top:0">The AI drafts a message; you send it yourself (LinkedIn and Facebook forbid automated
+        messaging). &ldquo;Copy &amp; open&rdquo; copies the message and opens the candidate's post so you can reply or DM.
+        When they answer, paste the reply &mdash; phone / email they share are saved with the date they shared them.</p>
+      <div class="grid">
+        <div><label for="obName">Your name</label><input id="obName"></div>
+        <div><label for="obAgency">Agency / company</label><input id="obAgency"></div>
+        <div><label for="obRole">Role you're hiring for</label><input id="obRole" placeholder="Press Brake Operator"></div>
+        <div><label for="obLoc">Job location</label><input id="obLoc" placeholder="Riyadh, Saudi Arabia"></div>
+      </div>
+      <div style="margin-top:10px"><label for="obExtra">Details to mention (salary, visa, benefits &mdash; optional)</label>
+        <input id="obExtra" placeholder="Visa + accommodation provided, 2-year contract"></div>
+      <div class="row" style="margin-top:12px">
+        <button id="obLoad">🔄 Load candidates</button>
+        <select id="obFilter" style="width:auto">
+          <option value="needs">Needs contact (no phone/email)</option>
+          <option value="all">All candidates</option>
+          <option value="new">Status: new</option><option value="drafted">Status: drafted</option>
+          <option value="sent">Status: sent (awaiting reply)</option><option value="replied">Status: replied</option>
+          <option value="not_interested">Status: not interested</option>
+        </select>
+        <button class="primary" id="obDraft">✍️ Draft messages for selected</button>
+        <span class="status" id="obStatus"></span>
+      </div>
+    </div>
+    <div id="obList" style="margin-top:12px"></div>
   </section>
 </main>
 
@@ -345,6 +382,7 @@ document.querySelectorAll("[role=tab]").forEach((b) => b.addEventListener("click
   document.querySelectorAll("[role=tab]").forEach((x) => x.setAttribute("aria-selected", x === b));
   $("tab-run").classList.toggle("hidden", b.dataset.tab !== "run");
   $("tab-db").classList.toggle("hidden", b.dataset.tab !== "db");
+  $("tab-outreach").classList.toggle("hidden", b.dataset.tab !== "outreach");
 }));
 
 $("loadDb").onclick = async () => {
@@ -531,6 +569,120 @@ async function runPipeline(intent, totals, rounds) {
     if (wi < waves.length - 1 && !state.stop) await sleep(3000);
   }
 }
+
+// ---------- assisted outreach ----------
+const OB_FIELDS = ["obName", "obAgency", "obRole", "obLoc", "obExtra"];
+OB_FIELDS.forEach((id) => { $(id).value = load("csa_" + id) || "";
+  $(id).addEventListener("change", () => store("csa_" + id, $(id).value.trim())); });
+const ob = { rows: [], selected: new Set() };
+
+function obBrief() {
+  return { recruiter_name: $("obName").value.trim(), agency_name: $("obAgency").value.trim(),
+           role: $("obRole").value.trim(), job_location: $("obLoc").value.trim(), extra: $("obExtra").value.trim() };
+}
+function obCheckBrief() {
+  const b = obBrief();
+  if (!b.recruiter_name || !b.agency_name || !b.role) throw new Error("Fill in your name, agency and the role first.");
+  return b;
+}
+function obVisible() {
+  const f = $("obFilter").value;
+  return ob.rows.filter((r) => f === "all" ? true : f === "needs" ? !r.phone && !r.email : r.outreach_status === f);
+}
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v; else if (k === "style") e.style.cssText = v; else e[k] = v;
+  }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+function obMerge(row) { const r = ob.rows.find((x) => x.id === row.id); if (r) Object.assign(r, row); }
+
+function obCard(r) {
+  const check = el("input", { type: "checkbox", checked: ob.selected.has(r.id) });
+  check.onchange = () => { if (check.checked) ob.selected.add(r.id); else ob.selected.delete(r.id); };
+  const contact = r.phone || r.email
+    ? `📞 ${r.phone || "—"} · ✉️ ${r.email || "—"} (${r.contact_source === "shared_in_reply" ? "shared in reply" : "posted on page"})`
+    : "No contact yet";
+  const link = el("a", { href: r.source_url, target: "_blank", rel: "noopener noreferrer", textContent: "open post / profile" });
+  const msg = el("textarea", { value: r.outreach_message || "", placeholder: "Draft a message, or write your own…" });
+  const say = el("span", { class: "status" });
+  const act = async (fn) => { say.textContent = "…"; try { await fn(); say.textContent = ""; } catch (e) { say.textContent = e.message; } };
+
+  const bDraft = el("button", { textContent: "✍️ Draft" });
+  bDraft.onclick = () => act(async () => {
+    const d = (await api("/api/outreach/draft", { candidate_ids: [r.id], brief: obCheckBrief() })).drafts[0];
+    if (!d || d.error) throw new Error((d && d.error) || "Draft failed.");
+    obMerge(d); obRender();
+  });
+  const bSend = el("button", { class: "primary", textContent: "📋 Copy & open" });
+  bSend.onclick = () => act(async () => {
+    if (!msg.value.trim()) throw new Error("Draft or write a message first.");
+    try { await navigator.clipboard.writeText(msg.value); } catch (_) { msg.select(); document.execCommand("copy"); }
+    window.open(r.source_url, "_blank", "noopener");
+    obMerge(await api("/api/outreach/status", { candidate_id: r.id, status: "sent", message: msg.value }));
+    obRender();
+  });
+  const bNo = el("button", { textContent: "Not interested" });
+  bNo.onclick = () => act(async () => {
+    obMerge(await api("/api/outreach/status", { candidate_id: r.id, status: "not_interested" })); obRender();
+  });
+
+  const card = el("div", { class: "card" },
+    el("div", { class: "row" }, check, el("h3", { textContent: r.name || "(no name)" }),
+      el("span", { class: "badge " + r.outreach_status, textContent: r.outreach_status.replace("_", " ") })),
+    el("div", { class: "meta", textContent: [r.current_role, r.current_location, r.platform].filter(Boolean).join(" · ") }),
+    el("div", { class: "meta", textContent: contact }),
+    el("div", { class: "meta" }, "“" + (r.evidence_snippet || "") + "” — ", link),
+    msg,
+    el("div", { class: "row", style: "margin-top:6px" }, bDraft, bSend, bNo, say));
+
+  if (["sent", "replied", "not_interested"].includes(r.outreach_status) || r.reply_text) {
+    const reply = el("textarea", { value: r.reply_text || "", placeholder: "Paste their reply here…", style: "min-height:60px" });
+    const bReply = el("button", { textContent: "💾 Save reply" });
+    bReply.onclick = () => act(async () => {
+      if (!reply.value.trim()) throw new Error("Paste the reply first.");
+      const res = await api("/api/outreach/reply", { candidate_id: r.id, reply_text: reply.value });
+      obMerge(res.candidate); obRender();
+      $("obStatus").textContent = `${r.name || "Candidate"}: ${res.reading.summary || "reply saved"}` +
+        (res.reading.phone || res.reading.email ? " — contact saved." : " — no contact in the reply.");
+    });
+    card.append(el("div", { style: "margin-top:6px" }, reply, el("div", { class: "row", style: "margin-top:6px" }, bReply)));
+  }
+  return card;
+}
+function obRender() {
+  const list = $("obList"); list.replaceChildren();
+  const rows = obVisible();
+  if (!rows.length) {
+    list.append(el("p", { class: "status", textContent: ob.rows.length ? "No candidates match this filter." : "Click “Load candidates”." }));
+    return;
+  }
+  rows.forEach((r) => list.append(obCard(r)));
+}
+$("obFilter").onchange = obRender;
+$("obLoad").onclick = async () => {
+  $("obStatus").textContent = "Loading…";
+  try {
+    ob.rows = (await api("/api/candidates")).candidates; ob.selected.clear(); obRender();
+    $("obStatus").textContent = `${ob.rows.length} candidates · ${obVisible().length} shown`;
+  } catch (e) { $("obStatus").textContent = e.message; }
+};
+$("obDraft").onclick = async () => {
+  try {
+    const brief = obCheckBrief();
+    const ids = [...ob.selected].slice(0, 20);
+    if (!ids.length) throw new Error("Tick the candidates to draft for (up to 20 at a time).");
+    $("obStatus").textContent = `Drafting ${ids.length} messages…`;
+    const res = await api("/api/outreach/draft", { candidate_ids: ids, brief });
+    let failed = 0;
+    res.drafts.forEach((d) => { if (d.error) failed++; else obMerge(d); });
+    ob.selected.clear(); obRender();
+    $("obStatus").textContent = `Drafted ${res.drafts.length - failed}` + (failed ? `, ${failed} failed` : "") +
+      ". Review each message, then “Copy & open”.";
+  } catch (e) { $("obStatus").textContent = e.message; }
+};
 
 renderStats(); renderRun(); refreshNextBtn();
 </script>

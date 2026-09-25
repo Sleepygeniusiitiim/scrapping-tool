@@ -64,6 +64,17 @@ The default model is `google/gemini-3.8-flash`; OpenRouter falls back to `openai
 (any OpenRouter model id). Without an OpenRouter key the app uses `GEMINI_API_KEY` as before.
 Out of credits (402) or daily limits stop the run cleanly; unread pages are retried next run.
 
+## Assisted outreach (Outreach tab)
+
+1. Fill in your name, agency, the role and location, then **Load candidates** (default filter: no contact yet).
+2. Tick candidates → **Draft messages** (AI writes a short, honest message citing the post where they
+   showed interest, asking them to share phone/email if interested, with an opt-out line). Edit freely.
+3. **Copy & open** copies the message and opens their post/profile — you paste it as a reply or DM.
+   The app never sends messages itself: LinkedIn and Facebook forbid automated messaging.
+4. When they answer, paste the reply and **Save reply**. The AI reads it; any phone/email that is
+   actually in the reply is saved with `contact_source = shared_in_reply` and the date — a record
+   that the candidate shared it with you. "Not interested" replies are marked so.
+
 ## Local development
 
 ```powershell
