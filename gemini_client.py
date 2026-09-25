@@ -34,7 +34,7 @@ _RETRYABLE = {408, 429, 500, 502, 503, 504}
 # quota (429). Free-tier quotas and load are per model, so the next one
 # usually answers straight away.
 FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
-_SWITCH_CODES = {404, 429, 503}
+_SWITCH_CODES = {403, 404, 429, 503}   # 403 here = model not available to this project
 
 # Last model that answered, reused by later requests on the same warm
 # serverless instance so they don't hit an overloaded model first.
@@ -55,6 +55,7 @@ class Gemini:
         # auto → start with the Gemini API unless the key shape says Vertex.
         self.mode = mode if mode in ("gemini", "vertex") else ("vertex" if self.api_key.startswith("AQ.") else "gemini")
         self._auto = mode == "auto"
+        self._first_error: Optional[Exception] = None   # error that triggered an endpoint switch
         self._client = self._make_client(self.mode)
         self._sem = asyncio.Semaphore(max_concurrency)
 
@@ -121,12 +122,27 @@ class Gemini:
                     last_exc = exc
                     code = getattr(exc, "code", None)
                     msg = str(exc)
-                    if code in (400, 401, 403) and ("API key" in msg or "API_KEY" in msg or "credential" in msg.lower()
-                                                    or "not supported" in msg.lower() or code in (401, 403)):
+                    low = msg.lower()
+                    wrong_endpoint = code == 401 or "api key not valid" in low or "api_key_invalid" in low or (
+                        "api key" in low and "not supported" in low)
+                    if code in (400, 401, 403) and wrong_endpoint:
+                        # Key belongs to the other endpoint (AI Studio vs Vertex express).
                         if self._switch_mode():
+                            self._first_error = exc
                             attempt -= 1  # the switch doesn't count as a retry
                             continue
                         raise GeminiError(f"Gemini rejected the API key ({code}): {msg[:300]}") from exc
+                    if self._first_error is not None and code == 403 and (
+                            "service_disabled" in low or "has not been used" in low or "aiplatform" in low):
+                        # We switched to Vertex, but Vertex isn't enabled for this project, so the
+                        # original endpoint's error is the real one.
+                        first = self._first_error
+                        raise GeminiError(f"Gemini rejected the API key ({first.code}): {str(first)[:300]}") from first
+                    if code == 400 and "thinking" in low and config.thinking_config is not None:
+                        # This model doesn't accept the thinking setting → retry without it.
+                        config.thinking_config = None
+                        attempt -= 1
+                        continue
                     if code in _SWITCH_CODES and self._fallbacks:
                         # Retired / overloaded / out of quota → try the next model now.
                         nxt = self._fallbacks.pop(0)
