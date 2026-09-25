@@ -30,6 +30,15 @@ DEFAULT_MODEL = "gemini-3.8-flash"
 T = TypeVar("T", bound=BaseModel)
 
 _RETRYABLE = {408, 429, 500, 502, 503, 504}
+# Tried in order when a model is retired (404), overloaded (503) or out of
+# quota (429). Free-tier quotas and load are per model, so the next one
+# usually answers straight away.
+FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+_SWITCH_CODES = {404, 429, 503}
+
+# Last model that answered, reused by later requests on the same warm
+# serverless instance so they don't hit an overloaded model first.
+_last_good_model: Optional[str] = None
 
 
 class GeminiError(RuntimeError):
@@ -41,7 +50,8 @@ class Gemini:
         if not api_key:
             raise GeminiError("GEMINI_API_KEY is required.")
         self.api_key = api_key.strip()
-        self.model = model
+        self.model = _last_good_model if (_last_good_model and model == DEFAULT_MODEL) else model
+        self._fallbacks = [m for m in FALLBACK_MODELS if m != self.model]
         # auto → start with the Gemini API unless the key shape says Vertex.
         self.mode = mode if mode in ("gemini", "vertex") else ("vertex" if self.api_key.startswith("AQ.") else "gemini")
         self._auto = mode == "auto"
@@ -97,6 +107,8 @@ class Gemini:
                     resp = await self._client.aio.models.generate_content(
                         model=self.model, contents=prompt, config=config
                     )
+                    global _last_good_model
+                    _last_good_model = self.model
                     parsed = getattr(resp, "parsed", None)
                     if isinstance(parsed, schema):
                         return parsed
@@ -115,12 +127,13 @@ class Gemini:
                             attempt -= 1  # the switch doesn't count as a retry
                             continue
                         raise GeminiError(f"Gemini rejected the API key ({code}): {msg[:300]}") from exc
-                    if code == 404 and self.model != DEFAULT_MODEL:
-                        # Configured model retired / unavailable → fall back once.
-                        log.warning("Gemini model %s unavailable; falling back to %s", self.model, DEFAULT_MODEL)
-                        self.model = DEFAULT_MODEL
+                    if code in _SWITCH_CODES and self._fallbacks:
+                        # Retired / overloaded / out of quota → try the next model now.
+                        nxt = self._fallbacks.pop(0)
+                        log.warning("Gemini model %s returned %s; switching to %s", self.model, code, nxt)
+                        self.model = nxt
                         config.thinking_config = self._thinking_config(thinking_budget)
-                        attempt -= 1
+                        attempt -= 1  # a model switch doesn't count as a retry
                         continue
                     if code in _RETRYABLE:
                         await asyncio.sleep(min(60.0, (2 ** attempt) + random.uniform(0, 1.5)))
