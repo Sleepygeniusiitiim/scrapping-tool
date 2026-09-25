@@ -4,6 +4,6 @@
     "api/index.py": { "maxDuration": 60 }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index" }
+    { "source": "/api/:path*", "destination": "/api/index?__path=:path*" }
   ]
 }

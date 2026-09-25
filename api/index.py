@@ -15,6 +15,7 @@ import os
 import sys
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import parse_qs
 
 # Shared modules live in the repo root.
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -26,7 +27,7 @@ try:
 except Exception:
     pass
 
-from fastapi import Depends, FastAPI, Header, HTTPException  # noqa: E402
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException  # noqa: E402
 from fastapi.concurrency import run_in_threadpool  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
@@ -38,6 +39,57 @@ from schema import CandidateRecord  # noqa: E402
 DEFAULT_APP_PASSWORD = "CSA-Neon-Vercel-2026!"
 
 app = FastAPI(title="Candidate Sourcing Agent API", docs_url=None, redoc_url=None)
+
+
+# ---------------------------------------------------------------------------
+# Vercel ASGI path normalization middleware
+# ---------------------------------------------------------------------------
+class VercelPathNormalizedMiddleware:
+    """
+    When Vercel rewrites `/api/<route>` to `/api/index`, `@vercel/python` may
+    set `scope["path"]` to `/api/index` or `/index` instead of `/api/<route>`.
+    This middleware restores the original `/api/<route>` path from:
+      1. `X-Endpoint` request header (sent by public/index.html)
+      2. `__path` query parameter (sent by vercel.json rewrite & public/index.html)
+      3. `x-matched-path` / `x-now-route-matches` Vercel headers
+    """
+
+    def __init__(self, app_instance):
+        self.app = app_instance
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
+            qs = parse_qs(scope.get("query_string", b"").decode("latin1"))
+
+            target_path = None
+            if headers.get("x-endpoint"):
+                target_path = headers["x-endpoint"].strip()
+            elif "__path" in qs and qs["__path"]:
+                target_path = qs["__path"][0].strip()
+            elif "x-now-route-matches" in headers:
+                matches = parse_qs(headers["x-now-route-matches"])
+                if "1" in matches and matches["1"]:
+                    target_path = matches["1"][0].strip()
+                elif "path" in matches and matches["path"]:
+                    target_path = matches["path"][0].strip()
+
+            current_path = scope.get("path", "")
+            if target_path:
+                clean = target_path.lstrip("/")
+                if clean.startswith("api/"):
+                    scope["path"] = "/" + clean
+                else:
+                    scope["path"] = "/api/" + clean
+            elif current_path in ("/api/index", "/api/index.py", "/index", "/index.py"):
+                scope["path"] = "/api/health"
+            elif current_path in ("/health", "/plan", "/search", "/dedup", "/process", "/candidates"):
+                scope["path"] = "/api" + current_path
+
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(VercelPathNormalizedMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +124,7 @@ def _db(x_database_url: Optional[str] = Header(default=None)) -> None:
 
 
 auth = [Depends(require_password)]
+router = APIRouter(dependencies=auth)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +169,7 @@ class SaveIn(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-@app.get("/api/health", dependencies=auth)
+@router.get("/health")
 async def health(
     x_gemini_key: Optional[str] = Header(default=None),
     x_gemini_model: Optional[str] = Header(default=None),
@@ -141,7 +194,7 @@ async def health(
     return out
 
 
-@app.post("/api/plan", dependencies=auth)
+@router.post("/plan")
 async def plan(
     body: PlanIn,
     gemini: Gemini = Depends(_gemini),
@@ -155,13 +208,13 @@ async def plan(
     return result
 
 
-@app.post("/api/search", dependencies=auth)
+@router.post("/search")
 def search(body: QueryIn):
     backend = body.backend if body.backend in ("auto", "duckduckgo") else "auto"
     return pipeline.run_query(body.query, body.max_results, body.region, backend)
 
 
-@app.post("/api/dedup", dependencies=auth)
+@router.post("/dedup")
 def dedup(body: DedupIn, x_database_url: Optional[str] = Header(default=None)):
     _db(x_database_url)
     try:
@@ -170,7 +223,7 @@ def dedup(body: DedupIn, x_database_url: Optional[str] = Header(default=None)):
         raise HTTPException(502, str(exc))
 
 
-@app.post("/api/process", dependencies=auth)
+@router.post("/process")
 async def process(
     body: BatchIn,
     gemini: Gemini = Depends(_gemini),
@@ -193,7 +246,7 @@ async def process(
         raise HTTPException(502, str(exc))
 
 
-@app.get("/api/candidates", dependencies=auth)
+@router.get("/candidates")
 def candidates(x_database_url: Optional[str] = Header(default=None)):
     _db(x_database_url)
     try:
@@ -203,7 +256,7 @@ def candidates(x_database_url: Optional[str] = Header(default=None)):
         raise HTTPException(502, str(exc))
 
 
-@app.post("/api/candidates", dependencies=auth)
+@router.post("/candidates")
 def save(body: SaveIn, x_database_url: Optional[str] = Header(default=None)):
     _db(x_database_url)
     try:
@@ -211,6 +264,11 @@ def save(body: SaveIn, x_database_url: Optional[str] = Header(default=None)):
     except db.SupabaseError as exc:
         raise HTTPException(502, str(exc))
 
+
+# Mount routes at both `/api/*` and root `/*` so Vercel serverless rewrites
+# always resolve regardless of how `@vercel/python` sets `scope["path"]`.
+app.include_router(router, prefix="/api")
+app.include_router(router, prefix="")
 
 # Local development: serve the page from the same server (Vercel serves public/ itself).
 if not os.getenv("VERCEL"):

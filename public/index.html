@@ -148,10 +148,16 @@ $("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("gemin
 
 // ---------- API ----------
 async function api(path, body) {
-  const headers = { "Content-Type": "application/json", "X-App-Password": $("pw").value };
+  const cleanEndpoint = path.replace(/^\/api\//, "").replace(/^\//, "");
+  const url = `${path}${path.includes("?") ? "&" : "?"}__path=${encodeURIComponent(cleanEndpoint)}`;
+  const headers = {
+    "Content-Type": "application/json",
+    "X-App-Password": $("pw").value,
+    "X-Endpoint": path,
+  };
   const gk = $("geminiKey").value.trim();
   if (gk) headers["X-Gemini-Key"] = gk;
-  const res = await fetch(path, {
+  const res = await fetch(url, {
     method: body === undefined ? "GET" : "POST",
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
