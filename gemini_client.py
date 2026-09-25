@@ -52,10 +52,12 @@ class Gemini:
         self.api_key = api_key.strip()
         self.model = _last_good_model if (_last_good_model and model == DEFAULT_MODEL) else model
         self._fallbacks = [m for m in FALLBACK_MODELS if m != self.model]
-        # auto → start with the Gemini API unless the key shape says Vertex.
-        self.mode = mode if mode in ("gemini", "vertex") else ("vertex" if self.api_key.startswith("AQ.") else "gemini")
+        # auto → start with the Gemini API (AI Studio). Newer AI Studio keys can also
+        # start with "AQ.", so the key prefix doesn't tell us the endpoint.
+        self.mode = mode if mode in ("gemini", "vertex") else "gemini"
         self._auto = mode == "auto"
         self._first_error: Optional[Exception] = None   # error that triggered an endpoint switch
+        self._left_vertex = False                         # already fell back from a disabled Vertex API
         self._client = self._make_client(self.mode)
         self._sem = asyncio.Semaphore(max_concurrency)
 
@@ -138,6 +140,17 @@ class Gemini:
                         # original endpoint's error is the real one.
                         first = self._first_error
                         raise GeminiError(f"Gemini rejected the API key ({first.code}): {str(first)[:300]}") from first
+                    vertex_disabled = code == 403 and (
+                        "service_disabled" in low or "has not been used" in low or "aiplatform" in low)
+                    if vertex_disabled and self.mode == "vertex" and not self._left_vertex:
+                        # Vertex AI isn't enabled for this Google project → use the Gemini API instead.
+                        log.warning("Vertex AI API disabled for this key's project; switching to the Gemini API")
+                        self._left_vertex = True
+                        self._auto = False
+                        self.mode = "gemini"
+                        self._client = self._make_client("gemini")
+                        attempt -= 1
+                        continue
                     if code == 400 and "thinking" in low and config.thinking_config is not None:
                         # This model doesn't accept the thinking setting → retry without it.
                         config.thinking_config = None
