@@ -1,0 +1,132 @@
+"""
+Thin wrapper around the google-genai SDK for Gemini 2.5 Flash.
+
+* Structured output: responses are constrained to a Pydantic schema and
+  validated again locally.
+* Retries 429 / 5xx with exponential backoff (+ jitter).
+* Key mode: Google issues two kinds of keys that both work with google-genai:
+    - Gemini API (AI Studio) keys, usually starting with "AIza"
+    - Vertex AI express-mode keys, e.g. starting with "AQ."
+  mode="auto" tries the Gemini API first and transparently switches to
+  Vertex AI express mode if the key is rejected there.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+from typing import Optional, Type, TypeVar
+
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types
+from pydantic import BaseModel, ValidationError
+
+log = logging.getLogger(__name__)
+
+DEFAULT_MODEL = "gemini-2.5-flash"
+T = TypeVar("T", bound=BaseModel)
+
+_RETRYABLE = {408, 429, 500, 502, 503, 504}
+
+
+class GeminiError(RuntimeError):
+    pass
+
+
+class Gemini:
+    def __init__(self, api_key: str, model: str = DEFAULT_MODEL, mode: str = "auto", max_concurrency: int = 4):
+        if not api_key:
+            raise GeminiError("GEMINI_API_KEY is required.")
+        self.api_key = api_key.strip()
+        self.model = model
+        # auto → start with the Gemini API unless the key shape says Vertex.
+        self.mode = mode if mode in ("gemini", "vertex") else ("vertex" if self.api_key.startswith("AQ.") else "gemini")
+        self._auto = mode == "auto"
+        self._client = self._make_client(self.mode)
+        self._sem = asyncio.Semaphore(max_concurrency)
+
+    # -- client ------------------------------------------------------------
+    def _make_client(self, mode: str) -> genai.Client:
+        if mode == "vertex":
+            return genai.Client(vertexai=True, api_key=self.api_key)
+        return genai.Client(api_key=self.api_key)
+
+    def _switch_mode(self) -> bool:
+        """In auto mode, flip Gemini API <-> Vertex express once."""
+        if not self._auto:
+            return False
+        self._auto = False  # only flip once
+        self.mode = "vertex" if self.mode == "gemini" else "gemini"
+        self._client = self._make_client(self.mode)
+        log.info("Gemini key rejected on first endpoint; switched to %s mode", self.mode)
+        return True
+
+    # -- core call ---------------------------------------------------------
+    async def generate_structured(
+        self,
+        prompt: str,
+        schema: Type[T],
+        system_instruction: Optional[str] = None,
+        temperature: float = 0.2,
+        thinking_budget: int = 0,
+        max_retries: int = 5,
+    ) -> T:
+        """Call Gemini with a JSON schema and return a validated model instance."""
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=temperature,
+            response_mime_type="application/json",
+            response_schema=schema,
+            thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+        )
+        last_exc: Optional[Exception] = None
+        async with self._sem:
+            attempt = 0
+            while attempt < max_retries:
+                attempt += 1
+                try:
+                    resp = await self._client.aio.models.generate_content(
+                        model=self.model, contents=prompt, config=config
+                    )
+                    parsed = getattr(resp, "parsed", None)
+                    if isinstance(parsed, schema):
+                        return parsed
+                    text = (resp.text or "").strip()
+                    if not text:
+                        # Safety block or empty candidate — treat as "nothing found".
+                        return schema()
+                    return schema.model_validate_json(text)
+                except genai_errors.APIError as exc:
+                    last_exc = exc
+                    code = getattr(exc, "code", None)
+                    msg = str(exc)
+                    if code in (400, 401, 403) and ("API key" in msg or "API_KEY" in msg or "credential" in msg.lower()
+                                                    or "not supported" in msg.lower() or code in (401, 403)):
+                        if self._switch_mode():
+                            attempt -= 1  # the switch doesn't count as a retry
+                            continue
+                        raise GeminiError(f"Gemini rejected the API key ({code}): {msg[:300]}") from exc
+                    if code in _RETRYABLE:
+                        await asyncio.sleep(min(60.0, (2 ** attempt) + random.uniform(0, 1.5)))
+                        continue
+                    raise GeminiError(f"Gemini error {code}: {msg[:300]}") from exc
+                except (ValidationError, ValueError) as exc:
+                    # Malformed / truncated JSON — retry once or twice.
+                    last_exc = exc
+                    await asyncio.sleep(1.0)
+                    continue
+                except (asyncio.TimeoutError, ConnectionError, OSError) as exc:
+                    last_exc = exc
+                    await asyncio.sleep(min(30.0, 2 ** attempt))
+                    continue
+        raise GeminiError(f"Gemini call failed after {max_retries} attempts: {last_exc}")
+
+    async def ping(self) -> str:
+        """Tiny call used by the UI 'Test connection' button."""
+        class _Pong(BaseModel):
+            ok: bool = True
+
+        await self.generate_structured('Return {"ok": true}.', _Pong, max_retries=2)
+        return f"Gemini OK ({self.model}, {self.mode} endpoint)"

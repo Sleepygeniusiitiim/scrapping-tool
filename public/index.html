@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Candidate Sourcing Agent</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd;
+    --accent: #2f5bd3; --accent-text: #fff; --ok: #1f7a4a; --warn: #9a6200; --err: #b3261e;
+    --code: #f1f0ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1e1e1c; --text: #ecebe6; --muted: #9c9b95; --line: #33332f;
+      --accent: #7c9bff; --accent-text: #0e1320; --ok: #6cc596; --warn: #e0b25a; --err: #f08a80; --code: #262624; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 28px 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input, select, textarea { width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; }
+  textarea { min-height: 70px; resize: vertical; }
+  input[type=checkbox] { width: auto; margin-right: 6px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    border-radius: 7px; padding: 7px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); }
+  .status { font-size: 13px; color: var(--muted); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  pre.log { background: var(--code); border-radius: 8px; padding: 10px 12px; max-height: 280px;
+    overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 0; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--code); font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.evidence { min-width: 280px; max-width: 420px; }
+  td[contenteditable=true] { outline: none; }
+  td[contenteditable=true]:focus { background: var(--code); }
+  td.dirty { box-shadow: inset 3px 0 0 var(--warn); }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tabs button[aria-selected=true] { border-color: var(--accent); color: var(--accent); }
+  .hidden { display: none !important; }
+  .filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); margin-bottom: 10px; }
+  a { color: var(--accent); word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🔎 Candidate Sourcing Agent</h1>
+  <p class="sub">Gemini plans multi-wave search queries → DuckDuckGo → Supabase dedup → page fetch → Gemini extraction → Supabase.</p>
+
+  <section class="panel" id="login">
+    <div class="row">
+      <div style="flex:1;min-width:220px">
+        <label for="pw">App password (APP_PASSWORD on Vercel)</label>
+        <input id="pw" type="password" autocomplete="current-password">
+      </div>
+      <button id="testBtn" style="align-self:flex-end">Test connections</button>
+    </div>
+    <p class="status" id="testOut"></p>
+  </section>
+
+  <h2>Search</h2>
+  <section class="panel">
+    <label for="intent">Discovery intent</label>
+    <textarea id="intent">Find Indian candidates who are interested for abroad opportunities in CNC</textarea>
+    <details>
+      <summary>Wave depth &amp; crawler settings</summary>
+      <div class="grid" style="margin-top:10px">
+        <div><label for="numWaves">Number of waves</label><input id="numWaves" type="number" min="1" max="6" value="3"></div>
+        <div><label for="qpw">Queries per wave</label><input id="qpw" type="number" min="1" max="10" value="5"></div>
+        <div><label for="maxRes">Max results per query</label><input id="maxRes" type="number" min="5" max="30" value="10"></div>
+        <div><label for="maxUrls">Max fresh URLs per wave</label><input id="maxUrls" type="number" min="5" max="100" value="30"></div>
+        <div><label for="batch">Batch size</label><input id="batch" type="number" min="2" max="8" value="5"></div>
+        <div><label for="timeout">Page timeout (s)</label><input id="timeout" type="number" min="5" max="30" value="15"></div>
+        <div><label for="region">Search region</label>
+          <select id="region"><option>in-en</option><option>wt-wt</option><option>us-en</option><option>uk-en</option><option>de-de</option></select></div>
+        <div><label for="backend">Search backend</label>
+          <select id="backend"><option>auto</option><option>duckduckgo</option></select></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label><input id="robots" type="checkbox" checked>Respect robots.txt</label>
+        <label><input id="snippet" type="checkbox" checked>Use search snippet when a page is walled/blocked</label>
+      </div>
+    </details>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="startBtn">🚀 Start</button>
+      <button id="stopBtn" disabled>⏹ Stop</button>
+      <span class="status" id="runStatus"></span>
+    </div>
+  </section>
+
+  <div id="progress" class="hidden">
+    <h2>Progress</h2>
+    <details id="planBox" class="hidden"><summary>🧭 Search plan</summary><pre class="log" id="planText"></pre></details>
+    <div class="table-wrap" style="margin:12px 0"><table id="statsTable"></table></div>
+    <pre class="log" id="log"></pre>
+  </div>
+
+  <h2>Results</h2>
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="run">This run</button>
+    <button role="tab" aria-selected="false" data-tab="db">All saved candidates (Supabase)</button>
+  </div>
+  <section id="tab-run"></section>
+  <section id="tab-db" class="hidden">
+    <div class="row" style="margin-bottom:10px"><button id="loadDb">🔄 Load / refresh from Supabase</button>
+      <span class="status" id="dbStatus"></span></div>
+    <div id="dbView"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const COLS = ["name", "current_role", "skills", "current_location", "target_countries",
+              "platform", "evidence_snippet", "source_url"];
+const LIST_COLS = ["skills", "target_countries"];
+const EDITABLE = ["name", "current_role", "skills", "current_location", "target_countries", "evidence_snippet"];
+const ICONS = { plan: "🧭", wave_start: "🌊", query: "🔍", dedup: "🧹", crawl: "🕷️", saved: "💾",
+  wave_end: "✅", info: "ℹ️", warning: "⚠️", error: "❌", done: "🏁" };
+
+const state = { running: false, stop: false, runRecords: [], dbRecords: null, waveStats: {}, logLines: [] };
+
+// ---------- storage (per-browser convenience only) ----------
+function store(k, v) { try { v === undefined ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (_) {} }
+function load(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
+$("pw").value = load("csa_pw") || "";
+$("pw").addEventListener("change", () => store("csa_pw", $("pw").value));
+
+// ---------- API ----------
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "Content-Type": "application/json", "X-App-Password": $("pw").value },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+  if (!res.ok) {
+    const detail = data && data.detail ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail))
+                                       : `HTTP ${res.status}`;
+    const err = new Error(detail); err.status = res.status; throw err;
+  }
+  return data;
+}
+
+// ---------- log & stats ----------
+function logEv(kind, msg, wave) {
+  const t = new Date().toLocaleTimeString([], { hour12: false });
+  state.logLines.push(`${t} ${ICONS[kind] || "•"} ${wave ? "[" + wave + "] " : ""}${msg}`);
+  const el = $("log");
+  el.textContent = state.logLines.slice(-300).join("\n");
+  el.scrollTop = el.scrollHeight;
+}
+const STAT_COLS = [["wave", "Wave"], ["found", "Found URLs"], ["duplicates", "Duplicates filtered"], ["fresh", "Fresh"],
+  ["crawled", "Scraped"], ["blocked", "Blocked/walled"], ["failed", "Failed"], ["records", "Extracted records"],
+  ["dropped", "Rejected (ungrounded)"]];
+function renderStats() {
+  const t = $("statsTable");
+  t.replaceChildren();
+  const head = t.createTHead().insertRow();
+  for (const [k, label] of STAT_COLS) { const th = document.createElement("th"); th.textContent = label;
+    if (k !== "wave") th.className = "num"; head.appendChild(th); }
+  const tb = t.createTBody();
+  for (const s of Object.values(state.waveStats)) {
+    const tr = tb.insertRow();
+    for (const [k] of STAT_COLS) { const td = tr.insertCell(); td.textContent = s[k] ?? 0; if (k !== "wave") td.className = "num"; }
+  }
+}
+
+// ---------- results tables ----------
+function asList(v) { return Array.isArray(v) ? v : (v == null || v === "" ? [] : [String(v)]); }
+
+function buildView(container, getRecords, key) {
+  container.replaceChildren();
+  const records = getRecords();
+  if (!records || !records.length) {
+    const p = document.createElement("p"); p.className = "status";
+    p.textContent = key === "run" ? "No records from this session yet." : "No candidates loaded.";
+    container.appendChild(p); return;
+  }
+  const uniq = (arr) => [...new Set(arr)].sort((a, b) => a.localeCompare(b));
+  const countries = uniq(records.flatMap((r) => asList(r.target_countries)));
+  const skills = uniq(records.flatMap((r) => asList(r.skills)));
+  const platforms = uniq(records.map((r) => r.platform).filter(Boolean));
+
+  const f = document.createElement("div"); f.className = "filters";
+  const mkSelect = (label, opts) => {
+    const w = document.createElement("div"); const l = document.createElement("label"); l.textContent = label;
+    const s = document.createElement("select"); s.appendChild(new Option("Any", ""));
+    for (const o of opts) s.appendChild(new Option(o, o));
+    w.append(l, s); f.appendChild(w); return s;
+  };
+  const selCountry = mkSelect("Target country", countries);
+  const selSkill = mkSelect("Skill", skills);
+  const roleWrap = document.createElement("div"); const roleL = document.createElement("label"); roleL.textContent = "Role contains";
+  const roleIn = document.createElement("input"); roleWrap.append(roleL, roleIn); f.appendChild(roleWrap);
+  const selPlatform = mkSelect("Platform", platforms);
+
+  const info = document.createElement("p"); info.className = "status";
+  const actions = document.createElement("div"); actions.className = "row"; actions.style.margin = "10px 0";
+  const btnCsv = document.createElement("button"); btnCsv.textContent = "⬇️ CSV";
+  const btnJson = document.createElement("button"); btnJson.textContent = "⬇️ JSON";
+  const btnSave = document.createElement("button"); btnSave.textContent = "💾 Save edits to Supabase"; btnSave.disabled = true;
+  const saveMsg = document.createElement("span"); saveMsg.className = "status";
+  actions.append(btnCsv, btnJson, btnSave, saveMsg);
+
+  const wrap = document.createElement("div"); wrap.className = "table-wrap";
+  const table = document.createElement("table"); wrap.appendChild(table);
+  container.append(f, info, wrap, actions);
+
+  const dirty = new Set();
+  let shown = [];
+
+  function filtered() {
+    const c = selCountry.value.toLowerCase(), s = selSkill.value.toLowerCase(),
+          role = roleIn.value.trim().toLowerCase(), p = selPlatform.value;
+    return getRecords().filter((r) =>
+      (!c || asList(r.target_countries).some((x) => x.toLowerCase() === c)) &&
+      (!s || asList(r.skills).some((x) => x.toLowerCase() === s)) &&
+      (!role || (r.current_role || "").toLowerCase().includes(role)) &&
+      (!p || r.platform === p));
+  }
+
+  function render() {
+    shown = filtered();
+    info.textContent = `${shown.length} of ${getRecords().length} records` +
+      (key === "db" ? " · click a cell to edit, lists are separated with ;" : "");
+    table.replaceChildren();
+    const head = table.createTHead().insertRow();
+    for (const col of COLS) { const th = document.createElement("th"); th.textContent = col; head.appendChild(th); }
+    const tb = table.createTBody();
+    for (const r of shown) {
+      const tr = tb.insertRow();
+      for (const col of COLS) {
+        const td = tr.insertCell();
+        if (col === "source_url") {
+          const a = document.createElement("a"); a.href = r.source_url; a.target = "_blank"; a.rel = "noopener noreferrer";
+          a.textContent = r.source_url; td.appendChild(a); continue;
+        }
+        td.textContent = LIST_COLS.includes(col) ? asList(r[col]).join("; ") : (r[col] ?? "");
+        if (col === "evidence_snippet") td.className = "evidence";
+        if (EDITABLE.includes(col)) {
+          td.contentEditable = "true";
+          td.addEventListener("blur", () => {
+            const v = td.textContent.trim();
+            const nv = LIST_COLS.includes(col) ? v.split(";").map((x) => x.trim()).filter(Boolean) : (v || null);
+            if (JSON.stringify(nv) !== JSON.stringify(LIST_COLS.includes(col) ? asList(r[col]) : (r[col] ?? null))) {
+              r[col] = nv; dirty.add(r.source_url); td.classList.add("dirty"); btnSave.disabled = false;
+            }
+          });
+        }
+      }
+    }
+  }
+  [selCountry, selSkill, selPlatform].forEach((el) => el.addEventListener("change", render));
+  roleIn.addEventListener("input", render);
+
+  btnCsv.onclick = () => {
+    const esc = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const cols = [...COLS, "discovered_at"];
+    const lines = [cols.join(",")].concat(shown.map((r) =>
+      cols.map((c) => esc(LIST_COLS.includes(c) ? asList(r[c]).join("; ") : r[c])).join(",")));
+    download("﻿" + lines.join("\n"), "text/csv", "csv");
+  };
+  btnJson.onclick = () => download(JSON.stringify(shown, null, 2), "application/json", "json");
+  btnSave.onclick = async () => {
+    const recs = getRecords().filter((r) => dirty.has(r.source_url)).map((r) => {
+      const o = {}; for (const c of COLS) o[c] = LIST_COLS.includes(c) ? asList(r[c]) : (r[c] ?? null); return o;
+    });
+    btnSave.disabled = true; saveMsg.textContent = "Saving…";
+    try { const res = await api("/api/candidates", { records: recs }); dirty.clear(); saveMsg.textContent = `Saved ${res.saved} rows.`; render(); }
+    catch (e) { saveMsg.textContent = "Save failed: " + e.message; btnSave.disabled = false; }
+  };
+  render();
+}
+
+function download(text, mime, ext) {
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+  a.download = `candidates_${stamp}.${ext}`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function renderRun() { buildView($("tab-run"), () => state.runRecords, "run"); }
+
+// ---------- tabs ----------
+document.querySelectorAll("[role=tab]").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("[role=tab]").forEach((x) => x.setAttribute("aria-selected", x === b));
+  $("tab-run").classList.toggle("hidden", b.dataset.tab !== "run");
+  $("tab-db").classList.toggle("hidden", b.dataset.tab !== "db");
+}));
+
+$("loadDb").onclick = async () => {
+  $("dbStatus").textContent = "Loading…";
+  try {
+    const res = await api("/api/candidates");
+    state.dbRecords = res.candidates;
+    $("dbStatus").textContent = `${res.candidates.length} candidates stored · ${res.scraped_urls} URLs in the dedup ledger`;
+    buildView($("dbView"), () => state.dbRecords, "db");
+  } catch (e) { $("dbStatus").textContent = e.message; }
+};
+
+$("testBtn").onclick = async () => {
+  store("csa_pw", $("pw").value);
+  const out = $("testOut"); out.className = "status"; out.textContent = "Checking…";
+  try {
+    const r = await api("/api/health");
+    const parts = [r.supabase ? "✅ " + r.supabase : "❌ Supabase: " + r.supabase_error,
+                   r.gemini ? "✅ " + r.gemini : "❌ Gemini: " + r.gemini_error];
+    out.textContent = parts.join("  ·  ");
+  } catch (e) { out.className = "status err"; out.textContent = e.message; }
+};
+
+// ---------- pipeline orchestration ----------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const num = (id) => Number($(id).value);
+
+function setRunning(on) {
+  state.running = on;
+  $("startBtn").disabled = on; $("stopBtn").disabled = !on;
+  $("intent").disabled = on;
+  $("runStatus").textContent = on ? "Agent running…" : "";
+}
+
+$("stopBtn").onclick = () => { state.stop = true; $("runStatus").textContent = "Stopping after the current batch…"; };
+
+$("startBtn").onclick = async () => {
+  const intent = $("intent").value.trim();
+  if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
+  store("csa_pw", $("pw").value);
+  Object.assign(state, { stop: false, runRecords: [], waveStats: {}, logLines: [] });
+  $("progress").classList.remove("hidden"); $("planBox").classList.add("hidden");
+  renderStats(); renderRun(); setRunning(true);
+  const totals = { crawled: 0, records: 0 };
+  try {
+    await runPipeline(intent, totals);
+    logEv("done", `${state.stop ? "Stopped by user." : "All waves complete."} ${totals.records} candidates saved from ${totals.crawled} scraped pages.`);
+  } catch (e) {
+    logEv("error", e.message);
+  } finally { setRunning(false); renderRun(); }
+};
+
+async function runPipeline(intent, totals) {
+  const settings = { numWaves: num("numWaves"), qpw: num("qpw"), maxRes: num("maxRes"), maxUrls: num("maxUrls"),
+    batch: num("batch"), timeout: num("timeout"), region: $("region").value, backend: $("backend").value,
+    robots: $("robots").checked, snippet: $("snippet").checked };
+
+  logEv("info", "Asking Gemini for a multi-wave search plan…");
+  const plan = await api("/api/plan", { intent, num_waves: settings.numWaves, queries_per_wave: settings.qpw });
+  const waves = plan.waves;
+  logEv("plan", `Plan ready: ${waves.length} waves, ${waves.reduce((n, w) => n + w.queries.length, 0)} queries.`);
+  $("planText").textContent = waves.map((w, i) => `Wave ${i + 1}: ${w.wave_name} · ${w.platform}\n  ` + w.queries.join("\n  ")).join("\n\n");
+  $("planBox").classList.remove("hidden");
+
+  const seenThisRun = new Set();
+  for (let wi = 0; wi < waves.length && !state.stop; wi++) {
+    const wave = waves[wi], name = wave.wave_name, tag = `W${wi + 1}:${wave.platform}`;
+    const stats = state.waveStats[name] = { wave: name, found: 0, duplicates: 0, fresh: 0, crawled: 0,
+      blocked: 0, failed: 0, records: 0, dropped: 0 };
+    renderStats();
+    logEv("wave_start", `Wave ${wi + 1}/${waves.length} — ${name}`, name);
+
+    // a. search, one query per request, with jitter
+    const hits = new Map();
+    for (let qi = 0; qi < wave.queries.length && !state.stop; qi++) {
+      const q = wave.queries[qi];
+      try {
+        const r = await api("/api/search", { query: q, max_results: settings.maxRes, region: settings.region, backend: settings.backend });
+        let added = 0;
+        for (const h of r.hits) if (!hits.has(h.url)) { hits.set(h.url, h); added++; }
+        if (r.error) logEv("warning", `Query skipped (${r.error.slice(0, 120)}): ${q}`, name);
+        else logEv("query", `${r.hits.length} results (+${added} new) ← ${q}`, name);
+      } catch (e) {
+        if (e.status === 401 || e.status === 503) throw e;
+        logEv("warning", `Query failed (${e.message.slice(0, 120)}): ${q}`, name);
+      }
+      stats.found = hits.size; renderStats();
+      if (qi < wave.queries.length - 1) await sleep(1000 + Math.random() * 1500);
+    }
+    if (state.stop) break;
+
+    // b. dedup
+    const candidatesUrls = [...hits.keys()].filter((u) => !seenThisRun.has(u));
+    let fresh = (await api("/api/dedup", { urls: candidatesUrls })).fresh;
+    hits.forEach((_, u) => seenThisRun.add(u));
+    stats.duplicates = hits.size - fresh.length;
+    fresh = fresh.slice(0, settings.maxUrls);
+    stats.fresh = fresh.length; renderStats();
+    logEv("dedup", `${hits.size} URLs found → ${stats.duplicates} already seen → ${fresh.length} fresh to crawl`, name);
+    if (!fresh.length) { logEv("wave_end", `Wave ${wi + 1} done (nothing new).`, name); continue; }
+
+    // c–g. per batch: record → fetch → extract → save
+    for (let b = 0; b * settings.batch < fresh.length && !state.stop; b++) {
+      const items = fresh.slice(b * settings.batch, (b + 1) * settings.batch).map((u) => hits.get(u));
+      try {
+        const r = await api("/api/process", { intent, items, wave_tag: tag, page_timeout_s: settings.timeout,
+          respect_robots: settings.robots, snippet_fallback: settings.snippet });
+        for (const k of ["crawled", "blocked", "failed", "records", "dropped"]) stats[k] += r.stats[k];
+        totals.crawled += r.stats.crawled; totals.records += r.stats.records;
+        logEv("crawl", `Batch ${b + 1}: ${r.stats.crawled} scraped, ${r.stats.blocked} blocked, ${r.stats.failed} failed`, name);
+        r.warnings.forEach((w) => logEv("warning", w, name));
+        logEv("saved", `Batch ${b + 1}: ${r.stats.sent_to_gemini} pages sent to Gemini → ${r.stats.records} candidates saved`, name);
+        state.runRecords.push(...r.records);
+        renderStats(); renderRun();
+      } catch (e) {
+        if (e.status === 401 || e.status === 503 || /API key/.test(e.message)) throw e;
+        stats.failed += items.length; renderStats();
+        logEv("warning", `Batch ${b + 1} failed: ${e.message.slice(0, 200)}`, name);
+      }
+    }
+    logEv("wave_end", `Wave ${wi + 1} done — ${stats.records} candidates.`, name);
+    if (wi < waves.length - 1 && !state.stop) await sleep(3000);
+  }
+}
+
+renderStats(); renderRun();
+</script>
+</body>
+</html>
