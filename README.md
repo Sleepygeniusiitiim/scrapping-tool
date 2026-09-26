@@ -59,6 +59,23 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
   Without the token only DuckDuckGo is used, and the run log says so.
   Choose "google (Scrape.do)" as the search backend to use Google only. Both use Scrape.do credits.
 
+## Page reading without AI tokens
+
+Fetching pages never uses AI — it is plain HTTP (`fetcher.py`). Reading them is set by
+"Page reading" under "Wave depth & crawler settings":
+
+- **rules — no AI tokens (default).** `rule_extractor.py` finds emails (including "name at gmail dot com"),
+  phone / WhatsApp numbers (Indian mobiles and Gulf/Europe numbers with country code), names (comment
+  authors, profile titles, "my name is …", "posted by …"), role and skills (from the search plan's own
+  keywords plus common machines/software), current location (Indian cities/states) and target countries.
+  A contact is kept only when the text around it reads like the person talking about themselves — a
+  recruiter's "send your CV to …" is skipped.
+- **hybrid.** Rules first; the AI reads a page only when rules find nobody but the page looks like it
+  has candidates.
+- **AI reads every page.** Best at unusual pages; uses the most tokens.
+
+In rules mode the only AI call is the search plan (once per round).
+
 ## AI providers and automatic fallback
 
 Supported: **OpenRouter**, **Gemini**, **Groq**, **Cerebras**, **Mistral**, **DeepSeek** and **Kimi (Moonshot)**.

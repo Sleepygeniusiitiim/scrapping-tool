@@ -217,6 +217,8 @@ class BatchIn(BaseModel):
     page_timeout_s: int = Field(15, ge=5, le=30)
     respect_robots: bool = True
     snippet_fallback: bool = True
+    extraction: str = Field("rules", pattern="^(rules|hybrid|ai)$")
+    plan_queries: List[str] = Field(default_factory=list, max_length=200)
 
 
 class SaveIn(BaseModel):
@@ -309,6 +311,8 @@ async def process(
             body.page_timeout_s,
             body.respect_robots,
             body.snippet_fallback,
+            body.extraction,
+            body.plan_queries,
         )
         result["warnings"] = gemini.notices + result.get("warnings", [])
         return result

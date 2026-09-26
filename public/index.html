@@ -128,6 +128,8 @@
           <select id="region"><option>in-en</option><option>wt-wt</option><option>us-en</option><option>uk-en</option><option>de-de</option></select></div>
         <div><label for="backend">Search backend</label>
           <select id="backend"><option value="auto">auto (DuckDuckGo + Google)</option><option value="google">google (Scrape.do)</option><option value="duckduckgo">duckduckgo only</option></select></div>
+        <div><label for="extraction" title="How pages are read. Rules find emails, phone numbers, names, roles and countries with pattern matching — no AI tokens. The AI is then only used once per round, to plan the searches.">Page reading</label>
+          <select id="extraction"><option value="rules">rules — no AI tokens</option><option value="hybrid">hybrid — AI only when rules find nobody</option><option value="ai">AI reads every page</option></select></div>
       </div>
       <div class="row" style="margin-top:10px">
         <label title="LinkedIn and Facebook disallow crawlers in robots.txt. Untick to read their public posts and comments — check that this fits your use and their terms."><input id="robots" type="checkbox" checked>Respect robots.txt (untick to read LinkedIn / Facebook posts)</label>
@@ -252,6 +254,8 @@ $("llmProvider").addEventListener("change", () => { store("csa_llm_provider", ll
 $("orKey").addEventListener("change", () => store("csa_key_" + llmProvider(), $("orKey").value.trim()));
 $("orModel").addEventListener("change", () => store("csa_model_" + llmProvider(), $("orModel").value.trim()));
 $("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("geminiKey").value.trim()));
+if (load("csa_extraction")) $("extraction").value = load("csa_extraction");
+$("extraction").addEventListener("change", () => store("csa_extraction", $("extraction").value));
 
 // ---------- API ----------
 async function api(path, body) {
@@ -531,7 +535,7 @@ async function startRun(nextRound) {
 async function runPipeline(intent, totals, rounds) {
   const settings = { numWaves: num("numWaves"), qpw: num("qpw"), maxRes: num("maxRes"), maxUrls: num("maxUrls"),
     batch: num("batch"), timeout: num("timeout"), region: $("region").value, backend: $("backend").value,
-    robots: $("robots").checked, snippet: $("snippet").checked };
+    robots: $("robots").checked, snippet: $("snippet").checked, extraction: $("extraction").value };
 
   logEv("info", "Asking Gemini for a multi-wave search plan…");
   const roundNo = rounds.round + 1;
@@ -593,7 +597,8 @@ async function runPipeline(intent, totals, rounds) {
       const items = fresh.slice(b * settings.batch, (b + 1) * settings.batch).map((u) => hits.get(u));
       try {
         const r = await api("/api/process", { intent, items, wave_tag: tag, page_timeout_s: settings.timeout,
-          respect_robots: settings.robots, snippet_fallback: settings.snippet });
+          respect_robots: settings.robots, snippet_fallback: settings.snippet,
+          extraction: settings.extraction, plan_queries: waves.flatMap((w) => w.queries) });
         for (const k of ["crawled", "blocked", "failed", "records", "dropped"]) stats[k] += r.stats[k];
         totals.crawled += r.stats.crawled; totals.records += r.stats.records;
         const why = Object.entries(r.block_reasons || {}).map(([k, n]) => `${n}× ${k}`).join(", ");
@@ -610,7 +615,7 @@ async function runPipeline(intent, totals, rounds) {
           logEv("error", r.quota_error + " Stopping — pages not yet read are kept and retried by the next run.", name);
           state.stop = true;
         }
-        logEv("saved", `Batch ${b + 1}: ${r.stats.sent_to_gemini} pages sent to Gemini → ${r.stats.records} candidates saved` +
+        logEv("saved", `Batch ${b + 1}: ${r.stats.pages_read ?? r.stats.sent_to_gemini} pages read (${r.stats.sent_to_gemini} by AI) → ${r.stats.records} candidates saved` +
           ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email)` +
           (r.stats.via_scrapedo ? ` · ${r.stats.via_scrapedo} pages via Scrape.do` : ""), name);
         addRunRecords(r.records);

@@ -21,6 +21,7 @@ import re
 from typing import Dict, List, Optional
 
 import supabase_db as db
+import rule_extractor
 from fetcher import PHONE_RE, fetch_batch, scrapedo_token
 from gemini_client import Gemini, GeminiError, GeminiQuotaError
 from schema import CandidateRecord, ComprehensiveSearchPlan, PageExtraction
@@ -241,18 +242,31 @@ def _assign_source_urls(url: str, people: List[dict]) -> List[dict]:
     return out
 
 
-async def _extract_page(gemini: Gemini, intent: str, url: str, content: str,
-                        snippet_only: bool) -> tuple[List[CandidateRecord], int]:
-    """Returns (valid records, number dropped as ungrounded/invalid)."""
+async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, snippet_only: bool,
+                        mode: str = "ai", keywords: Optional[List[str]] = None
+                        ) -> tuple[List[CandidateRecord], int, bool]:
+    """Returns (valid records, number dropped as ungrounded/invalid, whether the AI was called).
+
+    mode: "rules" — regex/keyword extraction only, no AI tokens;
+          "hybrid" — rules first, the AI only for pages where rules find nobody but the page
+                     looks like it has candidates (contacts or candidate phrases);
+          "ai" — the AI reads every page.
+    """
     platform = platform_from_url(url)
-    result = await gemini.generate_structured(
-        _extract_prompt(intent, url, platform, content, snippet_only),
-        PageExtraction, system_instruction=EXTRACT_SYSTEM, temperature=0.1,
-        max_retries=3,
-    )
+    found: List[dict] = []
+    used_ai = False
+    if mode in ("rules", "hybrid"):
+        found = rule_extractor.extract_people(content, url, keywords or [], snippet_only)
+    if mode == "ai" or (mode == "hybrid" and not found and _CANDIDATE_SIGNAL.search(content)):
+        result = await gemini.generate_structured(
+            _extract_prompt(intent, url, platform, content, snippet_only),
+            PageExtraction, system_instruction=EXTRACT_SYSTEM, temperature=0.1,
+            max_retries=3,
+        )
+        found = [c.model_dump() for c in result.candidates]
+        used_ai = True
     people, dropped = [], 0
-    for c in result.candidates:
-        d = c.model_dump()
+    for d in found:
         if not _is_grounded(d.get("evidence_snippet"), content):
             dropped += 1
             continue
@@ -270,7 +284,7 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str,
             records.append(CandidateRecord(**row, platform=platform))
         except Exception:
             dropped += 1
-    return records, dropped
+    return records, dropped, used_ai
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +344,8 @@ def dedup_urls(urls: List[str]) -> List[str]:
 
 
 async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag: str,
-                        page_timeout_s: int, respect_robots: bool, snippet_fallback: bool) -> dict:
+                        page_timeout_s: int, respect_robots: bool, snippet_fallback: bool,
+                        extraction: str = "rules", plan_queries: Optional[List[str]] = None) -> dict:
     """items: [{url, title, snippet}] — record, fetch, extract, save."""
     urls = [i["url"] for i in items]
     hits: Dict[str, dict] = {i["url"]: i for i in items}
@@ -352,9 +367,12 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
             if len(h.get("snippet") or "") > 40 and _CANDIDATE_SIGNAL.search(text):
                 jobs.append((o.url, text, True))
 
+    keywords = rule_extractor.keywords_from(intent, plan_queries or [])
     results = await asyncio.gather(
-        *(_extract_page(gemini, intent, u, c, snip) for (u, c, snip) in jobs), return_exceptions=True
+        *(_extract_page(gemini, intent, u, c, snip, extraction, keywords) for (u, c, snip) in jobs),
+        return_exceptions=True,
     )
+    ai_pages = 0
     records: List[CandidateRecord] = []
     warnings: List[str] = []
     dropped = 0
@@ -371,8 +389,9 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
             warnings.append(f"Extraction failed for {u}: {str(r)[:160]}")
             continue
         extracted.add(u)
-        recs, d = r
+        recs, d, used_ai = r
         dropped += d
+        ai_pages += used_ai
         records.extend(recs)
 
     if records:
@@ -400,7 +419,7 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
             reasons[key] = reasons.get(key, 0) + 1
 
     return {
-        "stats": {**stats, "records": len(records), "dropped": dropped, "sent_to_gemini": len(jobs),
+        "stats": {**stats, "records": len(records), "dropped": dropped, "sent_to_gemini": ai_pages, "pages_read": len(jobs),
                   "with_phone": sum(1 for r in records if r.phone),
                   "with_email": sum(1 for r in records if r.email),
                   "via_scrapedo": sum(1 for o in outcomes if o.via == "scrape.do" and o.ok)},
