@@ -1,5 +1,5 @@
 """
-OpenAI-compatible AI client (OpenRouter, Cerebras, Groq) with the Gemini client's interface.
+OpenAI-compatible AI client (OpenRouter, Cerebras, Groq, Mistral, DeepSeek, Kimi) with the Gemini client's interface.
 
 * One OpenAI-compatible endpoint for many models; OpenRouter itself falls
   back through `models` when the first choice is down or rate-limited.
@@ -43,7 +43,18 @@ PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "label": "Groq",
              "model": "openai/gpt-oss-120b", "fallbacks": ["llama-3.3-70b-versatile"], "env": "GROQ_API_KEY",
              "credits": "console.groq.com/settings/billing"},
+    "mistral": {"url": "https://api.mistral.ai/v1/chat/completions", "label": "Mistral",
+                "model": "mistral-small-latest", "fallbacks": ["mistral-medium-latest"], "env": "MISTRAL_API_KEY",
+                "credits": "console.mistral.ai"},
+    "deepseek": {"url": "https://api.deepseek.com/chat/completions", "label": "DeepSeek",
+                 "model": "deepseek-chat", "fallbacks": [], "env": "DEEPSEEK_API_KEY",
+                 "credits": "platform.deepseek.com/top_up"},
+    "kimi": {"url": "https://api.moonshot.ai/v1/chat/completions", "label": "Kimi (Moonshot)",
+             "model": "kimi-k2-turbo-preview", "fallbacks": ["kimi-latest", "moonshot-v1-32k"],
+             "env": "MOONSHOT_API_KEY", "credits": "platform.moonshot.ai/console"},
 }
+# Providers whose API takes the older `max_tokens` instead of `max_completion_tokens`.
+_MAX_TOKENS_PROVIDERS = {"mistral", "deepseek", "kimi"}
 APP_URL = "https://scrapping-tool-theta.vercel.app"
 APP_TITLE = "Candidate Sourcing Agent"
 
@@ -108,6 +119,8 @@ class OpenRouter:
             body["reasoning"] = {"effort": effort, "exclude": True}
             if self.fallbacks:
                 body["models"] = [self.model, *self.fallbacks]   # OpenRouter routes the fallbacks itself
+        elif self.provider in _MAX_TOKENS_PROVIDERS:
+            body["max_tokens"] = 8000
         else:
             body["max_completion_tokens"] = 8000
             if "gpt-oss" in self.model:
@@ -181,7 +194,7 @@ class OpenRouter:
                         attempt -= 1
                         continue
                     if code in (404, 429, 503) and self.fallbacks and self.provider != "openrouter":
-                        # Cerebras / Groq: model busy, rate-limited or unknown → next model.
+                        # Direct providers: model busy, rate-limited or unknown → next model.
                         log.warning("%s model %s returned %s; using %s", self.label, self.model, code, self.fallbacks[0])
                         self.model = self.fallbacks.pop(0)
                         attempt -= 1

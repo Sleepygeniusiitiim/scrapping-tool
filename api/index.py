@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import os
 import sys
 from pathlib import Path
@@ -36,6 +37,7 @@ import pipeline  # noqa: E402
 import supabase_db as db  # noqa: E402
 from gemini_client import DEFAULT_MODEL, Gemini, GeminiError, GeminiQuotaError  # noqa: E402
 from openrouter_client import PROVIDERS, OpenRouter  # noqa: E402
+from ai_chain import FALLBACK_ORDER, AIChain  # noqa: E402
 import outreach  # noqa: E402
 from schema import CandidateRecord  # noqa: E402
 
@@ -105,6 +107,14 @@ def require_password(x_app_password: Optional[str] = Header(default=None)) -> No
         raise HTTPException(401, "Wrong password. Use your Vercel APP_PASSWORD.")
 
 
+def _json_header(value: Optional[str]) -> dict:
+    try:
+        data = json.loads(value or "{}")
+    except ValueError:
+        return {}
+    return {str(k).lower(): str(v).strip() for k, v in data.items() if v} if isinstance(data, dict) else {}
+
+
 def _gemini(
     x_gemini_key: Optional[str] = Header(default=None),
     x_gemini_model: Optional[str] = Header(default=None),
@@ -114,34 +124,47 @@ def _gemini(
     x_llm_provider: Optional[str] = Header(default=None),
     x_llm_key: Optional[str] = Header(default=None),
     x_llm_model: Optional[str] = Header(default=None),
+    x_llm_keys: Optional[str] = Header(default=None),
+    x_llm_models: Optional[str] = Header(default=None),
 ):
-    """The AI for this request: the provider chosen on the page (OpenRouter / Cerebras / Groq) with the
-    key from the page or its env var; otherwise the first provider with an env key; otherwise Gemini."""
+    """The AI for this request: a fallback chain starting with the provider chosen on the page, then
+    every other provider that has a key (on the page or in Vercel env vars), free tiers first. When one
+    runs out of credits or limits, the next one takes over."""
     provider = (x_llm_provider or os.getenv("LLM_PROVIDER") or "").strip().lower()
-    key, model = (x_llm_key or "").strip(), (x_llm_model or "").strip()
-    if not key and x_openrouter_key and provider in ("", "openrouter"):      # older pages
-        provider, key, model = "openrouter", x_openrouter_key.strip(), (x_openrouter_model or "").strip()
-    if provider in PROVIDERS and not key:
-        key = os.getenv(PROVIDERS[provider]["env"], "").strip()
-    if not key and provider in ("", "auto"):
-        provider = next((p for p, c in PROVIDERS.items() if os.getenv(c["env"], "").strip()), "")
-        key = os.getenv(PROVIDERS[provider]["env"], "").strip() if provider else ""
-    if key and provider in PROVIDERS:
-        model = model or os.getenv(provider.upper() + "_MODEL", "").strip()
-        try:
-            return OpenRouter(key, model=model, provider=provider)
-        except GeminiError as exc:
-            raise HTTPException(500, str(exc))
-    api_key = (x_gemini_key or os.getenv("GEMINI_API_KEY") or "").strip()
-    model = (x_gemini_model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL).strip()
-    mode = (x_gemini_mode or os.getenv("GEMINI_MODE") or "auto").strip()
-    if not api_key:
+    keys, models = _json_header(x_llm_keys), _json_header(x_llm_models)
+    if x_openrouter_key and provider in ("", "openrouter"):                  # older pages
+        keys.setdefault("openrouter", x_openrouter_key.strip())
+        if x_openrouter_model:
+            models.setdefault("openrouter", x_openrouter_model.strip())
+    if provider in PROVIDERS:
+        if (x_llm_key or "").strip():
+            keys[provider] = x_llm_key.strip()
+        if (x_llm_model or "").strip():
+            models[provider] = x_llm_model.strip()
+    if (x_gemini_key or "").strip():
+        keys["gemini"] = x_gemini_key.strip()
+    if x_gemini_model:
+        models.setdefault("gemini", x_gemini_model.strip())
+
+    def key_for(p: str) -> str:
+        env = "GEMINI_API_KEY" if p == "gemini" else PROVIDERS[p]["env"]
+        return keys.get(p) or os.getenv(env, "").strip()
+
+    def factory(p: str, key: str):
+        model = models.get(p) or os.getenv(p.upper() + "_MODEL", "").strip()
+        if p == "gemini":
+            mode = (x_gemini_mode or os.getenv("GEMINI_MODE") or "auto").strip()
+            return lambda: Gemini(key, model=model or DEFAULT_MODEL, mode=mode)
+        return lambda: OpenRouter(key, model=model, provider=p)
+
+    order = ([provider] if provider in FALLBACK_ORDER else []) + [p for p in FALLBACK_ORDER if p != provider]
+    entries = [("Gemini" if p == "gemini" else PROVIDERS[p]["label"], factory(p, k))
+               for p in order if (k := key_for(p))]
+    if not entries:
         raise HTTPException(500, "No AI key: choose a provider and enter its key on the page, or set "
-                                 "OPENROUTER_API_KEY / CEREBRAS_API_KEY / GROQ_API_KEY (or GEMINI_API_KEY) in Vercel.")
-    try:
-        return Gemini(api_key, model=model, mode=mode)
-    except GeminiError as exc:
-        raise HTTPException(500, str(exc))
+                                 "OPENROUTER_API_KEY / GROQ_API_KEY / CEREBRAS_API_KEY / MISTRAL_API_KEY / "
+                                 "DEEPSEEK_API_KEY / MOONSHOT_API_KEY / GEMINI_API_KEY in Vercel.")
+    return AIChain(entries)
 
 
 def _db(x_database_url: Optional[str] = Header(default=None)) -> None:
@@ -213,6 +236,8 @@ async def health(
     x_llm_provider: Optional[str] = Header(default=None),
     x_llm_key: Optional[str] = Header(default=None),
     x_llm_model: Optional[str] = Header(default=None),
+    x_llm_keys: Optional[str] = Header(default=None),
+    x_llm_models: Optional[str] = Header(default=None),
     x_database_url: Optional[str] = Header(default=None),
 ):
     out = {}
@@ -229,7 +254,8 @@ async def health(
     try:
         gem = _gemini(x_gemini_key=x_gemini_key, x_gemini_model=x_gemini_model, x_gemini_mode=x_gemini_mode,
                       x_openrouter_key=x_openrouter_key, x_openrouter_model=x_openrouter_model,
-                      x_llm_provider=x_llm_provider, x_llm_key=x_llm_key, x_llm_model=x_llm_model)
+                      x_llm_provider=x_llm_provider, x_llm_key=x_llm_key, x_llm_model=x_llm_model,
+                      x_llm_keys=x_llm_keys, x_llm_models=x_llm_models)
         out["gemini"] = await gem.ping()
     except Exception as exc:
         out["gemini_error"] = str(getattr(exc, "detail", exc))
@@ -248,6 +274,7 @@ async def plan(
         raise HTTPException(502, f"Planning failed: {exc}")
     if not result["waves"]:
         raise HTTPException(422, "Gemini returned an empty plan — try rephrasing the intent.")
+    result["warnings"] = gemini.notices
     return result
 
 
@@ -274,7 +301,7 @@ async def process(
 ):
     _db(x_database_url)
     try:
-        return await pipeline.process_batch(
+        result = await pipeline.process_batch(
             gemini,
             body.intent,
             [i.model_dump() for i in body.items],
@@ -283,6 +310,8 @@ async def process(
             body.respect_robots,
             body.snippet_fallback,
         )
+        result["warnings"] = gemini.notices + result.get("warnings", [])
+        return result
     except db.SupabaseError as exc:
         raise HTTPException(502, str(exc))
     except GeminiError as exc:

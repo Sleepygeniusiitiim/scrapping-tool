@@ -59,17 +59,22 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
   Without the token only DuckDuckGo is used, and the run log says so.
   Choose "google (Scrape.do)" as the search backend to use Google only. Both use Scrape.do credits.
 
-## AI provider: OpenRouter, Cerebras or Groq (or Gemini)
+## AI providers and automatic fallback
 
-Enter an OpenRouter key (`sk-or-…`) on the home page, or set `OPENROUTER_API_KEY` in Vercel.
-The default model is `google/gemini-3.8-flash`; OpenRouter falls back to `openai/gpt-6-luna` and
-`deepseek/deepseek-v4.1-flash` if it is unavailable. Choose another model in the "AI model" box
-(any OpenRouter model id). Without an OpenRouter key the app uses `GEMINI_API_KEY` as before.
-Out of credits (402) or daily limits stop the run cleanly; unread pages are retried next run.
+Supported: **OpenRouter**, **Gemini**, **Groq**, **Cerebras**, **Mistral**, **DeepSeek** and **Kimi (Moonshot)**.
+Pick a provider on the home page and paste its key; repeat for as many providers as you like (each key
+is remembered in the browser). Or set the keys in Vercel: `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
+`GROQ_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`
+(optional model overrides: `<PROVIDER>_MODEL`, e.g. `KIMI_MODEL`).
 
-**Cerebras** (`gpt-oss-120b`, falls back to `qwen-3.8-27b`) and **Groq** (`openai/gpt-oss-120b`, falls back
-to `llama-3.3-70b-versatile`) are very fast with generous free tiers. Pick the provider on the home page and
-paste its key, or set `CEREBRAS_API_KEY` / `GROQ_API_KEY` in Vercel.
+The chosen provider is used first. When it runs out of credits, hits a daily/rate limit or rejects its
+key, the run switches to the next provider that has a key and logs it — free tiers first:
+Gemini → Groq → Cerebras → Mistral → OpenRouter → DeepSeek → Kimi. Only when every provider is exhausted
+does the run stop; unread pages are retried next run. "Test connections" checks every provider in the chain.
+
+OpenRouter is pay-as-you-go (one balance for many models); its own fallback only switches models
+inside your OpenRouter balance. Gemini, Groq, Cerebras and Mistral have free tiers with daily limits;
+DeepSeek and Kimi are paid but cheap.
 
 ## Assisted outreach (Outreach tab)
 

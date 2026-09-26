@@ -81,6 +81,9 @@
           <option value="openrouter">OpenRouter</option>
           <option value="cerebras">Cerebras (fast, generous free tier)</option>
           <option value="groq">Groq (fast, free tier)</option>
+          <option value="mistral">Mistral (free tier)</option>
+          <option value="deepseek">DeepSeek (cheap)</option>
+          <option value="kimi">Kimi / Moonshot (cheap)</option>
         </select>
       </div>
       <div style="flex:1.4;min-width:240px">
@@ -95,12 +98,16 @@
       <button id="testBtn" style="align-self:flex-end">Test connections</button>
     </div>
     <details style="margin-top:8px">
-      <summary>Use a Gemini key instead (only when the chosen provider has no key)</summary>
+      <summary>Gemini key (free tier — also used as a fallback)</summary>
       <div style="margin-top:8px;max-width:520px">
         <label for="geminiKey">Gemini API Key (AIza… or AQ.…)</label>
         <input id="geminiKey" type="password" autocomplete="off" placeholder="Uses server GEMINI_API_KEY unless entered here">
       </div>
     </details>
+    <p style="color:var(--muted);font-size:13px;margin:10px 0 0">Automatic fallback: enter keys for as many providers as you like (pick each one in
+      “AI provider” and paste its key — every key is remembered). The chosen provider is used first; when it
+      runs out of credits or hits its limit, the run switches to the next provider with a key
+      (Gemini → Groq → Cerebras → Mistral → OpenRouter → DeepSeek → Kimi).</p>
     <p class="status" id="testOut"></p>
   </section>
 
@@ -212,7 +219,21 @@ const LLM = {
     ["gpt-oss-120b", "default"], ["qwen-3.8-27b", "alternative"]] },
   groq: { key: "Groq API key (gsk_…)", env: "GROQ_API_KEY", models: [
     ["openai/gpt-oss-120b", "default"], ["llama-3.3-70b-versatile", "alternative"], ["openai/gpt-oss-20b", "fastest"]] },
+  mistral: { key: "Mistral API key", env: "MISTRAL_API_KEY", models: [
+    ["mistral-small-latest", "default"], ["mistral-medium-latest", "better"]] },
+  deepseek: { key: "DeepSeek API key (sk-…)", env: "DEEPSEEK_API_KEY", models: [["deepseek-chat", "default"]] },
+  kimi: { key: "Kimi / Moonshot API key (sk-…)", env: "MOONSHOT_API_KEY", models: [
+    ["kimi-k2-turbo-preview", "default"], ["kimi-latest", "alternative"]] },
 };
+// Every provider key/model saved on this page, sent so the server can fall back between them.
+function savedLLM(kind) {
+  const out = {};
+  for (const p of Object.keys(LLM)) {
+    const v = load(`csa_${kind}_${p}`) || (p === "openrouter" ? load(kind === "key" ? "csa_or_key" : "csa_or_model") || "" : "");
+    if (v) out[p] = v;
+  }
+  return JSON.stringify(out);
+}
 function llmProvider() { return $("llmProvider").value; }
 function showProvider() {
   const p = llmProvider(), cfg = LLM[p];
@@ -245,6 +266,8 @@ async function api(path, body) {
   headers["X-LLM-Provider"] = llmProvider();
   if (ok) headers["X-LLM-Key"] = ok;
   if (om) headers["X-LLM-Model"] = om;
+  headers["X-LLM-Keys"] = savedLLM("key");
+  headers["X-LLM-Models"] = savedLLM("model");
   const gk = $("geminiKey").value.trim();
   if (gk) headers["X-Gemini-Key"] = gk;
   const res = await fetch(url, {
@@ -516,6 +539,7 @@ async function runPipeline(intent, totals, rounds) {
   const plan = await api("/api/plan", { intent, num_waves: settings.numWaves, queries_per_wave: settings.qpw,
     round: roundNo, exclude_queries: rounds.queries, respect_robots: settings.robots });
   const waves = plan.waves;
+  (plan.warnings || []).forEach((w) => logEv("warning", w));
   saveRounds(intent, { round: roundNo, queries: rounds.queries.concat(waves.flatMap((w) => w.queries)) });
   refreshNextBtn();
   logEv("plan", `Plan ready: ${waves.length} waves, ${waves.reduce((n, w) => n + w.queries.length, 0)} queries.`);
