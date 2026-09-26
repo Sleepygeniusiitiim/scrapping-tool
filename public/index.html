@@ -120,7 +120,7 @@
         <div><label for="region">Search region</label>
           <select id="region"><option>in-en</option><option>wt-wt</option><option>us-en</option><option>uk-en</option><option>de-de</option></select></div>
         <div><label for="backend">Search backend</label>
-          <select id="backend"><option value="auto">auto (DuckDuckGo + Google top-up)</option><option value="google">google (Scrape.do)</option><option value="duckduckgo">duckduckgo only</option></select></div>
+          <select id="backend"><option value="auto">auto (DuckDuckGo + Google)</option><option value="google">google (Scrape.do)</option><option value="duckduckgo">duckduckgo only</option></select></div>
       </div>
       <div class="row" style="margin-top:10px">
         <label title="LinkedIn and Facebook disallow crawlers in robots.txt. Untick to read their public posts and comments — check that this fits your use and their terms."><input id="robots" type="checkbox" checked>Respect robots.txt (untick to read LinkedIn / Facebook posts)</label>
@@ -492,7 +492,7 @@ async function startRun(nextRound) {
   const intent = $("intent").value.trim();
   if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
   store("csa_pw", $("pw").value);
-  Object.assign(state, { stop: false, robotsHinted: false, runRecords: [], waveStats: {}, logLines: [] });
+  Object.assign(state, { stop: false, robotsHinted: false, googleHinted: false, runRecords: [], waveStats: {}, logLines: [] });
   $("progress").classList.remove("hidden"); $("planBox").classList.add("hidden");
   renderStats(); renderRun(); setRunning(true);
   const totals = { crawled: 0, records: 0 };
@@ -514,7 +514,7 @@ async function runPipeline(intent, totals, rounds) {
   const roundNo = rounds.round + 1;
   if (roundNo > 1) logEv("info", `Round ${roundNo}: planning new searches that avoid ${rounds.queries.length} queries already used.`);
   const plan = await api("/api/plan", { intent, num_waves: settings.numWaves, queries_per_wave: settings.qpw,
-    round: roundNo, exclude_queries: rounds.queries });
+    round: roundNo, exclude_queries: rounds.queries, respect_robots: settings.robots });
   const waves = plan.waves;
   saveRounds(intent, { round: roundNo, queries: rounds.queries.concat(waves.flatMap((w) => w.queries)) });
   refreshNextBtn();
@@ -538,6 +538,11 @@ async function runPipeline(intent, totals, rounds) {
         const r = await api("/api/search", { query: q, max_results: settings.maxRes, region: settings.region, backend: settings.backend });
         let added = 0;
         for (const h of r.hits) if (!hits.has(h.url)) { hits.set(h.url, h); added++; }
+        if (r.google_missing && !state.googleHinted) {
+          state.googleHinted = true;
+          logEv("warning", "Google search is not configured (SCRAPEDO_TOKEN not set), so only DuckDuckGo is used and " +
+            "many Reddit / Quora / forum pages are missed. Add SCRAPEDO_TOKEN in Vercel → Environment Variables.", name);
+        }
         if (r.error) logEv("warning", `Query skipped (${r.error.slice(0, 120)}): ${q}`, name);
         else logEv("query", `${r.hits.length} results (+${added} new) [${(r.sources || []).join("+")}] ← ${q}`, name);
       } catch (e) {
@@ -572,8 +577,8 @@ async function runPipeline(intent, totals, rounds) {
           (why ? ` — ${why}` : ""), name);
         if ((r.block_reasons || {})["disallowed by robots.txt"] && !state.robotsHinted) {
           state.robotsHinted = true;
-          logEv("warning", "These pages were skipped because “Respect robots.txt” is ticked (LinkedIn and Facebook " +
-            "disallow crawlers). Untick it under “Wave depth & crawler settings” to read their public posts and " +
+          logEv("warning", "These pages were skipped because “Respect robots.txt” is ticked (LinkedIn, Facebook, " +
+            "Reddit and Quora disallow crawlers). Untick it under “Wave depth & crawler settings” to read their public posts and " +
             "comments. Skipped pages are retried by later runs.", name);
         }
         r.warnings.forEach((w) => logEv("warning", w, name));

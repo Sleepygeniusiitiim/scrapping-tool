@@ -48,12 +48,15 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
 - **Comment sections.** LinkedIn posts, Quora answers and many forums embed the post and its comments
   (with authors) as schema.org data; the app reads that first. Logged-out LinkedIn shows about the
   first 10 comments of a post.
-- **LinkedIn / Facebook.** Their robots.txt disallows crawlers. Untick "Respect robots.txt" to read
+- **LinkedIn / Facebook / Reddit / Quora.** Their robots.txt disallows crawlers. While "Respect
+  robots.txt" is ticked, the search plan starts with openly crawlable sources (job portals, forums,
+  regional pages) and only the search snippets of these sites are read. Untick it to read their
   public posts — check that this fits your use and their terms. These hosts are fetched one page at a
   time with a pause, because parallel requests get a login wall.
 - **Scrape.do (optional).** Add `SCRAPEDO_TOKEN` in Vercel → Environment Variables. Pages that come
   back blocked are fetched again through Scrape.do (residential proxies for LinkedIn/Facebook), and
-  when DuckDuckGo returns fewer than 3 results, Google results are added via Scrape.do's SERP API.
+  in "auto" mode every query also runs on Google via Scrape.do's SERP API (merged with DuckDuckGo).
+  Without the token only DuckDuckGo is used, and the run log says so.
   Choose "google (Scrape.do)" as the search backend to use Google only. Both use Scrape.do credits.
 
 ## AI provider: OpenRouter, Cerebras or Groq (or Gemini)

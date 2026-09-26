@@ -61,25 +61,35 @@ Query rules:
 - Vary phrasing and synonyms across queries so they return different pages.
 """
 
+# Order matters: round 1 takes the first `num_waves` entries, so source types are interleaved
+# (a 3-wave run covers LinkedIn, Reddit/Quora and portals/forums, not just LinkedIn + Facebook).
 WAVE_BLUEPRINT = [
     ("LinkedIn Hiring Posts & Comments", "linkedin_posts",
      "site:linkedin.com/posts overseas hiring posts for this role — especially Indian overseas-recruitment "
      "agency posts (\"urgent requirement\", \"interview in Mumbai/Delhi/Chennai\", \"free recruitment\", "
      "\"Gulf jobs\", Saudi/Qatar/UAE/Kuwait/Oman project hiring), whose comments hold Indian candidates' "
      "contact details. Short queries: site: + role + one destination or agency phrase"),
-    ("Facebook & Job Groups", "facebook_groups",
-     "site:facebook.com public posts in Gulf/Europe job groups for this role where candidates reply with "
-     "WhatsApp numbers or emails"),
-    ("LinkedIn Profiles", "linkedin_profiles",
-     "site:linkedin.com/in individual profiles for this role that are open to work / relocation abroad"),
+    ("Reddit & Quora Discussions", "reddit_quora",
+     "site:reddit.com and site:quora.com threads where people discuss their own plans to work abroad in this trade"),
     ("Job Portals, CVs & Forums", "portals_forums",
      "job-seeker pages, CV/resume listings and trade forums (naukri.com, indeed.com, shine.com, apna.co, "
      "gulftalent.com, bayt.com, practicalmachinist.com) where candidates post their own profile"),
-    ("Reddit & Quora Discussions", "reddit_quora",
-     "site:reddit.com and site:quora.com threads where people discuss their own plans to work abroad in this trade"),
+    ("Facebook & Job Groups", "facebook_groups",
+     "site:facebook.com public posts in Gulf/Europe job groups for this role where candidates reply with "
+     "WhatsApp numbers or emails"),
+    ("Expat & Trade Forums", "forums",
+     "public expat and trade forums, Q&A boards and blog comment sections (expat.com forum, team-bhp.com, "
+     "Gulf job blogs, trade discussion boards) where people post their own experience and contact details. "
+     "No site: on LinkedIn, Facebook, Reddit or Quora in this wave"),
+    ("LinkedIn Profiles", "linkedin_profiles",
+     "site:linkedin.com/in individual profiles for this role that are open to work / relocation abroad"),
     ("Long-tail & Regional Sources", "long_tail",
      "Indian city / state specific pages, ITI and polytechnic alumni pages, Telegram/WhatsApp group directories"),
 ]
+
+# Waves whose sites disallow crawlers in robots.txt. With "Respect robots.txt" on, only their search
+# snippets can be read, so the plan puts the openly crawlable waves first.
+ROBOTS_CLOSED_PLATFORMS = {"linkedin_posts", "linkedin_profiles", "facebook_groups", "reddit_quora"}
 
 EXTRACT_SYSTEM = """You extract candidate leads for a recruiter from ONE web page.
 The page may start with a structured "Post and comments" block (one line per author) and a
@@ -108,10 +118,13 @@ Return every INDIVIDUAL PERSON on the page who matches the sourcing intent:
 
 
 def _plan_prompt(intent: str, num_waves: int, queries_per_wave: int, round_no: int = 1,
-                 exclude_queries: Optional[List[str]] = None) -> str:
+                 exclude_queries: Optional[List[str]] = None, respect_robots: bool = False) -> str:
+    order = WAVE_BLUEPRINT
+    if respect_robots:
+        order = sorted(WAVE_BLUEPRINT, key=lambda w: w[1] in ROBOTS_CLOSED_PLATFORMS)
     # Each new round starts further along the blueprint, so rounds cover different source types.
-    offset = ((round_no - 1) * num_waves) % len(WAVE_BLUEPRINT)
-    blueprint = (WAVE_BLUEPRINT[offset:] + WAVE_BLUEPRINT[:offset])[:num_waves]
+    offset = ((round_no - 1) * num_waves) % len(order)
+    blueprint = (order[offset:] + order[:offset])[:num_waves]
     lines = [f"Sourcing intent: {intent.strip()}", "",
              f"Produce exactly {num_waves} waves, in this order, each with exactly {queries_per_wave} queries:"]
     for i, (name, platform, hint) in enumerate(blueprint, start=1):
@@ -264,9 +277,11 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str,
 # Steps
 # ---------------------------------------------------------------------------
 async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_wave: int,
-                      round_no: int = 1, exclude_queries: Optional[List[str]] = None) -> dict:
+                      round_no: int = 1, exclude_queries: Optional[List[str]] = None,
+                      respect_robots: bool = False) -> dict:
     plan = await gemini.generate_structured(
-        _plan_prompt(intent, num_waves, queries_per_wave, round_no, exclude_queries), ComprehensiveSearchPlan,
+        _plan_prompt(intent, num_waves, queries_per_wave, round_no, exclude_queries, respect_robots),
+        ComprehensiveSearchPlan,
         system_instruction=PLAN_SYSTEM, temperature=0.6 if round_no == 1 else 0.9, thinking_budget=512,
         max_retries=3,
     )
@@ -279,7 +294,7 @@ async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_w
 
 
 def run_query(query: str, max_results: int, region: str, backend: str) -> dict:
-    """backend: auto (DuckDuckGo, topped up from Google when thin) | duckduckgo | google."""
+    """backend: auto (DuckDuckGo + Google when SCRAPEDO_TOKEN is set) | duckduckgo | google."""
     token = scrapedo_token()
     sources, errors, rate_limited = [], [], False
     hits: Dict[str, dict] = {}
@@ -296,8 +311,8 @@ def run_query(query: str, max_results: int, region: str, backend: str) -> dict:
     if backend != "google" or not token:
         ddg_backend = "duckduckgo" if backend == "duckduckgo" else "auto"
         add(search_query(query, max_results=max_results, region=region, backend=ddg_backend), "ddg")
-    # Datacenter IPs get thin DuckDuckGo results; Google via Scrape.do fills the gap.
-    if token and (backend == "google" or (backend == "auto" and len(hits) < 3)):
+    # Google finds pages DuckDuckGo misses (Reddit, Quora, forums), so auto always adds it when possible.
+    if token and backend in ("auto", "google"):
         add(google_search_scrapedo(query, token, max_results=max_results, region=region), "google")
 
     return {
@@ -305,6 +320,7 @@ def run_query(query: str, max_results: int, region: str, backend: str) -> dict:
         "error": "; ".join(errors) if errors and not hits else None,
         "rate_limited": rate_limited,
         "sources": sources,
+        "google_missing": backend in ("auto", "google") and not token,
         "hits": list(hits.values())[:max_results * 2],
     }
 
