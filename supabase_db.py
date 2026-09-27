@@ -105,6 +105,8 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP WITH TIME Z
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profile_url TEXT;
 -- When the lead was active: date of the post / comment it came from.
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS activity_date DATE;
+-- The person says they are interested / keen / looking for work.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS shows_interest BOOLEAN;
 """
 
 
@@ -387,6 +389,8 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
             r.get("platform"),
             r.get("profile_url"),
             r.get("activity_date"),
+            r.get("shows_interest"),
+            r.get("contact_source"),
         )
         for r in by_url.values()
     ]
@@ -400,7 +404,8 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                         f"""
                         INSERT INTO {CANDIDATES_TABLE} (
                             name, "current_role", skills, current_location,
-                            target_countries, evidence_snippet, email, phone, source_url, platform, profile_url, activity_date
+                            target_countries, evidence_snippet, email, phone, source_url, platform, profile_url, activity_date,
+                            shows_interest, contact_source
                         )
                         VALUES %s
                         ON CONFLICT (source_url) DO UPDATE SET
@@ -418,6 +423,9 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                             platform = COALESCE(EXCLUDED.platform, {CANDIDATES_TABLE}.platform),
                             profile_url = COALESCE(EXCLUDED.profile_url, {CANDIDATES_TABLE}.profile_url),
                             activity_date = GREATEST(EXCLUDED.activity_date, {CANDIDATES_TABLE}.activity_date),
+                            shows_interest = COALESCE(EXCLUDED.shows_interest, FALSE)
+                                             OR COALESCE({CANDIDATES_TABLE}.shows_interest, FALSE),
+                            contact_source = COALESCE({CANDIDATES_TABLE}.contact_source, EXCLUDED.contact_source),
                             discovered_at = NOW();
                         """,
                         list(chunk),
@@ -449,6 +457,12 @@ def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _said_interest(evidence: Optional[str]) -> bool:
+    """For rows saved before interest was recorded: judge from the saved evidence quote."""
+    from rule_extractor import shows_interest
+    return shows_interest(evidence or "")
+
+
 def fetch_all_candidates() -> List[dict]:
     """Return every stored candidate from Neon DB, newest first."""
     _ensure_schema()
@@ -462,7 +476,7 @@ def fetch_all_candidates() -> List[dict]:
                            target_countries, evidence_snippet, email, phone, source_url,
                            platform, discovered_at, contact_source, contact_shared_at,
                            COALESCE(outreach_status, 'new') AS outreach_status, outreach_message,
-                           outreach_sent_at, reply_text, replied_at, profile_url, activity_date
+                           outreach_sent_at, reply_text, replied_at, profile_url, activity_date, shows_interest
                     FROM {CANDIDATES_TABLE}
                     ORDER BY activity_date DESC NULLS LAST, discovered_at DESC;
                     """
@@ -472,6 +486,8 @@ def fetch_all_candidates() -> List[dict]:
                 for r in rows:
                     if not r.get("activity_date"):
                         r["activity_date"] = dates.from_linkedin_url(r.get("source_url") or "")
+                    if r.get("shows_interest") is None:
+                        r["shows_interest"] = _said_interest(r.get("evidence_snippet"))
                 return rows
 
     return _with_retry(_fetch, "Fetching candidates")
@@ -497,12 +513,19 @@ def get_candidates(ids: List[str]) -> List[dict]:
                     f"""
                     SELECT id, name, "current_role", skills, current_location, target_countries,
                            evidence_snippet, email, phone, source_url, platform, profile_url,
+                           activity_date, shows_interest,
                            COALESCE(outreach_status, 'new') AS outreach_status, outreach_message
                     FROM {CANDIDATES_TABLE} WHERE id::text = ANY(%s);
                     """,
                     (list(ids),),
                 )
-                return [_serialize_row(dict(r)) for r in cur.fetchall()]
+                rows = [_serialize_row(dict(r)) for r in cur.fetchall()]
+                for r in rows:
+                    if not r.get("activity_date"):
+                        r["activity_date"] = dates.from_linkedin_url(r.get("source_url") or "")
+                    if r.get("shows_interest") is None:
+                        r["shows_interest"] = _said_interest(r.get("evidence_snippet"))
+                return rows
 
     return _with_retry(_fetch, "Loading candidates")
 

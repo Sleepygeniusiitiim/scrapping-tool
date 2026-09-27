@@ -26,7 +26,7 @@ import dates
 import integrations
 from fetcher import PHONE_RE, fetch_batch, scrapedo_token
 from gemini_client import Gemini, GeminiError, GeminiQuotaError
-from schema import CandidateRecord, ComprehensiveSearchPlan, PageExtraction
+from schema import CandidateRecord, ComprehensiveSearchPlan, PageExtraction, clean_email, clean_phone
 from search_module import google_search_scrapedo, platform_from_url, search_query
 
 MAX_CONTENT_CHARS_FOR_LLM = 45_000
@@ -36,58 +36,65 @@ GROUNDING_MIN_OVERLAP = 0.6   # share of evidence words that must appear on the 
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
-PLAN_SYSTEM = """You are a senior technical recruiter and OSINT search specialist.
-You design search-engine queries that surface INDIVIDUAL CANDIDATES (not companies, not job ads
-on their own) who match a sourcing intent — ideally pages where candidates have publicly posted
+PLAN_SYSTEM = """You are a senior recruiter and OSINT search specialist.
+You design search-engine queries that surface INDIVIDUAL PEOPLE (not companies, not job ads on their
+own) who match the sourcing intent EXACTLY as written — any role (trades, drivers, nurses, teachers,
+trainers, engineers, …) and any country. Follow the intent literally: its role, where the people are
+or want to work, and what they want. Ideally find pages where people publicly show interest and post
 their own contact details.
 
-Where candidates are found (use this knowledge):
-- Overseas hiring posts on LinkedIn (linkedin.com/posts) and Facebook job groups, where candidates
-  reply in the comments with "interested", their experience, email (gmail.com / yahoo.com) or
-  WhatsApp / mobile number. These are the richest source — target the POST, the comments come with it.
-- LinkedIn profiles (linkedin.com/in) with "open to work", "looking for opportunities abroad".
-- Gulf / Europe job-group pages, job-seeker forums, CV/resume listing pages, Reddit and Quora threads
-  where people describe their own trade and plans.
+Where such people are found:
+- Hiring / opportunity posts on LinkedIn (linkedin.com/posts) and Facebook groups, where people reply in
+  the comments with "interested", their experience, email or WhatsApp / mobile number. Target the POST;
+  its comments hold the candidates.
+- Profiles with "open to work", "looking for opportunities", "seeking a position" (linkedin.com/in, portals).
+- Job-seeker forums, CV / resume pages, Reddit and Quora threads, expat forums, community boards where
+  people describe their own profession and plans.
 
 Query rules:
 - Keep queries SHORT: 4 to 8 terms. Long queries with many quoted phrases return nothing.
-- At most ONE quoted candidate signal (like "interested" or "gmail.com") per query, and at least half
-  of each wave's queries should have none — just site: + role + destination/hiring words. The hiring
-  posts themselves are what we want; their comment sections hold the candidates.
-- At most one site: operator. Supported: site:, "exact phrase", OR, -exclusion,
-  intitle:, inurl:. No Google-only operators (no AROUND, no daterange).
-- Expand the role into its real-world synonyms, machines, controllers and brands (e.g. for press brake:
-  "press brake operator", "CNC bending", "sheet metal bending", Amada, Trumpf, Bystronic, "Delem").
-- Combine: role/synonym + destination signals (Germany, Europe, Dubai, UAE, Saudi, Qatar, Kuwait, Oman,
-  Gulf, abroad, overseas, relocation, visa) + candidate signals ("interested", "my CV", "gmail.com",
-  "whatsapp", "contact number", "open to work", "experience in India", Indian city names).
+- At most ONE quoted signal (like "interested" or "gmail.com") per query; at least half of each wave's
+  queries have none — just site: + role + place / hiring words.
+- At most one site: operator. Supported: site:, "exact phrase", OR, -exclusion, intitle:, inurl:.
+- Expand the role into real-world synonyms and job titles, INCLUDING the local language of the place in
+  the intent (e.g. Germany: "Lehrer", "Trainer", "Ausbilder", "Dozent"; Gulf: English and common Indian
+  spellings), plus the key skills / certifications for that role.
+- Use the places, nationalities and destinations named in the intent — do not add unrelated countries.
+- Combine role/synonym + place signals + interest signals ("interested", "looking for job", "open to
+  work", "my CV", "gmail.com", "whatsapp", or the local-language equivalent).
 - Vary phrasing and synonyms across queries so they return different pages.
+
+Also return:
+- role_keywords: 10–25 short job titles / synonyms / key skills (in English AND the local language) that
+  identify a matching person on a page.
+- locations: the places the people must be in or want to work in, ONLY if the intent restricts this
+  (e.g. ["Germany"] for "trainers in Germany"); [] when the intent does not restrict location.
 """
 
 # Order matters: round 1 takes the first `num_waves` entries, so source types are interleaved
 # (a 3-wave run covers LinkedIn, Reddit/Quora and portals/forums, not just LinkedIn + Facebook).
 WAVE_BLUEPRINT = [
     ("LinkedIn Hiring Posts & Comments", "linkedin_posts",
-     "site:linkedin.com/posts overseas hiring posts for this role — especially Indian overseas-recruitment "
-     "agency posts (\"urgent requirement\", \"interview in Mumbai/Delhi/Chennai\", \"free recruitment\", "
-     "\"Gulf jobs\", Saudi/Qatar/UAE/Kuwait/Oman project hiring), whose comments hold Indian candidates' "
-     "contact details. Short queries: site: + role + one destination or agency phrase"),
+     "site:linkedin.com/posts hiring / opportunity posts for this role and place (recruiter and agency posts, "
+     "\"urgent requirement\", \"we are hiring\", \"vacancy\" in the relevant language) whose comments hold "
+     "people replying with interest and contact details. Short queries: site: + role + place or hiring phrase"),
     ("Reddit & Quora Discussions", "reddit_quora",
-     "site:reddit.com and site:quora.com threads where people discuss their own plans to work abroad in this trade"),
+     "site:reddit.com and site:quora.com threads where people discuss their own plans to work in this role / place"),
     ("Job Portals, CVs & Forums", "portals_forums",
-     "job-seeker pages, CV/resume listings and trade forums (naukri.com, indeed.com, shine.com, apna.co, "
-     "gulftalent.com, bayt.com, practicalmachinist.com) where candidates post their own profile"),
+     "job-seeker pages, CV/resume listings and profession forums relevant to this role and country (pick portals "
+     "used in that country, e.g. naukri.com / apna.co / shine.com for India, stepstone.de / indeed.de / xing.com "
+     "for Germany, bayt.com / gulftalent.com for the Gulf) where people post their own profile"),
     ("Facebook & Job Groups", "facebook_groups",
-     "site:facebook.com public posts in Gulf/Europe job groups for this role where candidates reply with "
-     "WhatsApp numbers or emails"),
-    ("Expat & Trade Forums", "forums",
-     "public expat and trade forums, Q&A boards and blog comment sections (expat.com forum, team-bhp.com, "
-     "Gulf job blogs, trade discussion boards) where people post their own experience and contact details. "
-     "No site: on LinkedIn, Facebook, Reddit or Quora in this wave"),
+     "site:facebook.com public posts in job groups for this role / place where people reply with WhatsApp "
+     "numbers or emails"),
+    ("Expat & Profession Forums", "forums",
+     "public expat and profession forums, Q&A boards and blog comment sections for this role / place where people "
+     "post their own experience and contact details. No site: on LinkedIn, Facebook, Reddit or Quora in this wave"),
     ("LinkedIn Profiles", "linkedin_profiles",
-     "site:linkedin.com/in individual profiles for this role that are open to work / relocation abroad"),
+     "site:linkedin.com/in individual profiles for this role (and place) that are open to work / looking for a job"),
     ("Long-tail & Regional Sources", "long_tail",
-     "Indian city / state specific pages, ITI and polytechnic alumni pages, Telegram/WhatsApp group directories"),
+     "city / region specific pages, alumni and training-institute pages, Telegram / WhatsApp group directories "
+     "for this role and place"),
 ]
 
 # Waves whose sites disallow crawlers in robots.txt. With "Respect robots.txt" on, only their search
@@ -98,22 +105,23 @@ EXTRACT_SYSTEM = """You extract candidate leads for a recruiter from ONE web pag
 The page may start with a structured "Post and comments" block (one line per author) and a
 "Contact details found on the page" block listing every email / phone with its surrounding text.
 
-Return every INDIVIDUAL PERSON on the page who matches the sourcing intent:
+Return every INDIVIDUAL PERSON on the page who matches the sourcing intent exactly as written:
 - The author of a post or profile, AND every commenter — each commenter is a separate person.
 - EXCLUDE companies, recruiters, agencies, the person advertising the job, and people only giving
   advice. A recruiter's own post is a source of candidates (its commenters), not a candidate.
-- A person qualifies if the page supports that they match the intent. Replying to an overseas job post
-  for the role with interest ("interested", sharing a CV/email/number, asking how to apply) counts as
-  both interest in working abroad and relevance to that role, even if they don't restate their trade.
-- Do NOT infer nationality or location from a person's name. Fill current_location only if stated
-  (e.g. "experience in India", a city). Leave it null otherwise — do not drop the person for that.
+- A person qualifies if the page supports that they match the intent's role (and place, when the intent
+  names one). Replying to a job post for the role with interest ("interested", sharing a CV/email/number,
+  asking how to apply) counts as relevance to that role, even if they don't restate their profession.
+- shows_interest: true only if THIS person says they are interested, keen, looking / seeking / open to
+  work, ready or willing to join / relocate, shares their CV, or asks how to apply. False otherwise.
+- Do NOT infer nationality or location from a person's name. Fill current_location only if stated.
 - evidence_snippet: copy a VERBATIM sentence from the page — preferably the person's own words — that
   proves the match (max ~300 characters). Do not paraphrase. Do not invent.
 - email / phone: ONLY a contact detail that THIS SAME PERSON wrote in their own comment, post or profile
   on this page. Copy it exactly. Never give a person the recruiter's, company's or another commenter's
   contact. Null if they didn't post one. Phone includes WhatsApp / mobile numbers.
 - name: the person's name or public handle. Fill other fields only if the page states them.
-- skills: concrete skills, machines, controllers, software, certifications.
+- skills: concrete skills, tools, subjects, certifications, languages.
 - target_countries: countries/regions they want to work in, as stated or as given by the job post
   they replied to.
 - If nobody qualifies, return {"candidates": []}.
@@ -137,7 +145,7 @@ def _plan_prompt(intent: str, num_waves: int, queries_per_wave: int, round_no: i
                       "or near-copies; use different synonyms, machine brands, destinations, cities and phrasings:"]
         lines += [f"- {q}" for q in exclude_queries[-120:]]
     lines.append("")
-    lines.append("Return JSON matching the schema. Queries only — no explanations.")
+    lines.append("Return JSON matching the schema: the waves, role_keywords and locations. No explanations.")
     return "\n".join(lines)
 
 
@@ -275,8 +283,10 @@ def _assign_source_urls(url: str, people: List[dict]) -> List[dict]:
 
 async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, snippet_only: bool,
                         mode: str = "ai", keywords: Optional[List[str]] = None,
-                        hit_date: Optional[str] = None) -> tuple[List[CandidateRecord], int, bool]:
-    """Returns (valid records, number dropped as ungrounded/invalid, whether the AI was called).
+                        hit_date: Optional[str] = None, locations: Optional[List[str]] = None
+                        ) -> tuple[List[CandidateRecord], int, bool, int]:
+    """Returns (valid records, number dropped as ungrounded/invalid, whether the AI was called,
+    number dropped because they are not in / not heading to the intent's locations).
 
     mode: "rules" — regex/keyword extraction only, no AI tokens;
           "hybrid" — rules first, the AI only for pages where rules find nobody but the page
@@ -296,7 +306,8 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
         )
         found = [c.model_dump() for c in result.candidates]
         used_ai = True
-    people, dropped = [], 0
+    people, dropped, off_target = [], 0, 0
+    post_text = " ".join(re.findall(r"^POST by .*?: (.*)$", content, re.MULTILINE))
     for d in found:
         if not _is_grounded(d.get("evidence_snippet"), content):
             dropped += 1
@@ -311,6 +322,16 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
         if not d.get("profile_url"):
             d["profile_url"] = _profile_url(url, content, d.get("name"))
         d["activity_date"] = d.get("activity_date") or _activity_date(url, content, d.get("name"), hit_date)
+        # Interest: the AI's judgement or the person's own words ("interested", "looking for a job", …).
+        said = own or d.get("evidence_snippet") or ""
+        d["shows_interest"] = bool(d.get("shows_interest")) or rule_extractor.shows_interest(said)
+        if locations:
+            where = " ".join([said, d.get("evidence_snippet") or "", d.get("current_location") or "",
+                              " ".join(d.get("target_countries") or []), post_text,
+                              content[:3000] if d.get("profile_url") == url else ""])
+            if not rule_extractor.mentions_any(where, locations):
+                off_target += 1
+                continue
         people.append(d)
     records: List[CandidateRecord] = []
     for row in _assign_source_urls(url, people):
@@ -318,7 +339,7 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
             records.append(CandidateRecord(**row, platform=platform))
         except Exception:
             dropped += 1
-    return records, dropped, used_ai
+    return records, dropped, used_ai, off_target
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +359,8 @@ async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_w
     for w in waves:
         w.queries = [q for q in w.queries if q.strip().lower() not in done][:queries_per_wave]
     waves = [w for w in waves if w.queries]
-    return {"waves": [w.model_dump() for w in waves]}
+    return {"waves": [w.model_dump() for w in waves], "role_keywords": plan.role_keywords[:40],
+            "locations": plan.locations[:10]}
 
 
 def run_query(query: str, max_results: int, region: str, backend: str, keys: Optional[dict] = None,
@@ -397,6 +419,36 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
     }
 
 
+MAX_ENRICH_PER_BATCH = 10
+
+
+async def _enrich_records(records: List[CandidateRecord], keys: dict, require_both: bool) -> tuple[int, List[str]]:
+    """Look up missing phone / email in the lead databases for interested leads. With require_both,
+    a looked-up contact is kept only when the lead then has BOTH a phone number and an email."""
+    todo = [r for r in records if r.shows_interest and not (r.phone and r.email)
+            and (r.profile_url or r.name)][:MAX_ENRICH_PER_BATCH]
+    if not todo or not integrations.summary(keys)["enrich"]:
+        return 0, []
+    stopped: set = set()
+    sem = asyncio.Semaphore(3)
+
+    async def one(r: CandidateRecord):
+        async with sem:
+            return await integrations.enrich_person(
+                keys, {"name": r.name, "linkedin_url": r.profile_url or ""}, None, stopped)
+
+    results = await asyncio.gather(*(one(r) for r in todo))
+    done, notes = 0, set()
+    for r, f in zip(todo, results):
+        notes.update(f["errors"][:2])
+        email, phone = r.email or f["email"], r.phone or f["phone"]
+        if (f["email"] or f["phone"]) and (not require_both or (email and phone)):
+            r.email, r.phone = clean_email(email), clean_phone(phone)
+            r.contact_source = f"enriched:{f['provider']}"
+            done += 1
+    return done, [f"Lead database: {n}" for n in list(notes)[:3]]
+
+
 def _hit_date(hit: dict) -> Optional[str]:
     """The date the search engine showed for a result (API field, or the start of the snippet)."""
     return dates.parse(hit.get("date")) or dates.snippet_date(hit.get("snippet") or "")
@@ -421,7 +473,9 @@ def dedup_urls(urls: List[str]) -> List[str]:
 async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag: str,
                         page_timeout_s: int, respect_robots: bool, snippet_fallback: bool,
                         extraction: str = "rules", plan_queries: Optional[List[str]] = None,
-                        keys: Optional[dict] = None, max_age_months: int = 0) -> dict:
+                        keys: Optional[dict] = None, max_age_months: int = 0,
+                        role_keywords: Optional[List[str]] = None, locations: Optional[List[str]] = None,
+                        only_interested: bool = False, enrich: bool = False, require_both: bool = True) -> dict:
     """items: [{url, title, snippet}] — record, fetch, extract, save."""
     urls = [i["url"] for i in items]
     hits: Dict[str, dict] = {i["url"]: i for i in items}
@@ -443,13 +497,14 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
             if len(h.get("snippet") or "") > 40 and _CANDIDATE_SIGNAL.search(text):
                 jobs.append((o.url, text, True))
 
-    keywords = rule_extractor.keywords_from(intent, plan_queries or [])
+    keywords = list(dict.fromkeys([k.lower() for k in role_keywords or [] if k.strip()] +
+                                  rule_extractor.keywords_from(intent, plan_queries or [])))
     results = await asyncio.gather(
-        *(_extract_page(gemini, intent, u, c, snip, extraction, keywords, _hit_date(hits.get(u, {})))
+        *(_extract_page(gemini, intent, u, c, snip, extraction, keywords, _hit_date(hits.get(u, {})), locations)
           for (u, c, snip) in jobs),
         return_exceptions=True,
     )
-    ai_pages = too_old = 0
+    ai_pages = too_old = off_target = not_interested = 0
     records: List[CandidateRecord] = []
     warnings: List[str] = []
     dropped = 0
@@ -466,12 +521,22 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
             warnings.append(f"Extraction failed for {u}: {str(r)[:160]}")
             continue
         extracted.add(u)
-        recs, d, used_ai = r
+        recs, d, used_ai, off = r
         dropped += d
+        off_target += off
         ai_pages += used_ai
         fresh = [x for x in recs if not dates.older_than(x.activity_date, max_age_months)]
         too_old += len(recs) - len(fresh)
+        if only_interested:
+            keen = [x for x in fresh if x.shows_interest]
+            not_interested += len(fresh) - len(keen)
+            fresh = keen
         records.extend(fresh)
+
+    enriched, enrich_notes = 0, []
+    if enrich and records:
+        enriched, enrich_notes = await _enrich_records(records, keys or {}, require_both)
+        warnings.extend(enrich_notes)
 
     if records:
         await asyncio.to_thread(db.save_candidates, records)
@@ -499,6 +564,8 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
 
     return {
         "stats": {**stats, "records": len(records), "dropped": dropped, "sent_to_gemini": ai_pages, "pages_read": len(jobs), "too_old": too_old,
+                  "off_target": off_target, "not_interested": not_interested, "enriched": enriched,
+                  "interested": sum(1 for r in records if r.shows_interest),
                   "dated": sum(1 for r in records if r.activity_date),
                   "with_phone": sum(1 for r in records if r.phone),
                   "with_email": sum(1 for r in records if r.email),

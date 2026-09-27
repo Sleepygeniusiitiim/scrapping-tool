@@ -78,6 +78,24 @@ In the **“🔑 Lead databases & search API keys”** section of the home page 
   (its phone reveal needs a webhook).
 - Only API keys are supported, not account passwords: automated logins break these services' terms.
 
+## Following the intent exactly (any role, any country)
+
+The plan call also returns `role_keywords` (titles / synonyms in English and the local language, e.g.
+"Lehrer", "Ausbilder" for Germany) and `locations` (only when the intent restricts where people are or
+want to work). Pages are then matched on those keywords, and when locations are set, a lead is kept
+only if their own words, profile or the post they replied to names one of those places.
+
+Crawler settings:
+- **Only leads who say they're interested / keen** (default on) — the person's own words must show
+  interest ("interested", "looking for a job", "open to work", "ready to join", "my CV", German
+  "interessiert", …). Every lead is stored with `shows_interest`.
+- **Look up missing contacts in lead databases** (default off) — during the run, interested leads
+  (within "Only leads active in the last…") missing a phone or email are looked up in ContactOut /
+  Lusha / RocketReach / Apollo, up to 10 per batch.
+- **Lead databases: keep only if both phone & email** (default on) — a lookup result is saved only when
+  the lead then has both. The lookup itself may still use the service's credit.
+- The **📇 Find missing contacts for interested leads** button applies the same three rules to saved leads.
+
 ## Lead dates (how recent a lead is)
 
 Every lead gets an `activity_date`: the date of the candidate's own comment when the page carries it,

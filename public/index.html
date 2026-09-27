@@ -150,6 +150,11 @@
         <label title="LinkedIn and Facebook disallow crawlers in robots.txt. Untick to read their public posts and comments — check that this fits your use and their terms."><input id="robots" type="checkbox" checked>Respect robots.txt (untick to read LinkedIn / Facebook posts)</label>
         <label><input id="snippet" type="checkbox" checked>Use search snippet when a page is walled/blocked</label>
       </div>
+      <div class="row" style="margin-top:6px">
+        <label title="Keep only people who say they are interested, keen, looking / open to work, ready to join or share their CV"><input id="onlyInterested" type="checkbox" checked>Only leads who say they're interested / keen</label>
+        <label title="For interested leads (within “Only leads active in the last…”) that are missing a phone or email, look them up in Apollo / Lusha / ContactOut / RocketReach. Uses those services' credits."><input id="useLeadDb" type="checkbox">Look up missing contacts in lead databases (uses credits)</label>
+        <label title="Keep a lead-database result only when the lead then has both a phone number and an email"><input id="requireBoth" type="checkbox" checked>Lead databases: keep only if both phone &amp; email</label>
+      </div>
     </details>
     <div class="row" style="margin-top:14px">
       <button class="primary" id="startBtn">🚀 Start</button>
@@ -175,7 +180,7 @@
   <section id="tab-run"></section>
   <section id="tab-db" class="hidden">
     <div class="row" style="margin-bottom:10px"><button id="loadDb">🔄 Load / refresh from Neon DB</button>
-      <button id="enrichBtn" title="Look up missing phone numbers / emails in Apollo, Lusha, ContactOut and RocketReach (uses their credits)">📇 Find missing contacts (lead databases)</button>
+      <button id="enrichBtn" title="For saved leads who said they are interested and are within “Only leads active in the last…”, look up missing phone numbers / emails in Apollo, Lusha, ContactOut and RocketReach (uses their credits)">📇 Find missing contacts for interested leads</button>
       <span class="status" id="dbStatus"></span></div>
     <div id="dbView"></div>
   </section>
@@ -212,7 +217,7 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const COLS = ["activity_date", "name", "phone", "email", "current_role", "skills", "current_location",
+const COLS = ["activity_date", "shows_interest", "name", "phone", "email", "current_role", "skills", "current_location",
               "target_countries", "platform", "evidence_snippet", "source_url"];
 const LIST_COLS = ["skills", "target_countries"];
 const EDITABLE = ["name", "phone", "email", "current_role", "skills", "current_location", "target_countries",
@@ -273,6 +278,10 @@ $("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("gemin
 if (load("csa_extraction")) $("extraction").value = load("csa_extraction");
 if (load("csa_max_age") !== null && load("csa_max_age") !== "") $("maxAge").value = load("csa_max_age");
 $("maxAge").addEventListener("change", () => store("csa_max_age", $("maxAge").value));
+for (const id of ["onlyInterested", "useLeadDb", "requireBoth"]) {
+  const v = load("csa_" + id); if (v === "1" || v === "0") $(id).checked = v === "1";
+  $(id).addEventListener("change", () => store("csa_" + id, $(id).checked ? "1" : "0"));
+}
 $("extraction").addEventListener("change", () => store("csa_extraction", $("extraction").value));
 
 // ---------- API ----------
@@ -402,6 +411,7 @@ function buildView(container, getRecords, key) {
           const a = document.createElement("a"); a.href = r.source_url; a.target = "_blank"; a.rel = "noopener noreferrer";
           a.textContent = r.source_url; td.appendChild(a); continue;
         }
+        if (col === "shows_interest") { td.textContent = r[col] ? "✓ interested" : ""; continue; }
         td.textContent = LIST_COLS.includes(col) ? asList(r[col]).join("; ") : (r[col] ?? "");
         if (col === "evidence_snippet") td.className = "evidence";
         if (EDITABLE.includes(col)) {
@@ -516,13 +526,17 @@ $("enrichBtn").onclick = async () => {
   const btn = $("enrichBtn"); btn.disabled = true;
   try {
     const all = (await api("/api/candidates")).candidates;
-    const todo = all.filter((c) => !c.phone || !c.email);
-    if (!todo.length) { $("dbStatus").textContent = "Every candidate already has phone and email."; return; }
+    const months = Number($("maxAge").value), onlyKeen = $("onlyInterested").checked;
+    const cutoff = months ? Date.now() - months * 30.5 * 864e5 : 0;
+    const todo = all.filter((c) => (!c.phone || !c.email) && (!onlyKeen || c.shows_interest) &&
+      (!cutoff || !c.activity_date || Date.parse(c.activity_date) >= cutoff));
+    if (!todo.length) { $("dbStatus").textContent = "No interested, recent candidates are missing a phone or email."; return; }
     let filled = 0, done = 0; const errors = new Set();
     for (let i = 0; i < todo.length; i += 10) {
       const chunk = todo.slice(i, i + 10);
       $("dbStatus").textContent = `Looking up ${done + 1}–${done + chunk.length} of ${todo.length}… (${filled} filled so far)`;
-      const r = await api("/api/enrich", { candidate_ids: chunk.map((c) => c.id) });
+      const r = await api("/api/enrich", { candidate_ids: chunk.map((c) => c.id), only_interested: onlyKeen,
+        max_age_months: months, require_both: $("requireBoth").checked });
       for (const x of r.results) { if (x.provider) filled++; (x.errors || []).forEach((e) => errors.add(e)); }
       done += chunk.length;
       if (r.stopped && r.stopped.length >= r.providers.length) { errors.add("All lead databases out of credits or rejected their keys."); break; }
@@ -621,7 +635,8 @@ async function startRun(nextRound) {
 async function runPipeline(intent, totals, rounds) {
   const settings = { numWaves: num("numWaves"), qpw: num("qpw"), maxRes: num("maxRes"), maxUrls: num("maxUrls"),
     batch: num("batch"), timeout: num("timeout"), region: $("region").value, backend: $("backend").value,
-    robots: $("robots").checked, snippet: $("snippet").checked, extraction: $("extraction").value, maxAge: Number($("maxAge").value) };
+    robots: $("robots").checked, snippet: $("snippet").checked, extraction: $("extraction").value, maxAge: Number($("maxAge").value),
+    onlyInterested: $("onlyInterested").checked, useLeadDb: $("useLeadDb").checked, requireBoth: $("requireBoth").checked };
 
   logEv("info", "Asking Gemini for a multi-wave search plan…");
   const roundNo = rounds.round + 1;
@@ -630,6 +645,9 @@ async function runPipeline(intent, totals, rounds) {
     round: roundNo, exclude_queries: rounds.queries, respect_robots: settings.robots });
   const waves = plan.waves;
   (plan.warnings || []).forEach((w) => logEv("warning", w));
+  if ((plan.role_keywords || []).length || (plan.locations || []).length)
+    logEv("plan", `Matching people by: ${(plan.role_keywords || []).slice(0, 12).join(", ")}` +
+      ((plan.locations || []).length ? ` · must be in / want to work in: ${plan.locations.join(", ")}` : ""));
   saveRounds(intent, { round: roundNo, queries: rounds.queries.concat(waves.flatMap((w) => w.queries)) });
   refreshNextBtn();
   logEv("plan", `Plan ready: ${waves.length} waves, ${waves.reduce((n, w) => n + w.queries.length, 0)} queries.`);
@@ -686,7 +704,8 @@ async function runPipeline(intent, totals, rounds) {
         const r = await api("/api/process", { intent, items, wave_tag: tag, page_timeout_s: settings.timeout,
           respect_robots: settings.robots, snippet_fallback: settings.snippet,
           extraction: settings.extraction, plan_queries: waves.flatMap((w) => w.queries),
-          max_age_months: settings.maxAge });
+          max_age_months: settings.maxAge, role_keywords: plan.role_keywords || [], locations: plan.locations || [],
+          only_interested: settings.onlyInterested, enrich: settings.useLeadDb, require_both: settings.requireBoth });
         for (const k of ["crawled", "blocked", "failed", "records", "dropped"]) stats[k] += r.stats[k];
         totals.crawled += r.stats.crawled; totals.records += r.stats.records;
         const why = Object.entries(r.block_reasons || {}).map(([k, n]) => `${n}× ${k}`).join(", ");
@@ -706,6 +725,9 @@ async function runPipeline(intent, totals, rounds) {
         logEv("saved", `Batch ${b + 1}: ${r.stats.pages_read ?? r.stats.sent_to_gemini} pages read (${r.stats.sent_to_gemini} by AI) → ${r.stats.records} candidates saved` +
           ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email, ${r.stats.dated || 0} dated)` +
           (r.stats.too_old ? ` · ${r.stats.too_old} skipped as older than ${settings.maxAge} months` : "") +
+          (r.stats.not_interested ? ` · ${r.stats.not_interested} skipped (no interest shown)` : "") +
+          (r.stats.off_target ? ` · ${r.stats.off_target} skipped (wrong location)` : "") +
+          (r.stats.enriched ? ` · ${r.stats.enriched} contacts from lead databases` : "") +
           (r.stats.via_scrapedo ? ` · unblocked: ${Object.entries(r.stats.via || {}).map(([k, n]) => `${n} via ${k}`).join(", ") || r.stats.via_scrapedo}` : ""), name);
         addRunRecords(r.records);
         renderStats(); renderRun();

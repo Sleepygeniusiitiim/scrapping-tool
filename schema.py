@@ -86,6 +86,8 @@ class CandidateRecord(BaseModel):
     platform: Optional[str] = Field(None, description="linkedin / reddit / quora / forum / job_portal / …")
     profile_url: Optional[str] = Field(None, description="The person's own profile link (for contact enrichment)")
     activity_date: Optional[str] = Field(None, description="YYYY-MM-DD of the post / comment the lead came from")
+    shows_interest: Optional[bool] = Field(None, description="The person says they are interested / keen / looking")
+    contact_source: Optional[str] = Field(None, description="posted_on_page | shared_in_reply | enriched:<service>")
 
     @field_validator("activity_date", mode="before")
     @classmethod
@@ -150,6 +152,17 @@ class SearchWave(BaseModel):
 
 class ComprehensiveSearchPlan(BaseModel):
     waves: List[SearchWave] = Field(default_factory=list)
+    role_keywords: List[str] = Field(default_factory=list,
+                                     description="Job titles / synonyms / skills that identify a matching person, "
+                                                 "including local-language forms")
+    locations: List[str] = Field(default_factory=list,
+                                 description="Places the candidates must be in or want to work in, only if the "
+                                             "intent restricts it; empty otherwise")
+
+    @field_validator("role_keywords", "locations", mode="before")
+    @classmethod
+    def _dedupe(cls, v):
+        return _clean_list(v)
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +179,7 @@ class ExtractedCandidate(BaseModel):
     evidence_snippet: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    shows_interest: bool = False
 
 
 class PageExtraction(BaseModel):

@@ -40,8 +40,9 @@ from gemini_client import DEFAULT_MODEL, Gemini, GeminiError, GeminiQuotaError  
 from openrouter_client import PROVIDERS, OpenRouter  # noqa: E402
 from ai_chain import FALLBACK_ORDER, AIChain  # noqa: E402
 import integrations  # noqa: E402
+import dates  # noqa: E402
 import outreach  # noqa: E402
-from schema import CandidateRecord  # noqa: E402
+from schema import CandidateRecord, clean_email, clean_phone  # noqa: E402
 
 DEFAULT_APP_PASSWORD = "CSA-Neon-Vercel-2026!"
 
@@ -237,6 +238,11 @@ class BatchIn(BaseModel):
     extraction: str = Field("rules", pattern="^(rules|hybrid|ai)$")
     plan_queries: List[str] = Field(default_factory=list, max_length=200)
     max_age_months: int = Field(0, ge=0, le=120)
+    role_keywords: List[str] = Field(default_factory=list, max_length=60)
+    locations: List[str] = Field(default_factory=list, max_length=20)
+    only_interested: bool = False
+    enrich: bool = False
+    require_both: bool = True
 
 
 class SaveIn(BaseModel):
@@ -337,6 +343,11 @@ async def process(
             body.plan_queries,
             keys,
             body.max_age_months,
+            body.role_keywords,
+            body.locations,
+            body.only_interested,
+            body.enrich,
+            body.require_both,
         )
         result["warnings"] = gemini.notices + result.get("warnings", [])
         return result
@@ -371,6 +382,9 @@ def save(body: SaveIn, x_database_url: Optional[str] = Header(default=None)):
 class EnrichIn(BaseModel):
     candidate_ids: List[str] = Field(..., min_length=1, max_length=10)
     providers: List[str] = Field(default_factory=list)
+    only_interested: bool = True
+    max_age_months: int = Field(0, ge=0, le=120)
+    require_both: bool = True
 
 
 _LINKEDIN_IN = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[^/?#\s]+", re.IGNORECASE)
@@ -394,6 +408,10 @@ async def enrich(body: EnrichIn, keys: dict = Depends(_keys)):
     async def one(c: dict) -> dict:
         if c.get("email") and c.get("phone"):
             return {"id": c["id"], "name": c.get("name"), "skipped": "already has phone and email"}
+        if body.only_interested and not c.get("shows_interest"):
+            return {"id": c["id"], "name": c.get("name"), "skipped": "has not said they are interested"}
+        if dates.older_than(c.get("activity_date"), body.max_age_months):
+            return {"id": c["id"], "name": c.get("name"), "skipped": "older than the chosen period"}
         li = c.get("profile_url") or ""
         if not li:
             m = _LINKEDIN_IN.match(c.get("source_url") or "")
@@ -403,9 +421,11 @@ async def enrich(body: EnrichIn, keys: dict = Depends(_keys)):
                 keys, {"name": c.get("name"), "linkedin_url": li}, providers, stopped)
         fields = {}
         if found["email"] and not c.get("email"):
-            fields["email"] = found["email"]
+            fields["email"] = clean_email(found["email"])
         if found["phone"] and not c.get("phone"):
-            fields["phone"] = found["phone"]
+            fields["phone"] = clean_phone(found["phone"])
+        if body.require_both and not ((c.get("email") or fields.get("email")) and (c.get("phone") or fields.get("phone"))):
+            fields = {}                    # only keep leads that end up with both a phone number and an email
         out = {"id": c["id"], "name": c.get("name"), "tried": found["tried"], "errors": found["errors"][:3]}
         if fields:
             fields["contact_source"] = f"enriched:{found['provider']}"

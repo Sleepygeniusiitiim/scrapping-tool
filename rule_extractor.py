@@ -35,10 +35,43 @@ _HIRING = re.compile(
     r"\b(?:we are hiring|we're hiring|hiring|urgent(?:ly)? (?:requirement|required|need)|requirement for|"
     r"vacanc(?:y|ies)|walk[- ]?in|interview (?:on|at|in|date)|send (?:your )?(?:cv|resume)|share (?:your )?"
     r"(?:cv|resume)|apply now|apply (?:at|to|via)|free recruitment|salary|accommodation|recruit(?:ment|ing|er)|"
-    r"hr (?:team|manager|executive)|job (?:code|id|opening)|openings?|immediate joiners?)\b", re.IGNORECASE)
-_INTEREST = re.compile(r"\b(?:interested|intrested|intersted|i am interested|please consider|my cv|resume|"
-                       r"looking for (?:a )?(?:job|work|opportunit\w*)|open to work|ready to (?:join|relocate))\b",
-                       re.IGNORECASE)
+    r"hr (?:team|manager|executive)|job (?:code|id|opening)|openings?|immediate joiners?|"
+    r"we are looking for|we're looking for|join our team|position(?:s)? available|now hiring|"
+    r"wir suchen|gesucht|stellenangebot|stellenanzeige|bewerbung|bewerben sie|jetzt bewerben|"
+    r"nous recrutons|on recrute|estamos contratando|se busca)\b", re.IGNORECASE)
+_INTEREST = re.compile(
+    r"\b(?:interested|intrested|intersted|interessiert|interesse|int[eé]ress[ée]e?|interesado|"
+    r"keen|eager|please consider|kindly consider|consider me|hire me|my (?:cv|resume|bio-?data|profile)|"
+    r"cv attached|resume attached|(?:looking|searching) for (?:a |an |new )?(?:job|work|opportunit\w*|position|"
+    r"role|vacanc\w*|placement|teaching|training)|seeking (?:a |an |new )?(?:job|work|opportunit\w*|position|role)|"
+    r"open to (?:work|opportunit\w*|relocat\w*|new)|ready to (?:join|relocate|move|work|go)|"
+    r"willing to (?:relocate|work|join|move)|want to (?:work|join|apply|relocate|move|go)|"
+    r"would like to (?:work|join|apply)|available (?:for|to) (?:work|join|immediate\w*)|"
+    r"can join|immediate joiner|need (?:a )?(?:job|work)|job chahiye|naukri chahiye|how (?:can|do) i apply|"
+    r"how to apply|i applied|dm me|inbox me|whatsapp me|call me|contact me|please (?:contact|call|reply)|"
+    r"suche (?:eine )?(?:stelle|arbeit|job))\b",
+    re.IGNORECASE)
+
+
+def shows_interest(text: str) -> bool:
+    """The person says they are interested / keen / looking for work (not a recruiter's ad)."""
+    return bool(text and _INTEREST.search(text))
+
+
+def mentions_any(text: str, places: List[str]) -> bool:
+    """True if the text names one of the places (country aliases like Deutschland / KSA included)."""
+    if not places:
+        return True
+    for place in places:
+        pl = place.strip()
+        if not pl:
+            continue
+        rx = _TARGET_RE.get(pl) or next((r for k, r in _TARGET_RE.items() if k.lower() == pl.lower()), None)
+        if rx is not None and rx.search(text or ""):
+            return True
+        if re.search(r"(?<!\w)" + re.escape(pl) + r"(?!\w)", text or "", re.IGNORECASE):
+            return True
+    return False
 
 _PROFILE_PATH = re.compile(r"/(?:in|pub|profile|profiles|cv|cvs|resume|resumes|candidate|candidates|jobseeker|"
                            r"people|user|users|member|members)/", re.IGNORECASE)
@@ -89,7 +122,9 @@ _FROM_INDIA = re.compile(r"\b(?:from|in|based in|located in|living in|experience
 _NAME_SAID = re.compile(r"\b(?:my name is|i am|i'm|this is|name\s*[:\-])\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})")
 _POSTED_BY = re.compile(r"\b(?:posted by|asked by|answered by|reply from|comment by)\s+@?([\w.-]{3,40})", re.IGNORECASE)
 # Common trade skills, machines, controllers and software (added to the plan's own keywords).
-_SKILLS = re.compile(r"(?<!\w)(?:fanuc|siemens|sinumerik|heidenhain|haas|mazak|dmg mori|okuma|mitsubishi|hurco|"
+_SKILLS = re.compile(r"(?<!\w)(?:b\.?ed|m\.?ed|tefl|tesol|celta|ielts|toefl|goethe|telc|daf|montessori|"
+                     r"ctet|tet|net|phd|m\.?sc|b\.?sc|mba|pmp|six sigma|aws|azure|python|java|sap|"
+                     r"a1|a2|b1|b2|c1|c2|fanuc|siemens|sinumerik|heidenhain|haas|mazak|dmg mori|okuma|mitsubishi|hurco|"
                      r"doosan|makino|brother|amada|trumpf|bystronic|delem|cybelec|mastercam|autocad|solidworks|"
                      r"catia|nx cam|fusion 360|g[- ]?code|cnc turning|cnc milling|vmc|hmc|lathe|milling|grinding|"
                      r"welding|tig|mig|arc welding|fabrication|fitter|electrician|plumber|hvac|diesel engine|"
@@ -186,6 +221,11 @@ def phones_in(text: str) -> List[str]:
         if re.search(r"(?:id|ref|code|no\.?|#|rs\.?|inr|aed|sar|usd|\$)\s*[:.-]?\s*$", before):
             continue
         p = _plausible_phone(m.group())
+        if not p and re.search(r"(?:phone|mobile|mob|tel|telefon|handy|whats\s?app|wa|call|contact|cell)\W{0,6}$",
+                               text[max(0, m.start() - 20):m.start()], re.IGNORECASE):
+            digits = re.sub(r"\D", "", m.group())
+            if 9 <= len(digits) <= 15 and len(set(digits)) >= 4:
+                p = ("+" if m.group().strip().startswith("+") else "") + digits
         if p:
             out[p] = None
     return list(out)
@@ -205,12 +245,19 @@ def _evidence(text: str, *patterns: Optional[re.Pattern]) -> str:
     return text.strip()[:300]
 
 
+_LIVES_IN = re.compile(r"\b(?:based in|living in|located in|currently in|residing in|i live in|i am from|i'm from|"
+                       r"from)\s+([A-Z][A-Za-zäöüß-]+(?:[ ,]+[A-Z][A-Za-zäöüß-]+){0,2})")
+
+
 def _location(text: str) -> Optional[str]:
     m = _INDIA_RE.search(text)
     if m:
         place = next(p for p in INDIAN_PLACES if p.lower() == m.group().lower())
         return f"{place}, India"
-    return "India" if _FROM_INDIA.search(text) else None
+    if _FROM_INDIA.search(text):
+        return "India"
+    m = _LIVES_IN.search(text)
+    return m.group(1).strip(" ,") if m else None
 
 
 def _targets(text: str) -> List[str]:
@@ -254,6 +301,7 @@ def _person(name, text, role_rx, word_rx, fallback_targets=None, context_for_rol
         "evidence_snippet": _evidence(text, _INTEREST, role_rx, word_rx),
         "email": emails[0] if emails else None,
         "phone": phones[0] if phones else None,
+        "shows_interest": shows_interest(text),
         "_relevant": bool(roles) or bool(context_for_role),
     }
 

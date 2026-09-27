@@ -56,3 +56,6 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profile_url TEXT;
 
 -- When the lead was active: date of the post / comment it came from.
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS activity_date DATE;
+
+-- The person says they are interested / keen / looking for work.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS shows_interest BOOLEAN;
