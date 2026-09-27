@@ -77,8 +77,8 @@ class CrawlOutcome:
     via: str = "direct"          # direct | scrape.do
 
 
-def scrapedo_token() -> str:
-    return os.getenv("SCRAPEDO_TOKEN", "").strip()
+def scrapedo_token(keys: Optional[dict] = None) -> str:
+    return ((keys or {}).get("scrapedo") or os.getenv("SCRAPEDO_TOKEN", "")).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +92,17 @@ def _walk(node) -> Iterable[dict]:
     elif isinstance(node, list):
         for v in node:
             yield from _walk(v)
+
+
+def _author_url(obj: dict) -> str:
+    a = obj.get("author")
+    if isinstance(a, list) and a:
+        a = a[0]
+    if isinstance(a, dict):
+        u = a.get("url") or a.get("sameAs") or ""
+        u = u[0] if isinstance(u, list) and u else u
+        return str(u).strip() if str(u).startswith("http") else ""
+    return ""
 
 
 def _author_name(obj: dict) -> str:
@@ -118,12 +129,13 @@ def structured_thread(soup: BeautifulSoup) -> str:
             kind = str(obj.get("@type") or "Item")
             kind = "COMMENT" if kind in ("Comment", "Answer") else "POST"
             author = _author_name(obj) or "unknown"
+            link = _author_url(obj)
             body = re.sub(r"\s+", " ", body).strip()
             key = (author, body[:200])
             if key in seen:
                 continue
             seen.add(key)
-            lines.append(f"{kind} by {author}: {body}")
+            lines.append(f"{kind} by {author}{f' <{link}>' if link else ''}: {body}")
     return "\n".join(lines)
 
 
@@ -195,6 +207,18 @@ class _Robots:
         return True if rp is None else rp.can_fetch(ROBOTS_AGENT, url)
 
 
+def _classify_text(url: str, status: int, text: str, via: str) -> CrawlOutcome:
+    """Plain text / markdown from a reader service (Jina) instead of HTML."""
+    if status in (401, 403, 407, 429, 451, 999) or status >= 400:
+        return CrawlOutcome(url=url, blocked=status in (401, 403, 407, 429, 451, 999), error=f"HTTP {status}", via=via)
+    text = re.sub(r"\n{3,}", "\n\n", text or "").strip()
+    if len(text) < MIN_USEFUL_CHARS or (_WALL_PATTERNS.search(text[:3000]) and len(text) < 1200):
+        return CrawlOutcome(url=url, markdown=text, blocked=True, error="login wall / bot check / empty page", via=via)
+    contacts = contact_mentions(text)
+    parts = [f"## Contact details found on the page\n{contacts}" if contacts else "", "## Page text\n" + text]
+    return CrawlOutcome(url=url, markdown="\n\n".join(p for p in parts if p)[:MAX_TEXT_CHARS], ok=True, via=via)
+
+
 def _classify(url: str, final_url: str, status: int, ctype: str, html: str, via: str) -> CrawlOutcome:
     if status in (401, 403, 407, 429, 999) or _WALL_URL.search(urlparse(final_url).path or ""):
         return CrawlOutcome(url=url, blocked=True, error=f"HTTP {status}" if status >= 400 else "login wall", via=via)
@@ -263,32 +287,58 @@ async def _paced_direct(client: primp.AsyncClient, sems: Dict[str, asyncio.Semap
     return outcome
 
 
+MAX_UNBLOCK_TRIES = 2     # unblocker services tried per page (keeps a batch inside the function time limit)
+
+
+async def _unblock(name: str, keys: dict, proxy_client: Optional[primp.AsyncClient], url: str) -> CrawlOutcome:
+    if name == "scrapedo":
+        return await _scrapedo(proxy_client or primp.AsyncClient(timeout=SCRAPEDO_TIMEOUT_S + 5), url,
+                               scrapedo_token(keys))
+    from integrations import SERVICES, unblock_fetch
+    via = SERVICES[name][1].split(" (")[0]
+    status, final, ctype, body, err = await unblock_fetch(name, keys, url)
+    if err:
+        return CrawlOutcome(url=url, error=err, via=via)
+    if name == "jina":
+        return _classify_text(url, status, body, via)
+    return _classify(url, final, status, ctype, body, via)
+
+
 async def _fetch_one(client: primp.AsyncClient, proxy_client: Optional[primp.AsyncClient],
                      robots: Optional[_Robots], sems: Dict[str, asyncio.Semaphore],
-                     url: str, timeout_s: float) -> CrawlOutcome:
+                     url: str, timeout_s: float, unblockers: List[str], keys: dict) -> CrawlOutcome:
     if robots and not await robots.allowed(url):
         return CrawlOutcome(url=url, blocked=True, error="disallowed by robots.txt")
     outcome = await _paced_direct(client, sems, url, timeout_s)
-    token = scrapedo_token()
-    if outcome.ok or not token or proxy_client is None:
+    if outcome.ok or (outcome.error or "").startswith(("HTTP 404", "HTTP 410")):
         return outcome
-    # Blocked, walled or failed directly → retry through Scrape.do.
-    retry = await _scrapedo(proxy_client, url, token)
-    if retry.ok or not outcome.error:
-        return retry
-    retry.error = f"{outcome.error}; {retry.error}"
-    return retry
+    # Blocked, walled or failed directly → retry through the configured unblocker services.
+    errors = [outcome.error or "failed"]
+    for name in unblockers[:MAX_UNBLOCK_TRIES]:
+        retry = await _unblock(name, keys, proxy_client, url)
+        if retry.ok:
+            return retry
+        errors.append(retry.error or "failed")
+        outcome = retry
+    if len(errors) > 1:
+        outcome.error = "; ".join(errors)
+    return outcome
 
 
 async def fetch_batch(urls: List[str], page_timeout_s: int = DEFAULT_PAGE_TIMEOUT_S,
-                      respect_robots: bool = True) -> List[CrawlOutcome]:
+                      respect_robots: bool = True, keys: Optional[dict] = None) -> List[CrawlOutcome]:
     """Fetch a batch of URLs concurrently; never raises."""
     if not urls:
         return []
+    from integrations import summary
+    keys = dict(keys or {})
+    if scrapedo_token(keys):
+        keys["scrapedo"] = scrapedo_token(keys)
+    unblockers = summary(keys)["unblock"]
     client = primp.AsyncClient(impersonate="chrome", follow_redirects=True, max_redirects=5,
                                timeout=page_timeout_s, headers={"Accept-Language": "en-IN,en;q=0.9"})
-    proxy_client = primp.AsyncClient(timeout=SCRAPEDO_TIMEOUT_S + 5) if scrapedo_token() else None
+    proxy_client = primp.AsyncClient(timeout=SCRAPEDO_TIMEOUT_S + 5) if "scrapedo" in unblockers else None
     robots = _Robots(client) if respect_robots else None
     sems: Dict[str, asyncio.Semaphore] = {}
     return list(await asyncio.gather(
-        *(_fetch_one(client, proxy_client, robots, sems, u, page_timeout_s) for u in urls)))
+        *(_fetch_one(client, proxy_client, robots, sems, u, page_timeout_s, unblockers, keys) for u in urls)))

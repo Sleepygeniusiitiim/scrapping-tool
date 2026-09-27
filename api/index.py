@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import re
 import os
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ import supabase_db as db  # noqa: E402
 from gemini_client import DEFAULT_MODEL, Gemini, GeminiError, GeminiQuotaError  # noqa: E402
 from openrouter_client import PROVIDERS, OpenRouter  # noqa: E402
 from ai_chain import FALLBACK_ORDER, AIChain  # noqa: E402
+import integrations  # noqa: E402
 import outreach  # noqa: E402
 from schema import CandidateRecord  # noqa: E402
 
@@ -88,7 +90,7 @@ class VercelPathNormalizedMiddleware:
                     scope["path"] = "/api/" + clean
             elif current_path in ("/api/index", "/api/index.py", "/index", "/index.py"):
                 scope["path"] = "/api/health"
-            elif current_path in ("/health", "/plan", "/search", "/dedup", "/process", "/candidates"):
+            elif current_path in ("/health", "/plan", "/search", "/dedup", "/process", "/candidates", "/enrich"):
                 scope["path"] = "/api" + current_path
 
         await self.app(scope, receive, send)
@@ -167,6 +169,19 @@ def _gemini(
     return AIChain(entries)
 
 
+def _keys(x_integrations: Optional[str] = Header(default=None)) -> dict:
+    """Third-party service keys (search, unblock, enrichment) from the page, falling back to env vars."""
+    return integrations.resolve_keys(_json_header_raw(x_integrations))
+
+
+def _json_header_raw(value: Optional[str]) -> dict:
+    try:
+        data = json.loads(value or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _db(x_database_url: Optional[str] = Header(default=None)) -> None:
     # The connection string comes from the server environment only. Accepting it
     # from a request header would let any caller point the server at another host.
@@ -195,7 +210,7 @@ class PlanIn(BaseModel):
 
 class QueryIn(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
-    max_results: int = Field(10, ge=1, le=30)
+    max_results: int = Field(10, ge=1, le=100)
     region: str = "in-en"
     backend: str = "auto"
 
@@ -241,6 +256,7 @@ async def health(
     x_llm_keys: Optional[str] = Header(default=None),
     x_llm_models: Optional[str] = Header(default=None),
     x_database_url: Optional[str] = Header(default=None),
+    x_integrations: Optional[str] = Header(default=None),
 ):
     out = {}
     try:
@@ -252,7 +268,9 @@ async def health(
         err = str(getattr(exc, "detail", exc))
         out["database_error"] = err
         out["supabase_error"] = err
-    out["scrapedo"] = "configured" if os.getenv("SCRAPEDO_TOKEN", "").strip() else "not set"
+    keys = _keys(x_integrations)
+    out["scrapedo"] = "configured" if keys.get("scrapedo") else "not set"
+    out["integrations"] = integrations.summary(keys)
     try:
         gem = _gemini(x_gemini_key=x_gemini_key, x_gemini_model=x_gemini_model, x_gemini_mode=x_gemini_mode,
                       x_openrouter_key=x_openrouter_key, x_openrouter_model=x_openrouter_model,
@@ -281,9 +299,9 @@ async def plan(
 
 
 @router.post("/search")
-def search(body: QueryIn):
+def search(body: QueryIn, keys: dict = Depends(_keys)):
     backend = body.backend if body.backend in ("auto", "duckduckgo", "google") else "auto"
-    return pipeline.run_query(body.query, body.max_results, body.region, backend)
+    return pipeline.run_query(body.query, body.max_results, body.region, backend, keys)
 
 
 @router.post("/dedup")
@@ -299,6 +317,7 @@ def dedup(body: DedupIn, x_database_url: Optional[str] = Header(default=None)):
 async def process(
     body: BatchIn,
     gemini = Depends(_gemini),
+    keys: dict = Depends(_keys),
     x_database_url: Optional[str] = Header(default=None),
 ):
     _db(x_database_url)
@@ -313,6 +332,7 @@ async def process(
             body.snippet_fallback,
             body.extraction,
             body.plan_queries,
+            keys,
         )
         result["warnings"] = gemini.notices + result.get("warnings", [])
         return result
@@ -339,6 +359,62 @@ def save(body: SaveIn, x_database_url: Optional[str] = Header(default=None)):
         return {"saved": db.save_candidates(body.records)}
     except db.SupabaseError as exc:
         raise HTTPException(502, str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Contact enrichment (Apollo, Lusha, ContactOut, RocketReach — official APIs, your own keys)
+# ---------------------------------------------------------------------------
+class EnrichIn(BaseModel):
+    candidate_ids: List[str] = Field(..., min_length=1, max_length=10)
+    providers: List[str] = Field(default_factory=list)
+
+
+_LINKEDIN_IN = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[^/?#\s]+", re.IGNORECASE)
+
+
+@router.post("/enrich")
+async def enrich(body: EnrichIn, keys: dict = Depends(_keys)):
+    """Fill missing phone / email from the lead databases the user has keys for."""
+    _db()
+    providers = [p for p in (body.providers or integrations.ENRICH_ORDER) if keys.get(p)]
+    if not providers:
+        raise HTTPException(400, "No enrichment key set. Add an Apollo, Lusha, ContactOut or RocketReach "
+                                 "API key under “Lead databases & search APIs”.")
+    try:
+        cands = await run_in_threadpool(db.get_candidates, body.candidate_ids)
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+    stopped: set = set()
+    sem = asyncio.Semaphore(3)
+
+    async def one(c: dict) -> dict:
+        if c.get("email") and c.get("phone"):
+            return {"id": c["id"], "name": c.get("name"), "skipped": "already has phone and email"}
+        li = c.get("profile_url") or ""
+        if not li:
+            m = _LINKEDIN_IN.match(c.get("source_url") or "")
+            li = m.group() if m else ""
+        async with sem:
+            found = await integrations.enrich_person(
+                keys, {"name": c.get("name"), "linkedin_url": li}, providers, stopped)
+        fields = {}
+        if found["email"] and not c.get("email"):
+            fields["email"] = found["email"]
+        if found["phone"] and not c.get("phone"):
+            fields["phone"] = found["phone"]
+        out = {"id": c["id"], "name": c.get("name"), "tried": found["tried"], "errors": found["errors"][:3]}
+        if fields:
+            fields["contact_source"] = f"enriched:{found['provider']}"
+            fields["contact_shared_at"] = "now()"
+            try:
+                row = await run_in_threadpool(db.update_candidate, c["id"], fields)
+                out.update({"email": row.get("email"), "phone": row.get("phone"), "provider": found["provider"]})
+            except db.SupabaseError as exc:
+                out["errors"].append(str(exc)[:160])
+        return out
+
+    results = await asyncio.gather(*(one(c) for c in cands))
+    return {"results": results, "providers": providers, "stopped": sorted(stopped)}
 
 
 # ---------------------------------------------------------------------------

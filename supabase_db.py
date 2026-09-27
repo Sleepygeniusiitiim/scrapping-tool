@@ -100,6 +100,8 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS outreach_message TEXT;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS outreach_sent_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS reply_text TEXT;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP WITH TIME ZONE;
+-- The candidate's own profile link (LinkedIn /in/…), used for contact enrichment (Apollo, Lusha, …).
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profile_url TEXT;
 """
 
 
@@ -380,6 +382,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
             r.get("phone"),
             r["source_url"],
             r.get("platform"),
+            r.get("profile_url"),
         )
         for r in by_url.values()
     ]
@@ -393,7 +396,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                         f"""
                         INSERT INTO {CANDIDATES_TABLE} (
                             name, "current_role", skills, current_location,
-                            target_countries, evidence_snippet, email, phone, source_url, platform
+                            target_countries, evidence_snippet, email, phone, source_url, platform, profile_url
                         )
                         VALUES %s
                         ON CONFLICT (source_url) DO UPDATE SET
@@ -409,6 +412,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                             email = COALESCE(EXCLUDED.email, {CANDIDATES_TABLE}.email),
                             phone = COALESCE(EXCLUDED.phone, {CANDIDATES_TABLE}.phone),
                             platform = COALESCE(EXCLUDED.platform, {CANDIDATES_TABLE}.platform),
+                            profile_url = COALESCE(EXCLUDED.profile_url, {CANDIDATES_TABLE}.profile_url),
                             discovered_at = NOW();
                         """,
                         list(chunk),
@@ -453,7 +457,7 @@ def fetch_all_candidates() -> List[dict]:
                            target_countries, evidence_snippet, email, phone, source_url,
                            platform, discovered_at, contact_source, contact_shared_at,
                            COALESCE(outreach_status, 'new') AS outreach_status, outreach_message,
-                           outreach_sent_at, reply_text, replied_at
+                           outreach_sent_at, reply_text, replied_at, profile_url
                     FROM {CANDIDATES_TABLE}
                     ORDER BY discovered_at DESC;
                     """
@@ -482,7 +486,7 @@ def get_candidates(ids: List[str]) -> List[dict]:
                 cur.execute(
                     f"""
                     SELECT id, name, "current_role", skills, current_location, target_countries,
-                           evidence_snippet, email, phone, source_url, platform,
+                           evidence_snippet, email, phone, source_url, platform, profile_url,
                            COALESCE(outreach_status, 'new') AS outreach_status, outreach_message
                     FROM {CANDIDATES_TABLE} WHERE id::text = ANY(%s);
                     """,

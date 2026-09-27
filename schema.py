@@ -84,6 +84,7 @@ class CandidateRecord(BaseModel):
     phone: Optional[str] = Field(None, description="Phone / WhatsApp number the person themselves posted")
     source_url: str = Field(..., description="Canonical page the record was extracted from")
     platform: Optional[str] = Field(None, description="linkedin / reddit / quora / forum / job_portal / …")
+    profile_url: Optional[str] = Field(None, description="The person's own profile link (for contact enrichment)")
 
     @field_validator("name", "current_role", "current_location", "platform", mode="before")
     @classmethod

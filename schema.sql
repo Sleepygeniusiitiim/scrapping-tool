@@ -50,3 +50,6 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS phone TEXT;
 -- ALTER TABLE candidates   ENABLE ROW LEVEL SECURITY;
 -- CREATE POLICY "agent_all_scraped_urls" ON scraped_urls FOR ALL TO anon USING (true) WITH CHECK (true);
 -- CREATE POLICY "agent_all_candidates"   ON candidates   FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- The candidate's own profile link (LinkedIn /in/…), used for contact enrichment.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profile_url TEXT;

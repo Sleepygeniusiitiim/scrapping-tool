@@ -108,6 +108,13 @@
       “AI provider” and paste its key — every key is remembered). The chosen provider is used first; when it
       runs out of credits or hits its limit, the run switches to the next provider with a key
       (Gemini → Groq → Cerebras → Mistral → OpenRouter → DeepSeek → Kimi).</p>
+    <details style="margin-top:12px" id="intBox">
+      <summary>🔑 Lead databases &amp; search APIs (Apollo, Lusha, ContactOut, RocketReach, Google, unblockers)</summary>
+      <p style="color:var(--muted);font-size:13px">Paste API keys (from each service's dashboard → API / Integrations).
+        Keys stay in this browser and are sent only to your own server; Vercel env vars work too. Account
+        passwords are not supported — automated logins break these services' terms and get accounts banned.</p>
+      <div id="intFields"></div>
+    </details>
     <p class="status" id="testOut"></p>
   </section>
 
@@ -120,14 +127,14 @@
       <div class="grid" style="margin-top:10px">
         <div><label for="numWaves">Number of waves</label><input id="numWaves" type="number" min="1" max="6" value="3"></div>
         <div><label for="qpw">Queries per wave</label><input id="qpw" type="number" min="1" max="10" value="5"></div>
-        <div><label for="maxRes">Max results per query</label><input id="maxRes" type="number" min="5" max="30" value="10"></div>
+        <div><label for="maxRes">Max results per query</label><input id="maxRes" type="number" min="5" max="100" value="20"></div>
         <div><label for="maxUrls">Max fresh URLs per wave</label><input id="maxUrls" type="number" min="5" max="100" value="30"></div>
         <div><label for="batch">Batch size</label><input id="batch" type="number" min="2" max="8" value="5"></div>
         <div><label for="timeout">Page timeout (s)</label><input id="timeout" type="number" min="5" max="30" value="15"></div>
         <div><label for="region">Search region</label>
           <select id="region"><option>in-en</option><option>wt-wt</option><option>us-en</option><option>uk-en</option><option>de-de</option></select></div>
         <div><label for="backend">Search backend</label>
-          <select id="backend"><option value="auto">auto (DuckDuckGo + Google)</option><option value="google">google (Scrape.do)</option><option value="duckduckgo">duckduckgo only</option></select></div>
+          <select id="backend"><option value="auto">auto (DuckDuckGo + Google)</option><option value="google">google only (search API)</option><option value="duckduckgo">duckduckgo only</option></select></div>
         <div><label for="extraction" title="How pages are read. Rules find emails, phone numbers, names, roles and countries with pattern matching — no AI tokens. The AI is then only used once per round, to plan the searches.">Page reading</label>
           <select id="extraction"><option value="rules">rules — no AI tokens</option><option value="hybrid">hybrid — AI only when rules find nobody</option><option value="ai">AI reads every page</option></select></div>
       </div>
@@ -160,6 +167,7 @@
   <section id="tab-run"></section>
   <section id="tab-db" class="hidden">
     <div class="row" style="margin-bottom:10px"><button id="loadDb">🔄 Load / refresh from Neon DB</button>
+      <button id="enrichBtn" title="Look up missing phone numbers / emails in Apollo, Lusha, ContactOut and RocketReach (uses their credits)">📇 Find missing contacts (lead databases)</button>
       <span class="status" id="dbStatus"></span></div>
     <div id="dbView"></div>
   </section>
@@ -274,6 +282,7 @@ async function api(path, body) {
   headers["X-LLM-Models"] = savedLLM("model");
   const gk = $("geminiKey").value.trim();
   if (gk) headers["X-Gemini-Key"] = gk;
+  headers["X-Integrations"] = integrationKeys();
   const res = await fetch(url, {
     method: body === undefined ? "GET" : "POST",
     headers,
@@ -448,6 +457,73 @@ $("loadDb").onclick = async () => {
   } catch (e) { $("dbStatus").textContent = e.message; }
 };
 
+// Third-party keys: [name, label, hint, group]
+const INTEGRATIONS = [
+  ["serper", "Serper.dev API key", "Google results · serper.dev", "Google search"],
+  ["serpapi", "SerpApi key", "Google results · serpapi.com", "Google search"],
+  ["google_cse_key", "Google Programmable Search API key", "100 free searches/day · developers.google.com/custom-search", "Google search"],
+  ["google_cse_cx", "Google Programmable Search engine ID (cx)", "programmablesearchengine.google.com", "Google search"],
+  ["brave", "Brave Search API key", "api-dashboard.search.brave.com", "Google search"],
+  ["scrapedo", "Scrape.do token", "Google results + unblocking · scrape.do", "Unblock sites that refuse the crawler"],
+  ["scraperapi", "ScraperAPI key", "scraperapi.com", "Unblock sites that refuse the crawler"],
+  ["zenrows", "ZenRows API key", "zenrows.com", "Unblock sites that refuse the crawler"],
+  ["scrapingbee", "ScrapingBee API key", "scrapingbee.com", "Unblock sites that refuse the crawler"],
+  ["jina", "Jina Reader key (optional)", "works free without a key, faster with one · jina.ai", "Unblock sites that refuse the crawler"],
+  ["contactout", "ContactOut API key", "contactout.com → API", "Lead databases (phone / email lookup)"],
+  ["lusha", "Lusha API key", "lusha.com → Settings → API", "Lead databases (phone / email lookup)"],
+  ["rocketreach", "RocketReach API key", "rocketreach.co → Account → API", "Lead databases (phone / email lookup)"],
+  ["apollo", "Apollo.io API key", "apollo.io → Settings → Integrations → API (emails only; phones need a webhook)", "Lead databases (phone / email lookup)"],
+];
+(function buildIntegrations() {
+  const box = $("intFields"); let group = "";
+  let grid = null;
+  for (const [name, label, hint, g] of INTEGRATIONS) {
+    if (g !== group) {
+      group = g; const h = document.createElement("h3"); h.textContent = g;
+      h.style.cssText = "font-size:14px;margin:14px 0 6px"; box.appendChild(h);
+      grid = document.createElement("div"); grid.className = "grid"; box.appendChild(grid);
+    }
+    const d = document.createElement("div");
+    const l = document.createElement("label"); l.htmlFor = "int_" + name; l.textContent = label; l.title = hint;
+    const i = document.createElement("input"); i.id = "int_" + name; i.type = "password"; i.autocomplete = "off";
+    i.placeholder = hint; i.value = load("csa_int_" + name) || "";
+    i.addEventListener("change", () => store("csa_int_" + name, i.value.trim()));
+    d.append(l, i); grid.appendChild(d);
+  }
+})();
+function integrationKeys() {
+  const out = {};
+  for (const [name] of INTEGRATIONS) { const v = $("int_" + name).value.trim(); if (v) out[name] = v; }
+  return JSON.stringify(out);
+}
+function intLine(s) {
+  if (!s) return "";
+  const f = (xs) => xs.length ? xs.join(", ") : "none";
+  return `Google search: ${f(s.search)} · Unblockers: ${f(s.unblock)} · Lead databases: ${f(s.enrich)}`;
+}
+
+$("enrichBtn").onclick = async () => {
+  const btn = $("enrichBtn"); btn.disabled = true;
+  try {
+    const all = (await api("/api/candidates")).candidates;
+    const todo = all.filter((c) => !c.phone || !c.email);
+    if (!todo.length) { $("dbStatus").textContent = "Every candidate already has phone and email."; return; }
+    let filled = 0, done = 0; const errors = new Set();
+    for (let i = 0; i < todo.length; i += 10) {
+      const chunk = todo.slice(i, i + 10);
+      $("dbStatus").textContent = `Looking up ${done + 1}–${done + chunk.length} of ${todo.length}… (${filled} filled so far)`;
+      const r = await api("/api/enrich", { candidate_ids: chunk.map((c) => c.id) });
+      for (const x of r.results) { if (x.provider) filled++; (x.errors || []).forEach((e) => errors.add(e)); }
+      done += chunk.length;
+      if (r.stopped && r.stopped.length >= r.providers.length) { errors.add("All lead databases out of credits or rejected their keys."); break; }
+    }
+    $("dbStatus").textContent = `Lead databases filled contacts for ${filled} of ${done} candidates.` +
+      (errors.size ? " Notes: " + [...errors].slice(0, 3).join(" | ") : "");
+    $("loadDb").onclick();
+  } catch (e) { $("dbStatus").textContent = e.message; }
+  finally { btn.disabled = false; }
+};
+
 $("testBtn").onclick = async () => {
   store("csa_pw", $("pw").value);
   store("csa_gemini_key", $("geminiKey").value.trim());
@@ -460,7 +536,7 @@ $("testBtn").onclick = async () => {
     const dbErr = r.database_error || r.supabase_error;
     const parts = [dbMsg ? "✅ " + dbMsg : "❌ Neon DB: " + dbErr,
                    r.gemini ? "✅ " + r.gemini : "❌ AI: " + r.gemini_error,
-                   r.scrapedo === "configured" ? "✅ Scrape.do configured" : "⚪ Scrape.do not set (optional)"];
+                   intLine(r.integrations)];
     out.textContent = parts.join("  ·  ");
   } catch (e) { out.className = "status err"; out.textContent = e.message; }
 };
@@ -568,8 +644,9 @@ async function runPipeline(intent, totals, rounds) {
         for (const h of r.hits) if (!hits.has(h.url)) { hits.set(h.url, h); added++; }
         if (r.google_missing && !state.googleHinted) {
           state.googleHinted = true;
-          logEv("warning", "Google search is not configured (SCRAPEDO_TOKEN not set), so only DuckDuckGo is used and " +
-            "many Reddit / Quora / forum pages are missed. Add SCRAPEDO_TOKEN in Vercel → Environment Variables.", name);
+          logEv("warning", "Google search is not configured, so only DuckDuckGo is used and many pages are missed. " +
+            "Add a Serper.dev, SerpApi, Google Programmable Search, Brave or Scrape.do key under " +
+            "“Lead databases & search APIs” (Serper.dev has a free starter allowance).", name);
         }
         if (r.error) logEv("warning", `Query skipped (${r.error.slice(0, 120)}): ${q}`, name);
         else logEv("query", `${r.hits.length} results (+${added} new) [${(r.sources || []).join("+")}] ← ${q}`, name);
@@ -617,7 +694,7 @@ async function runPipeline(intent, totals, rounds) {
         }
         logEv("saved", `Batch ${b + 1}: ${r.stats.pages_read ?? r.stats.sent_to_gemini} pages read (${r.stats.sent_to_gemini} by AI) → ${r.stats.records} candidates saved` +
           ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email)` +
-          (r.stats.via_scrapedo ? ` · ${r.stats.via_scrapedo} pages via Scrape.do` : ""), name);
+          (r.stats.via_scrapedo ? ` · unblocked: ${Object.entries(r.stats.via || {}).map(([k, n]) => `${n} via ${k}`).join(", ") || r.stats.via_scrapedo}` : ""), name);
         addRunRecords(r.records);
         renderStats(); renderRun();
       } catch (e) {

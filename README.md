@@ -59,6 +59,25 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
   Without the token only DuckDuckGo is used, and the run log says so.
   Choose "google (Scrape.do)" as the search backend to use Google only. Both use Scrape.do credits.
 
+## Lead databases, Google search and unblockers
+
+Under **“🔑 Lead databases & search APIs”** on the home page (or as Vercel env vars):
+
+| Purpose | Services (env var) |
+|---|---|
+| Google search | Serper.dev (`SERPER_API_KEY`), SerpApi (`SERPAPI_KEY`), Google Programmable Search (`GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX`), Brave (`BRAVE_API_KEY`), Scrape.do (`SCRAPEDO_TOKEN`) |
+| Sites that refuse the crawler (403 / bot checks) | Scrape.do, ScraperAPI (`SCRAPERAPI_KEY`), ZenRows (`ZENROWS_API_KEY`), ScrapingBee (`SCRAPINGBEE_API_KEY`), Jina Reader (free; `JINA_API_KEY` optional, `DISABLE_JINA=1` to turn off) |
+| Phone / email lookup | ContactOut (`CONTACTOUT_API_KEY`), Lusha (`LUSHA_API_KEY`), RocketReach (`ROCKETREACH_API_KEY`), Apollo (`APOLLO_API_KEY`) |
+
+- Without any Google key the app can only use DuckDuckGo, which returns few results from Vercel.
+- A page that refuses the direct fetch is retried through up to two unblockers, in the order above.
+- **📇 Find missing contacts** (All saved candidates tab) looks up every candidate without a phone or
+  email in the lead databases, using their LinkedIn profile link (saved from post comments and profile
+  pages). Found contacts are saved with `contact_source = enriched:<service>`. Each lookup uses that
+  service's credits; coverage is best for people with a LinkedIn profile. Apollo returns emails only
+  (its phone reveal needs a webhook).
+- Only API keys are supported, not account passwords: automated logins break these services' terms.
+
 ## Page reading without AI tokens
 
 Fetching pages never uses AI — it is plain HTTP (`fetcher.py`). Reading them is set by

@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from fetcher import EMAIL_RE, PHONE_RE
 
-_THREAD_LINE = re.compile(r"^(POST|COMMENT) by (.+?): (.*)$", re.MULTILINE)
+_THREAD_LINE = re.compile(r"^(POST|COMMENT) by (.+?)(?: <(https?://[^>\s]+)>)?: (.*)$", re.MULTILINE)
 
 _SELF = re.compile(
     r"\b(?:i|i'?m|iam|my|me|mine|myself|interested|intrested|intersted|my cv|resume|cv attached|"
@@ -272,8 +272,8 @@ def extract_people(content: str, url: str, keywords: List[str], snippet_only: bo
     # 1. Author-attributed thread: each commenter (and a non-recruiter post author) is a person.
     thread = _THREAD_LINE.findall(content)
     if thread:
-        post_targets = _targets(" ".join(b for k, _, b in thread if k == "POST"))
-        for kind, author, body in thread:
+        post_targets = _targets(" ".join(b for k, _, _, b in thread if k == "POST"))
+        for kind, author, link, body in thread:
             author = author.strip()
             if author.lower() == "unknown":
                 author = _name_said(body)
@@ -284,6 +284,7 @@ def extract_people(content: str, url: str, keywords: List[str], snippet_only: bo
             p = _person(author, body, role_rx, word_rx, post_targets if kind == "COMMENT" else None,
                         context_for_role="page" if page_relevant and kind == "COMMENT" else "")
             if p["_relevant"] and (p["name"] or p["email"] or p["phone"]):
+                p["profile_url"] = link or None
                 people.append(p)
         if people:
             return _clean(people)
@@ -294,6 +295,7 @@ def extract_people(content: str, url: str, keywords: List[str], snippet_only: bo
         head = page_text[:6000]
         if name and not _HIRING.search(title):
             p = _person(name, head, role_rx, word_rx)
+            p["profile_url"] = url
             if p["_relevant"]:
                 return _clean([p])
 

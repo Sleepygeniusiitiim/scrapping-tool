@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 
 import supabase_db as db
 import rule_extractor
+import integrations
 from fetcher import PHONE_RE, fetch_batch, scrapedo_token
 from gemini_client import Gemini, GeminiError, GeminiQuotaError
 from schema import CandidateRecord, ComprehensiveSearchPlan, PageExtraction
@@ -200,14 +201,15 @@ def _phone_on_page(phone: Optional[str], content: str) -> bool:
     return any(p[-10:] == digits[-10:] for p in page_digits if len(p) >= 8)
 
 
-_THREAD_LINE = re.compile(r"^(?:POST|COMMENT) by (.+?): (.*)$", re.MULTILINE)
+_THREAD_LINE = re.compile(r"^(?:POST|COMMENT) by (.+?)(?: <(https?://[^>\s]+)>)?: (.*)$", re.MULTILINE)
+_PROFILE_URL = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[^/?#\s]+", re.IGNORECASE)
 
 
 def _thread_lines(content: str, name: Optional[str]) -> tuple[str, str]:
     """(this person's lines, everyone else's lines) from the structured post/comment block."""
     who = (name or "").strip().lower()
     own, others = [], []
-    for author, body in _THREAD_LINE.findall(content):
+    for author, _, body in _THREAD_LINE.findall(content):
         (own if who and author.strip().lower() == who else others).append(body)
     return "\n".join(own), "\n".join(others)
 
@@ -220,6 +222,17 @@ def _owned(value: Optional[str], on_page, content: str, own: str, others: str) -
         return True
     # Written by another author (e.g. the recruiter's own number) → not this person's.
     return not (others and on_page(value, others))
+
+
+def _profile_url(url: str, content: str, name: Optional[str]) -> Optional[str]:
+    """The person's own profile link: the page itself for a profile page, else their thread author link."""
+    if _PROFILE_URL.match(url):
+        return url
+    who = (name or "").strip().lower()
+    for author, link, _ in _THREAD_LINE.findall(content):
+        if link and who and author.strip().lower() == who:
+            return link
+    return None
 
 
 def _slug(text: str) -> str:
@@ -277,6 +290,8 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
             d["email"] = None
         if not _owned(d.get("phone"), _phone_on_page, content, own, others):
             d["phone"] = None
+        if not d.get("profile_url"):
+            d["profile_url"] = _profile_url(url, content, d.get("name"))
         people.append(d)
     records: List[CandidateRecord] = []
     for row in _assign_source_urls(url, people):
@@ -307,9 +322,13 @@ async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_w
     return {"waves": [w.model_dump() for w in waves]}
 
 
-def run_query(query: str, max_results: int, region: str, backend: str) -> dict:
-    """backend: auto (DuckDuckGo + Google when SCRAPEDO_TOKEN is set) | duckduckgo | google."""
-    token = scrapedo_token()
+def run_query(query: str, max_results: int, region: str, backend: str, keys: Optional[dict] = None) -> dict:
+    """backend: auto (DuckDuckGo + a Google API when one has a key) | duckduckgo | google."""
+    keys = keys or {}
+    token = scrapedo_token(keys)
+    if token:
+        keys = {**keys, "scrapedo": token}
+    google_apis = integrations.search_available(keys)
     sources, errors, rate_limited = [], [], False
     hits: Dict[str, dict] = {}
 
@@ -322,21 +341,44 @@ def run_query(query: str, max_results: int, region: str, backend: str) -> dict:
         for h in outcome.hits:
             hits.setdefault(h.url, {"url": h.url, "title": h.title, "snippet": h.snippet})
 
-    if backend != "google" or not token:
+    if backend != "google" or not google_apis:
         ddg_backend = "duckduckgo" if backend == "duckduckgo" else "auto"
         add(search_query(query, max_results=max_results, region=region, backend=ddg_backend), "ddg")
     # Google finds pages DuckDuckGo misses (Reddit, Quora, forums), so auto always adds it when possible.
-    if token and backend in ("auto", "google"):
-        add(google_search_scrapedo(query, token, max_results=max_results, region=region), "google")
+    # The first configured API is used; if it fails (no credits, bad key) the next one is tried.
+    if backend in ("auto", "google"):
+        for name in google_apis:
+            if name == "scrapedo":
+                outcome = google_search_scrapedo(query, token, max_results=max_results, region=region)
+            else:
+                found, err, limited = integrations.web_search(name, keys, query, max_results, region)
+                outcome = _Outcome(found, err, limited)
+            add(outcome, name)
+            if not outcome.error:
+                break
+        if backend == "google" and google_apis and not hits:
+            add(search_query(query, max_results=max_results, region=region, backend="auto"), "ddg")
 
     return {
         "query": query,
         "error": "; ".join(errors) if errors and not hits else None,
         "rate_limited": rate_limited,
         "sources": sources,
-        "google_missing": backend in ("auto", "google") and not token,
+        "google_missing": backend in ("auto", "google") and not google_apis,
         "hits": list(hits.values())[:max_results * 2],
     }
+
+
+class _Outcome:
+    """integrations.web_search result in the shape run_query's add() expects."""
+
+    def __init__(self, found: List[dict], error: Optional[str], rate_limited: bool):
+        from search_module import SearchHit, canonicalize_url, is_useful_url
+        self.error, self.rate_limited, self.hits = error, rate_limited, []
+        for h in found:
+            canon = canonicalize_url(h["url"])
+            if canon and is_useful_url(canon):
+                self.hits.append(SearchHit(url=canon, title=h["title"], snippet=h["snippet"]))
 
 
 def dedup_urls(urls: List[str]) -> List[str]:
@@ -345,14 +387,15 @@ def dedup_urls(urls: List[str]) -> List[str]:
 
 async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag: str,
                         page_timeout_s: int, respect_robots: bool, snippet_fallback: bool,
-                        extraction: str = "rules", plan_queries: Optional[List[str]] = None) -> dict:
+                        extraction: str = "rules", plan_queries: Optional[List[str]] = None,
+                        keys: Optional[dict] = None) -> dict:
     """items: [{url, title, snippet}] — record, fetch, extract, save."""
     urls = [i["url"] for i in items]
     hits: Dict[str, dict] = {i["url"]: i for i in items}
     # Record right before crawling so a stopped run leaves unreached URLs unmarked.
     await asyncio.to_thread(db.record_scraped_urls, urls, wave_tag)
 
-    outcomes = await fetch_batch(urls, page_timeout_s=page_timeout_s, respect_robots=respect_robots)
+    outcomes = await fetch_batch(urls, page_timeout_s=page_timeout_s, respect_robots=respect_robots, keys=keys)
     stats = {"crawled": sum(o.ok for o in outcomes), "blocked": sum(o.blocked for o in outcomes)}
     stats["failed"] = len(outcomes) - stats["crawled"] - stats["blocked"]
 
@@ -422,7 +465,9 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
         "stats": {**stats, "records": len(records), "dropped": dropped, "sent_to_gemini": ai_pages, "pages_read": len(jobs),
                   "with_phone": sum(1 for r in records if r.phone),
                   "with_email": sum(1 for r in records if r.email),
-                  "via_scrapedo": sum(1 for o in outcomes if o.via == "scrape.do" and o.ok)},
+                  "via_scrapedo": sum(1 for o in outcomes if o.via != "direct" and o.ok),
+                  "via": {v: sum(1 for o in outcomes if o.via == v and o.ok)
+                          for v in {o.via for o in outcomes if o.via != "direct" and o.ok}}},
         "records": [r.model_dump() for r in records],
         "errors": {o.url: o.error for o in outcomes if o.error},
         "block_reasons": reasons,
