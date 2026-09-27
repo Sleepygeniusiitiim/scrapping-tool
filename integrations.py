@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
+import dates
 from fetcher import EMAIL_RE
 
 # name → (env var, label, kind)
@@ -83,36 +84,42 @@ def _gl(region: str) -> str:
     return (region.split("-")[0] if region and region != "wt-wt" else "in") or "in"
 
 
-def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, region: str
-               ) -> Tuple[List[dict], Optional[str], bool]:
-    """(hits, error, rate_limited) from one search API."""
+def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, region: str,
+               max_age_months: int = 0) -> Tuple[List[dict], Optional[str], bool]:
+    """(hits, error, rate_limited) from one search API. max_age_months > 0 restricts to recent pages."""
     gl = _gl(region)
     n = max(1, min(max_results, 100))
+    tbs = {"tbs": f"qdr:m{max_age_months}"} if max_age_months else {}
     try:
         with httpx.Client(timeout=25) as c:
             if name == "serper":
                 r = c.post("https://google.serper.dev/search", headers={"X-API-KEY": keys["serper"]},
-                           json={"q": query, "gl": gl, "hl": "en", "num": n})
-                items = [(i.get("link"), i.get("title"), i.get("snippet")) for i in _ok(r).get("organic", [])]
+                           json={"q": query, "gl": gl, "hl": "en", "num": n, **tbs})
+                items = [(i.get("link"), i.get("title"), i.get("snippet"), i.get("date"))
+                         for i in _ok(r).get("organic", [])]
             elif name == "serpapi":
                 r = c.get("https://serpapi.com/search.json", params={
-                    "engine": "google", "q": query, "gl": gl, "hl": "en", "num": n, "api_key": keys["serpapi"]})
-                items = [(i.get("link"), i.get("title"), i.get("snippet")) for i in _ok(r).get("organic_results", [])]
+                    "engine": "google", "q": query, "gl": gl, "hl": "en", "num": n, "api_key": keys["serpapi"], **tbs})
+                items = [(i.get("link"), i.get("title"), i.get("snippet"), i.get("date"))
+                         for i in _ok(r).get("organic_results", [])]
             elif name == "google_cse":
                 items = []
                 for start in range(1, min(n, 30) + 1, 10):      # 10 per call, max 3 calls
                     r = c.get("https://www.googleapis.com/customsearch/v1", params={
                         "key": keys["google_cse_key"], "cx": keys["google_cse_cx"], "q": query,
-                        "num": 10, "start": start, "gl": gl})
+                        "num": 10, "start": start, "gl": gl,
+                        **({"dateRestrict": f"m{max_age_months}"} if max_age_months else {})})
                     page = _ok(r).get("items", [])
-                    items += [(i.get("link"), i.get("title"), i.get("snippet")) for i in page]
+                    items += [(i.get("link"), i.get("title"), i.get("snippet"), _cse_date(i)) for i in page]
                     if len(page) < 10:
                         break
             elif name == "brave":
                 r = c.get("https://api.search.brave.com/res/v1/web/search",
                           headers={"X-Subscription-Token": keys["brave"], "Accept": "application/json"},
-                          params={"q": query, "count": min(n, 20), "country": gl.upper()})
-                items = [(i.get("url"), i.get("title"), re.sub(r"<[^>]+>", "", i.get("description") or ""))
+                          params={"q": query, "count": min(n, 20), "country": gl.upper(),
+                                  **({"freshness": "pm" if max_age_months <= 1 else "py"} if max_age_months else {})})
+                items = [(i.get("url"), i.get("title"), re.sub(r"<[^>]+>", "", i.get("description") or ""),
+                          i.get("page_age") or i.get("age"))
                          for i in (_ok(r).get("web") or {}).get("results", [])]
             else:
                 return [], f"unknown search service {name}", False
@@ -120,8 +127,17 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
         return [], f"{SERVICES.get(name, (0, name))[1]} {exc}", exc.code == 429
     except Exception as exc:
         return [], f"{name} {type(exc).__name__}: {str(exc)[:120]}", False
-    hits = [{"url": u, "title": (t or "").strip(), "snippet": (s or "").strip()} for u, t, s in items if u]
+    hits = [{"url": u, "title": (t or "").strip(), "snippet": (s or "").strip(), "date": dates.parse(d)}
+            for u, t, s, d in items if u]
     return hits[:n], None, False
+
+
+def _cse_date(item: dict) -> Optional[str]:
+    for meta in (item.get("pagemap") or {}).get("metatags") or []:
+        for k in ("article:published_time", "og:published_time", "datepublished", "date"):
+            if meta.get(k):
+                return meta[k]
+    return None
 
 
 class _HTTPFail(Exception):

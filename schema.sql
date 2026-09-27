@@ -53,3 +53,6 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS phone TEXT;
 
 -- The candidate's own profile link (LinkedIn /in/…), used for contact enrichment.
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profile_url TEXT;
+
+-- When the lead was active: date of the post / comment it came from.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS activity_date DATE;

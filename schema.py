@@ -85,6 +85,13 @@ class CandidateRecord(BaseModel):
     source_url: str = Field(..., description="Canonical page the record was extracted from")
     platform: Optional[str] = Field(None, description="linkedin / reddit / quora / forum / job_portal / …")
     profile_url: Optional[str] = Field(None, description="The person's own profile link (for contact enrichment)")
+    activity_date: Optional[str] = Field(None, description="YYYY-MM-DD of the post / comment the lead came from")
+
+    @field_validator("activity_date", mode="before")
+    @classmethod
+    def _iso_date(cls, v):
+        v = _clean_str(v)
+        return v[:10] if v and re.match(r"\d{4}-\d{2}-\d{2}", v) else None
 
     @field_validator("name", "current_role", "current_location", "platform", mode="before")
     @classmethod

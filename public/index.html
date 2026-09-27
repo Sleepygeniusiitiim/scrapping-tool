@@ -108,14 +108,20 @@
       “AI provider” and paste its key — every key is remembered). The chosen provider is used first; when it
       runs out of credits or hits its limit, the run switches to the next provider with a key
       (Gemini → Groq → Cerebras → Mistral → OpenRouter → DeepSeek → Kimi).</p>
-    <details style="margin-top:12px" id="intBox">
-      <summary>🔑 Lead databases &amp; search APIs (Apollo, Lusha, ContactOut, RocketReach, Google, unblockers)</summary>
+    <p class="status" id="testOut"></p>
+  </section>
+
+  <h2 id="keysHeading">🔑 Lead databases &amp; search API keys</h2>
+  <section class="panel">
+    <details id="intBox" open>
+      <summary>Apollo, Lusha, ContactOut, RocketReach · Google search · unblockers — click to show / hide</summary>
       <p style="color:var(--muted);font-size:13px">Paste API keys (from each service's dashboard → API / Integrations).
         Keys stay in this browser and are sent only to your own server; Vercel env vars work too. Account
         passwords are not supported — automated logins break these services' terms and get accounts banned.</p>
       <div id="intFields"></div>
+      <p style="color:var(--muted);font-size:13px;margin-top:10px">Keys are saved as you type. Click
+        “Test connections” at the top to see which services are active.</p>
     </details>
-    <p class="status" id="testOut"></p>
   </section>
 
   <h2>Search</h2>
@@ -135,6 +141,8 @@
           <select id="region"><option>in-en</option><option>wt-wt</option><option>us-en</option><option>uk-en</option><option>de-de</option></select></div>
         <div><label for="backend">Search backend</label>
           <select id="backend"><option value="auto">auto (DuckDuckGo + Google)</option><option value="google">google only (search API)</option><option value="duckduckgo">duckduckgo only</option></select></div>
+        <div><label for="maxAge" title="Search only recent pages, and drop leads whose post / comment is older. Leads with no date found are kept.">Only leads active in the last</label>
+          <select id="maxAge"><option value="1">1 month</option><option value="3">3 months</option><option value="6" selected>6 months</option><option value="12">12 months</option><option value="24">2 years</option><option value="0">any time</option></select></div>
         <div><label for="extraction" title="How pages are read. Rules find emails, phone numbers, names, roles and countries with pattern matching — no AI tokens. The AI is then only used once per round, to plan the searches.">Page reading</label>
           <select id="extraction"><option value="rules">rules — no AI tokens</option><option value="hybrid">hybrid — AI only when rules find nobody</option><option value="ai">AI reads every page</option></select></div>
       </div>
@@ -204,8 +212,8 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const COLS = ["name", "phone", "email", "current_role", "skills", "current_location", "target_countries",
-              "platform", "evidence_snippet", "source_url"];
+const COLS = ["activity_date", "name", "phone", "email", "current_role", "skills", "current_location",
+              "target_countries", "platform", "evidence_snippet", "source_url"];
 const LIST_COLS = ["skills", "target_countries"];
 const EDITABLE = ["name", "phone", "email", "current_role", "skills", "current_location", "target_countries",
                   "evidence_snippet"];
@@ -263,6 +271,8 @@ $("orKey").addEventListener("change", () => store("csa_key_" + llmProvider(), $(
 $("orModel").addEventListener("change", () => store("csa_model_" + llmProvider(), $("orModel").value.trim()));
 $("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("geminiKey").value.trim()));
 if (load("csa_extraction")) $("extraction").value = load("csa_extraction");
+if (load("csa_max_age") !== null && load("csa_max_age") !== "") $("maxAge").value = load("csa_max_age");
+$("maxAge").addEventListener("change", () => store("csa_max_age", $("maxAge").value));
 $("extraction").addEventListener("change", () => store("csa_extraction", $("extraction").value));
 
 // ---------- API ----------
@@ -487,7 +497,7 @@ const INTEGRATIONS = [
     const l = document.createElement("label"); l.htmlFor = "int_" + name; l.textContent = label; l.title = hint;
     const i = document.createElement("input"); i.id = "int_" + name; i.type = "password"; i.autocomplete = "off";
     i.placeholder = hint; i.value = load("csa_int_" + name) || "";
-    i.addEventListener("change", () => store("csa_int_" + name, i.value.trim()));
+    i.addEventListener("input", () => store("csa_int_" + name, i.value.trim()));
     d.append(l, i); grid.appendChild(d);
   }
 })();
@@ -611,7 +621,7 @@ async function startRun(nextRound) {
 async function runPipeline(intent, totals, rounds) {
   const settings = { numWaves: num("numWaves"), qpw: num("qpw"), maxRes: num("maxRes"), maxUrls: num("maxUrls"),
     batch: num("batch"), timeout: num("timeout"), region: $("region").value, backend: $("backend").value,
-    robots: $("robots").checked, snippet: $("snippet").checked, extraction: $("extraction").value };
+    robots: $("robots").checked, snippet: $("snippet").checked, extraction: $("extraction").value, maxAge: Number($("maxAge").value) };
 
   logEv("info", "Asking Gemini for a multi-wave search plan…");
   const roundNo = rounds.round + 1;
@@ -639,14 +649,14 @@ async function runPipeline(intent, totals, rounds) {
     for (let qi = 0; qi < wave.queries.length && !state.stop; qi++) {
       const q = wave.queries[qi];
       try {
-        const r = await api("/api/search", { query: q, max_results: settings.maxRes, region: settings.region, backend: settings.backend });
+        const r = await api("/api/search", { query: q, max_results: settings.maxRes, region: settings.region, backend: settings.backend, max_age_months: settings.maxAge });
         let added = 0;
         for (const h of r.hits) if (!hits.has(h.url)) { hits.set(h.url, h); added++; }
         if (r.google_missing && !state.googleHinted) {
           state.googleHinted = true;
           logEv("warning", "Google search is not configured, so only DuckDuckGo is used and many pages are missed. " +
             "Add a Serper.dev, SerpApi, Google Programmable Search, Brave or Scrape.do key under " +
-            "“Lead databases & search APIs” (Serper.dev has a free starter allowance).", name);
+            "“🔑 Lead databases & search API keys” (Serper.dev has a free starter allowance).", name);
         }
         if (r.error) logEv("warning", `Query skipped (${r.error.slice(0, 120)}): ${q}`, name);
         else logEv("query", `${r.hits.length} results (+${added} new) [${(r.sources || []).join("+")}] ← ${q}`, name);
@@ -675,7 +685,8 @@ async function runPipeline(intent, totals, rounds) {
       try {
         const r = await api("/api/process", { intent, items, wave_tag: tag, page_timeout_s: settings.timeout,
           respect_robots: settings.robots, snippet_fallback: settings.snippet,
-          extraction: settings.extraction, plan_queries: waves.flatMap((w) => w.queries) });
+          extraction: settings.extraction, plan_queries: waves.flatMap((w) => w.queries),
+          max_age_months: settings.maxAge });
         for (const k of ["crawled", "blocked", "failed", "records", "dropped"]) stats[k] += r.stats[k];
         totals.crawled += r.stats.crawled; totals.records += r.stats.records;
         const why = Object.entries(r.block_reasons || {}).map(([k, n]) => `${n}× ${k}`).join(", ");
@@ -693,7 +704,8 @@ async function runPipeline(intent, totals, rounds) {
           state.stop = true;
         }
         logEv("saved", `Batch ${b + 1}: ${r.stats.pages_read ?? r.stats.sent_to_gemini} pages read (${r.stats.sent_to_gemini} by AI) → ${r.stats.records} candidates saved` +
-          ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email)` +
+          ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email, ${r.stats.dated || 0} dated)` +
+          (r.stats.too_old ? ` · ${r.stats.too_old} skipped as older than ${settings.maxAge} months` : "") +
           (r.stats.via_scrapedo ? ` · unblocked: ${Object.entries(r.stats.via || {}).map(([k, n]) => `${n} via ${k}`).join(", ") || r.stats.via_scrapedo}` : ""), name);
         addRunRecords(r.records);
         renderStats(); renderRun();

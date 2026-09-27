@@ -186,6 +186,7 @@ class SearchHit:
     title: str = ""
     snippet: str = ""
     query: str = ""
+    date: Optional[str] = None   # YYYY-MM-DD when the engine shows one
 
 
 @dataclass
@@ -202,6 +203,7 @@ def search_query(
     region: str = "in-en",
     backend: str = "auto",
     timeout: int = 15,
+    max_age_months: int = 0,
 ) -> QueryOutcome:
     """
     Run ONE query. Never raises: failures are reported on the outcome.
@@ -212,8 +214,10 @@ def search_query(
     outcome = QueryOutcome(query=query)
     for attempt in range(2):
         try:
+            timelimit = None if not max_age_months else ("m" if max_age_months <= 1 else "y")
             raw = DDGS(timeout=timeout).text(
-                query, region=region, safesearch="off", max_results=max_results, backend=backend
+                query, region=region, safesearch="off", max_results=max_results, backend=backend,
+                timelimit=timelimit,
             ) or []
             seen: set[str] = set()
             for item in raw:

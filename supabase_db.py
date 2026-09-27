@@ -33,6 +33,7 @@ try:
 except Exception:
     pass
 
+import dates
 from schema import CandidateRecord
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,8 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS reply_text TEXT;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP WITH TIME ZONE;
 -- The candidate's own profile link (LinkedIn /in/…), used for contact enrichment (Apollo, Lusha, …).
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profile_url TEXT;
+-- When the lead was active: date of the post / comment it came from.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS activity_date DATE;
 """
 
 
@@ -383,6 +386,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
             r["source_url"],
             r.get("platform"),
             r.get("profile_url"),
+            r.get("activity_date"),
         )
         for r in by_url.values()
     ]
@@ -396,7 +400,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                         f"""
                         INSERT INTO {CANDIDATES_TABLE} (
                             name, "current_role", skills, current_location,
-                            target_countries, evidence_snippet, email, phone, source_url, platform, profile_url
+                            target_countries, evidence_snippet, email, phone, source_url, platform, profile_url, activity_date
                         )
                         VALUES %s
                         ON CONFLICT (source_url) DO UPDATE SET
@@ -413,6 +417,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                             phone = COALESCE(EXCLUDED.phone, {CANDIDATES_TABLE}.phone),
                             platform = COALESCE(EXCLUDED.platform, {CANDIDATES_TABLE}.platform),
                             profile_url = COALESCE(EXCLUDED.profile_url, {CANDIDATES_TABLE}.profile_url),
+                            activity_date = GREATEST(EXCLUDED.activity_date, {CANDIDATES_TABLE}.activity_date),
                             discovered_at = NOW();
                         """,
                         list(chunk),
@@ -457,12 +462,17 @@ def fetch_all_candidates() -> List[dict]:
                            target_countries, evidence_snippet, email, phone, source_url,
                            platform, discovered_at, contact_source, contact_shared_at,
                            COALESCE(outreach_status, 'new') AS outreach_status, outreach_message,
-                           outreach_sent_at, reply_text, replied_at, profile_url
+                           outreach_sent_at, reply_text, replied_at, profile_url, activity_date
                     FROM {CANDIDATES_TABLE}
-                    ORDER BY discovered_at DESC;
+                    ORDER BY activity_date DESC NULLS LAST, discovered_at DESC;
                     """
                 )
-                return [_serialize_row(dict(r)) for r in cur.fetchall()]
+                rows = [_serialize_row(dict(r)) for r in cur.fetchall()]
+                # Leads saved before dates were recorded: a LinkedIn post URL still carries its date.
+                for r in rows:
+                    if not r.get("activity_date"):
+                        r["activity_date"] = dates.from_linkedin_url(r.get("source_url") or "")
+                return rows
 
     return _with_retry(_fetch, "Fetching candidates")
 

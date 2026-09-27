@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 
 import supabase_db as db
 import rule_extractor
+import dates
 import integrations
 from fetcher import PHONE_RE, fetch_batch, scrapedo_token
 from gemini_client import Gemini, GeminiError, GeminiQuotaError
@@ -201,7 +202,8 @@ def _phone_on_page(phone: Optional[str], content: str) -> bool:
     return any(p[-10:] == digits[-10:] for p in page_digits if len(p) >= 8)
 
 
-_THREAD_LINE = re.compile(r"^(?:POST|COMMENT) by (.+?)(?: <(https?://[^>\s]+)>)?: (.*)$", re.MULTILINE)
+_THREAD_LINE = re.compile(r"^(?:POST|COMMENT) by (.+?)(?: <(https?://[^>\s]+)>)?(?: \[(\d{4}-\d{2}-\d{2})\])?: (.*)$",
+                          re.MULTILINE)
 _PROFILE_URL = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[^/?#\s]+", re.IGNORECASE)
 
 
@@ -209,7 +211,7 @@ def _thread_lines(content: str, name: Optional[str]) -> tuple[str, str]:
     """(this person's lines, everyone else's lines) from the structured post/comment block."""
     who = (name or "").strip().lower()
     own, others = [], []
-    for author, _, body in _THREAD_LINE.findall(content):
+    for author, _, _, body in _THREAD_LINE.findall(content):
         (own if who and author.strip().lower() == who else others).append(body)
     return "\n".join(own), "\n".join(others)
 
@@ -229,10 +231,26 @@ def _profile_url(url: str, content: str, name: Optional[str]) -> Optional[str]:
     if _PROFILE_URL.match(url):
         return url
     who = (name or "").strip().lower()
-    for author, link, _ in _THREAD_LINE.findall(content):
+    for author, link, _, _ in _THREAD_LINE.findall(content):
         if link and who and author.strip().lower() == who:
             return link
     return None
+
+
+_PAGE_DATE = re.compile(r"^Page date: (\d{4}-\d{2}-\d{2})$", re.MULTILINE)
+
+
+def _activity_date(url: str, content: str, name: Optional[str], hit_date: Optional[str]) -> Optional[str]:
+    """When this person was active: their own comment's date, else the post / page date,
+    else the LinkedIn activity id in the URL, else the date the search engine showed."""
+    who = (name or "").strip().lower()
+    post_date = None
+    for author, _, when, _ in _THREAD_LINE.findall(content):
+        if when and who and author.strip().lower() == who:
+            return when
+        post_date = post_date or when
+    m = _PAGE_DATE.search(content)
+    return (post_date or (m.group(1) if m else None) or dates.from_linkedin_url(url) or hit_date)
 
 
 def _slug(text: str) -> str:
@@ -256,8 +274,8 @@ def _assign_source_urls(url: str, people: List[dict]) -> List[dict]:
 
 
 async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, snippet_only: bool,
-                        mode: str = "ai", keywords: Optional[List[str]] = None
-                        ) -> tuple[List[CandidateRecord], int, bool]:
+                        mode: str = "ai", keywords: Optional[List[str]] = None,
+                        hit_date: Optional[str] = None) -> tuple[List[CandidateRecord], int, bool]:
     """Returns (valid records, number dropped as ungrounded/invalid, whether the AI was called).
 
     mode: "rules" — regex/keyword extraction only, no AI tokens;
@@ -292,6 +310,7 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
             d["phone"] = None
         if not d.get("profile_url"):
             d["profile_url"] = _profile_url(url, content, d.get("name"))
+        d["activity_date"] = d.get("activity_date") or _activity_date(url, content, d.get("name"), hit_date)
         people.append(d)
     records: List[CandidateRecord] = []
     for row in _assign_source_urls(url, people):
@@ -322,7 +341,8 @@ async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_w
     return {"waves": [w.model_dump() for w in waves]}
 
 
-def run_query(query: str, max_results: int, region: str, backend: str, keys: Optional[dict] = None) -> dict:
+def run_query(query: str, max_results: int, region: str, backend: str, keys: Optional[dict] = None,
+              max_age_months: int = 0) -> dict:
     """backend: auto (DuckDuckGo + a Google API when one has a key) | duckduckgo | google."""
     keys = keys or {}
     token = scrapedo_token(keys)
@@ -334,16 +354,22 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
 
     def add(outcome, label):
         nonlocal rate_limited
-        sources.append(label)
+        sources.append(label if outcome.hits or not outcome.error else f"{label} ✗")
         rate_limited = rate_limited or outcome.rate_limited
         if outcome.error:
             errors.append(f"{label}: {outcome.error}")
         for h in outcome.hits:
-            hits.setdefault(h.url, {"url": h.url, "title": h.title, "snippet": h.snippet})
+            hit = hits.setdefault(h.url, {"url": h.url, "title": h.title, "snippet": h.snippet})
+            hit["date"] = hit.get("date") or getattr(h, "date", None) or _hit_date(hit)
 
     if backend != "google" or not google_apis:
         ddg_backend = "duckduckgo" if backend == "duckduckgo" else "auto"
-        add(search_query(query, max_results=max_results, region=region, backend=ddg_backend), "ddg")
+        add(search_query(query, max_results=max_results, region=region, backend=ddg_backend,
+                         max_age_months=max_age_months), "ddg")
+        if backend in ("auto", "google") and not google_apis:
+            # No Google API key: try Google's own results page for free (often refused from cloud IPs).
+            add(search_query(query, max_results=max_results, region=region, backend="google",
+                             max_age_months=max_age_months), "google-free")
     # Google finds pages DuckDuckGo misses (Reddit, Quora, forums), so auto always adds it when possible.
     # The first configured API is used; if it fails (no credits, bad key) the next one is tried.
     if backend in ("auto", "google"):
@@ -351,13 +377,15 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
             if name == "scrapedo":
                 outcome = google_search_scrapedo(query, token, max_results=max_results, region=region)
             else:
-                found, err, limited = integrations.web_search(name, keys, query, max_results, region)
+                found, err, limited = integrations.web_search(name, keys, query, max_results, region,
+                                                              max_age_months)
                 outcome = _Outcome(found, err, limited)
             add(outcome, name)
             if not outcome.error:
                 break
         if backend == "google" and google_apis and not hits:
-            add(search_query(query, max_results=max_results, region=region, backend="auto"), "ddg")
+            add(search_query(query, max_results=max_results, region=region, backend="auto",
+                             max_age_months=max_age_months), "ddg")
 
     return {
         "query": query,
@@ -369,6 +397,11 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
     }
 
 
+def _hit_date(hit: dict) -> Optional[str]:
+    """The date the search engine showed for a result (API field, or the start of the snippet)."""
+    return dates.parse(hit.get("date")) or dates.snippet_date(hit.get("snippet") or "")
+
+
 class _Outcome:
     """integrations.web_search result in the shape run_query's add() expects."""
 
@@ -378,7 +411,7 @@ class _Outcome:
         for h in found:
             canon = canonicalize_url(h["url"])
             if canon and is_useful_url(canon):
-                self.hits.append(SearchHit(url=canon, title=h["title"], snippet=h["snippet"]))
+                self.hits.append(SearchHit(url=canon, title=h["title"], snippet=h["snippet"], date=h.get("date")))
 
 
 def dedup_urls(urls: List[str]) -> List[str]:
@@ -388,7 +421,7 @@ def dedup_urls(urls: List[str]) -> List[str]:
 async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag: str,
                         page_timeout_s: int, respect_robots: bool, snippet_fallback: bool,
                         extraction: str = "rules", plan_queries: Optional[List[str]] = None,
-                        keys: Optional[dict] = None) -> dict:
+                        keys: Optional[dict] = None, max_age_months: int = 0) -> dict:
     """items: [{url, title, snippet}] — record, fetch, extract, save."""
     urls = [i["url"] for i in items]
     hits: Dict[str, dict] = {i["url"]: i for i in items}
@@ -412,10 +445,11 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
 
     keywords = rule_extractor.keywords_from(intent, plan_queries or [])
     results = await asyncio.gather(
-        *(_extract_page(gemini, intent, u, c, snip, extraction, keywords) for (u, c, snip) in jobs),
+        *(_extract_page(gemini, intent, u, c, snip, extraction, keywords, _hit_date(hits.get(u, {})))
+          for (u, c, snip) in jobs),
         return_exceptions=True,
     )
-    ai_pages = 0
+    ai_pages = too_old = 0
     records: List[CandidateRecord] = []
     warnings: List[str] = []
     dropped = 0
@@ -435,7 +469,9 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
         recs, d, used_ai = r
         dropped += d
         ai_pages += used_ai
-        records.extend(recs)
+        fresh = [x for x in recs if not dates.older_than(x.activity_date, max_age_months)]
+        too_old += len(recs) - len(fresh)
+        records.extend(fresh)
 
     if records:
         await asyncio.to_thread(db.save_candidates, records)
@@ -462,7 +498,8 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
             reasons[key] = reasons.get(key, 0) + 1
 
     return {
-        "stats": {**stats, "records": len(records), "dropped": dropped, "sent_to_gemini": ai_pages, "pages_read": len(jobs),
+        "stats": {**stats, "records": len(records), "dropped": dropped, "sent_to_gemini": ai_pages, "pages_read": len(jobs), "too_old": too_old,
+                  "dated": sum(1 for r in records if r.activity_date),
                   "with_phone": sum(1 for r in records if r.phone),
                   "with_email": sum(1 for r in records if r.email),
                   "via_scrapedo": sum(1 for o in outcomes if o.via != "direct" and o.ok),

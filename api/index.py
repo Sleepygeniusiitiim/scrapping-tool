@@ -213,6 +213,7 @@ class QueryIn(BaseModel):
     max_results: int = Field(10, ge=1, le=100)
     region: str = "in-en"
     backend: str = "auto"
+    max_age_months: int = Field(0, ge=0, le=120)
 
 
 class DedupIn(BaseModel):
@@ -223,6 +224,7 @@ class Hit(BaseModel):
     url: str
     title: str = ""
     snippet: str = ""
+    date: Optional[str] = None
 
 
 class BatchIn(BaseModel):
@@ -234,6 +236,7 @@ class BatchIn(BaseModel):
     snippet_fallback: bool = True
     extraction: str = Field("rules", pattern="^(rules|hybrid|ai)$")
     plan_queries: List[str] = Field(default_factory=list, max_length=200)
+    max_age_months: int = Field(0, ge=0, le=120)
 
 
 class SaveIn(BaseModel):
@@ -301,7 +304,7 @@ async def plan(
 @router.post("/search")
 def search(body: QueryIn, keys: dict = Depends(_keys)):
     backend = body.backend if body.backend in ("auto", "duckduckgo", "google") else "auto"
-    return pipeline.run_query(body.query, body.max_results, body.region, backend, keys)
+    return pipeline.run_query(body.query, body.max_results, body.region, backend, keys, body.max_age_months)
 
 
 @router.post("/dedup")
@@ -333,6 +336,7 @@ async def process(
             body.extraction,
             body.plan_queries,
             keys,
+            body.max_age_months,
         )
         result["warnings"] = gemini.notices + result.get("warnings", [])
         return result

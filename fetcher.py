@@ -33,6 +33,8 @@ from urllib.parse import urlparse
 import primp
 from bs4 import BeautifulSoup
 
+import dates
+
 log = logging.getLogger(__name__)
 
 DEFAULT_PAGE_TIMEOUT_S = 15
@@ -135,8 +137,27 @@ def structured_thread(soup: BeautifulSoup) -> str:
             if key in seen:
                 continue
             seen.add(key)
-            lines.append(f"{kind} by {author}{f' <{link}>' if link else ''}: {body}")
+            when = dates.parse(obj.get("datePublished") or obj.get("dateCreated") or obj.get("uploadDate") or "")
+            lines.append(f"{kind} by {author}{f' <{link}>' if link else ''}{f' [{when}]' if when else ''}: {body}")
     return "\n".join(lines)
+
+
+_DATE_META = ("article:published_time", "og:published_time", "article:modified_time", "og:updated_time",
+              "datePublished", "dateCreated", "date", "pubdate", "publish-date", "dc.date")
+
+
+def page_date(soup: BeautifulSoup) -> Optional[str]:
+    """When the page (post / thread) was published, from meta tags or the first <time> element."""
+    for meta in soup.find_all("meta"):
+        key = (meta.get("property") or meta.get("name") or meta.get("itemprop") or "").strip()
+        if key in _DATE_META:
+            d = dates.parse(meta.get("content"))
+            if d:
+                return d
+    t = soup.find("time")
+    if t is not None:
+        return dates.parse(t.get("datetime") or t.get_text(" ", strip=True))
+    return None
 
 
 def contact_mentions(text: str) -> str:
@@ -161,6 +182,7 @@ def contact_mentions(text: str) -> str:
 def html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     thread = structured_thread(soup)
+    published = page_date(soup)
     for tag in soup(_DROP_TAGS):
         tag.decompose()
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
@@ -170,7 +192,7 @@ def html_to_text(html: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
 
     contacts = contact_mentions(thread + "\n" + text)
-    parts = [f"# {title}" if title else ""]
+    parts = [f"# {title}" if title else "", f"Page date: {published}" if published else ""]
     if thread:
         parts.append("## Post and comments (structured, with authors)\n" + thread)
     if contacts:

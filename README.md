@@ -61,7 +61,7 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
 
 ## Lead databases, Google search and unblockers
 
-Under **“🔑 Lead databases & search APIs”** on the home page (or as Vercel env vars):
+In the **“🔑 Lead databases & search API keys”** section of the home page (or as Vercel env vars):
 
 | Purpose | Services (env var) |
 |---|---|
@@ -77,6 +77,15 @@ Under **“🔑 Lead databases & search APIs”** on the home page (or as Vercel
   service's credits; coverage is best for people with a LinkedIn profile. Apollo returns emails only
   (its phone reveal needs a webhook).
 - Only API keys are supported, not account passwords: automated logins break these services' terms.
+
+## Lead dates (how recent a lead is)
+
+Every lead gets an `activity_date`: the date of the candidate's own comment when the page carries it,
+else the post / page publish date, else the date encoded in a LinkedIn post URL (`…-activity-<id>-…`),
+else the date the search engine showed. "Only leads active in the last N months" (crawler settings,
+default 6) restricts searches to recent pages and skips dated leads older than that; leads with no date
+found are kept. Older saved LinkedIn leads get their date from the post URL when listed. Without a
+Google key, a free Google attempt is made per query; it is often refused from cloud IPs.
 
 ## Page reading without AI tokens
 
