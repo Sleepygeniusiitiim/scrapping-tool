@@ -88,6 +88,8 @@ class CandidateRecord(BaseModel):
     activity_date: Optional[str] = Field(None, description="YYYY-MM-DD of the post / comment the lead came from")
     shows_interest: Optional[bool] = Field(None, description="The person says they are interested / keen / looking")
     contact_source: Optional[str] = Field(None, description="posted_on_page | shared_in_reply | enriched:<service>")
+    email_guess: Optional[str] = Field(None, description="GUESSED work email from the employer's email format "
+                                                           "(unverified), with confidence")
 
     @field_validator("activity_date", mode="before")
     @classmethod

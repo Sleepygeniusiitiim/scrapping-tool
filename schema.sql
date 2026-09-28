@@ -59,3 +59,6 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS activity_date DATE;
 
 -- The person says they are interested / keen / looking for work.
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS shows_interest BOOLEAN;
+
+-- Guessed work email (employer's email format applied to the name) — unverified.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS email_guess TEXT;

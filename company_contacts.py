@@ -138,6 +138,19 @@ def _extract(url: str, html: str) -> dict:
             "links": links}
 
 
+FREE_MAIL = ("gmail.", "yahoo.", "hotmail.", "outlook.", "rediffmail.", "ymail.", "icloud.", "live.", "aol.", "proton")
+
+
+def email_domain(emails, site_domain: str) -> Optional[str]:
+    """The company's mail domain: the website's own domain if it publishes addresses on it, else the domain
+    most of its published (non-free-mail) addresses use."""
+    doms = [e.split("@")[1].lower() for e in emails if "@" in e]
+    if any(d == site_domain or d.endswith("." + site_domain) for d in doms):
+        return site_domain
+    own = [d for d in doms if not d.startswith(FREE_MAIL)]
+    return max(set(own), key=own.count) if own else None
+
+
 async def _mx_ok(domain: str) -> Optional[bool]:
     try:
         async with httpx.AsyncClient(timeout=8) as c:
@@ -185,10 +198,44 @@ async def crawl(website: str, respect_robots: bool = True, max_pages: int = 6) -
         if p["name"].lower() not in names:
             names.add(p["name"].lower())
             people.append(p)
+    # Learn the company's email format from what it publishes, then guess for named people without one.
+    import email_patterns
+    mail_domain = email_domain(out["emails"], site_domain)
+    pattern = email_patterns.infer(out["emails"], mail_domain, people) if mail_domain else None
+    domain_ok = next((ok for e, ok in zip(emails, checks) if e.endswith("@" + (mail_domain or ""))), None)
+    for p in people:
+        if not p.get("email") and pattern and domain_ok is not False:
+            g = email_patterns.guess(p["name"], mail_domain, pattern)
+            if g and g["email"] in out["emails"]:
+                p["email"] = g["email"]            # published by the company — a real address, not a guess
+            elif g:
+                p["email_guess"] = g
     return {"website": website, "pages": out["pages"], "status": out["status"] if not out["pages"] else "ok",
             "emails": [{"email": e, "domain_accepts_mail": ok} for e, ok in zip(emails, checks)],
             "phones": sorted(out["phones"])[:10], "whatsapp": sorted(out["whatsapp"])[:5],
-            "social": sorted(out["social"])[:8], "people": people[:10]}
+            "social": sorted(out["social"])[:8], "people": people[:10], "email_format": pattern,
+            "all_emails": sorted(out["emails"])[:40]}
+
+
+async def guess_for_person(keys: Dict[str, str], full_name: str, company: str, respect_robots: bool = True
+                           ) -> Optional[dict]:
+    """A person's likely work email: find their employer's site, learn its email format from the addresses it
+    publishes, apply it to their name. None when the site or the format evidence is missing."""
+    import email_patterns
+    if not email_patterns.name_parts(full_name) or not company:
+        return None
+    site = await asyncio.to_thread(find_website, keys, company, "")
+    if not site:
+        return None
+    res = await crawl(site, respect_robots, max_pages=5)
+    domain = email_domain(res.get("all_emails", []), urlparse(site).netloc.removeprefix("www."))
+    if not domain:
+        return None
+    pattern = res.get("email_format") or email_patterns.infer(res.get("all_emails", []), domain, res.get("people", []))
+    g = email_patterns.guess(full_name, domain, pattern)
+    if g:
+        g["company_site"] = site
+    return g
 
 
 async def for_organization(keys: Dict[str, str], name: str, city: str, page_url: str,

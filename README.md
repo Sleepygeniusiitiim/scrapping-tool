@@ -162,6 +162,21 @@ that the mailbox exists). Not done: guessing emails from name patterns, SMTP pro
 What cannot be copied from those tools: their personal mobile numbers mostly come from contributor
 networks (users' address books uploaded via their extensions / apps) and purchased data.
 
+## Profile bios and work-email guesses
+
+For every interested lead still missing a contact (after their comment and their own profile page):
+- **Profile bio via search** (`social_lookup.py`): search engines index public profiles even when the
+  site shows servers a login wall. Only the result for the person's *exact* profile URL
+  (instagram.com/<handle>/, x.com/<handle>, facebook.com/<handle>, linkedin.com/in/<slug>) is used —
+  pages that only mention the handle are ignored — for their name, the phone / email in their bio
+  (`contact_source = profile_bio`) and, for LinkedIn, their current employer and job title.
+- **Work-email guess** (`email_patterns.py`): for a lead whose employer is known, the employer's website
+  is crawled, its email format is learned from the addresses it publishes (a named person next to their
+  address, e.g. Harpreet Kaur ↔ harpreet.kaur@…, or the shape of published addresses), and applied to the
+  lead's name. Stored separately in `email_guess` as "x@company.com (guessed, <confidence>, format …)",
+  never in `email`. No format evidence → no guess. The same guesses are shown for people named on
+  organization websites. MX is checked, but a guess is still unverified — send sparingly.
+
 ## Auto-reply on your own Instagram / Facebook posts (Outreach tab)
 
 Someone comments "interested" on a post from your official Instagram Business account or Facebook

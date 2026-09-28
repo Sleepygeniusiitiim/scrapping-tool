@@ -107,6 +107,8 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profile_url TEXT;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS activity_date DATE;
 -- The person says they are interested / keen / looking for work.
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS shows_interest BOOLEAN;
+-- Guessed work email (employer's email format applied to the name) — unverified, kept apart from email.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS email_guess TEXT;
 """
 
 
@@ -391,6 +393,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
             r.get("activity_date"),
             r.get("shows_interest"),
             r.get("contact_source"),
+            r.get("email_guess"),
         )
         for r in by_url.values()
     ]
@@ -405,7 +408,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                         INSERT INTO {CANDIDATES_TABLE} (
                             name, "current_role", skills, current_location,
                             target_countries, evidence_snippet, email, phone, source_url, platform, profile_url, activity_date,
-                            shows_interest, contact_source
+                            shows_interest, contact_source, email_guess
                         )
                         VALUES %s
                         ON CONFLICT (source_url) DO UPDATE SET
@@ -426,6 +429,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                             shows_interest = COALESCE(EXCLUDED.shows_interest, FALSE)
                                              OR COALESCE({CANDIDATES_TABLE}.shows_interest, FALSE),
                             contact_source = COALESCE({CANDIDATES_TABLE}.contact_source, EXCLUDED.contact_source),
+                            email_guess = COALESCE(EXCLUDED.email_guess, {CANDIDATES_TABLE}.email_guess),
                             discovered_at = NOW();
                         """,
                         list(chunk),
@@ -476,7 +480,8 @@ def fetch_all_candidates() -> List[dict]:
                            target_countries, evidence_snippet, email, phone, source_url,
                            platform, discovered_at, contact_source, contact_shared_at,
                            COALESCE(outreach_status, 'new') AS outreach_status, outreach_message,
-                           outreach_sent_at, reply_text, replied_at, profile_url, activity_date, shows_interest
+                           outreach_sent_at, reply_text, replied_at, profile_url, activity_date, shows_interest,
+                           email_guess
                     FROM {CANDIDATES_TABLE}
                     ORDER BY activity_date DESC NULLS LAST, discovered_at DESC;
                     """

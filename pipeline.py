@@ -457,6 +457,57 @@ async def _visit_profiles(records: List[CandidateRecord], respect_robots: bool) 
     return stats
 
 
+MAX_BIO_SEARCHES = 8
+MAX_EMAIL_GUESSES = 3
+
+
+async def _search_bios(records: List[CandidateRecord], keys: dict, notes: List[str]) -> Dict[int, str]:
+    """Search engines index public profile pages even when they show servers a login wall. Use ONLY the result
+    for the person's exact profile URL: their name, bio (phone / email they published) and, for LinkedIn,
+    their current company (for the work-email guess). Returns {id(record): company}."""
+    import social_lookup
+    targets = {r.profile_url: r for r in records if r.profile_url and "reddit.com/user/" not in r.profile_url}
+    if not targets:
+        return {}
+    found = await social_lookup.search_profiles(keys, list(targets), MAX_BIO_SEARCHES)
+    companies, got = {}, 0
+    for url, res in found.items():
+        r = targets[url]
+        if res.get("name") and (not r.name or re.search(r"[_\d.]", r.name) or len(r.name.split()) < 2 or
+                                (len(res["name"]) > len(r.name) and res["name"].lower().startswith(r.name.split()[0].lower()))):
+            r.name = res["name"]
+        phone, email = next(iter(res.get("phones") or []), None), next(iter(res.get("emails") or []), None)
+        if (phone and not r.phone) or (email and not r.email):
+            r.phone, r.email = r.phone or clean_phone(phone), r.email or clean_email(email)
+            r.contact_source = r.contact_source or "profile_bio"
+            got += 1
+        if res.get("company"):
+            companies[id(r)] = res["company"]
+            r.current_role = r.current_role or res.get("headline")
+    notes.append(f"Profile bios (search results for their exact profile): {len(targets)} searched → "
+                 f"{len(found)} profiles found → {got} contacts from bios, {len(companies)} employers identified")
+    return companies
+
+
+async def _guess_work_emails(records: List[CandidateRecord], companies: Dict[int, str], keys: dict,
+                             respect_robots: bool, notes: List[str]) -> None:
+    """For leads whose employer is known: learn the employer's email format from its website, apply it."""
+    import company_contacts
+    todo = [r for r in records if id(r) in companies and not r.email_guess][:MAX_EMAIL_GUESSES]
+    if not todo:
+        return
+    res = await asyncio.gather(*(company_contacts.guess_for_person(keys, r.name or "", companies[id(r)],
+                                                                   respect_robots) for r in todo),
+                               return_exceptions=True)
+    n = 0
+    for r, g in zip(todo, res):
+        if isinstance(g, dict) and g.get("email"):
+            r.email_guess = f"{g['email']} (guessed, {g['confidence']} confidence, format {g['format']})"
+            n += 1
+    notes.append(f"Work-email guesses: {len(todo)} leads with a known employer → {n} guessed from the employer's "
+                 "published email format (unverified — marked 'guessed')")
+
+
 async def _enrich_records(records: List[CandidateRecord], keys: dict, require_both: bool,
                           respect_robots: bool = True) -> tuple[int, List[str]]:
     """For every interested lead missing a phone / email: open their own profile first (real name, LinkedIn
@@ -475,12 +526,18 @@ async def _enrich_records(records: List[CandidateRecord], keys: dict, require_bo
     wanting = [r for r in wanting if not (r.phone and r.email)]
     if not wanting:
         return 0, notes_out
+    companies = await _search_bios(wanting, keys, notes_out)
+    wanting = [r for r in wanting if not (r.phone and r.email)]
+    if not wanting:
+        return 0, notes_out
     if not integrations.summary(keys)["enrich"]:
+        await _guess_work_emails(wanting, companies, keys, respect_robots, notes_out)
         return 0, notes_out + [f"Lead databases: {len(wanting)} interested leads still miss a phone / email, but no "
                                "Apollo / Lusha / ContactOut / RocketReach key is set."]
     todo = [r for r in wanting if _identifiable(r)][:MAX_ENRICH_PER_BATCH]
     no_identity = len(wanting) - len([r for r in wanting if _identifiable(r)])
     if not todo:
+        await _guess_work_emails([r for r in wanting if not r.email], companies, keys, respect_robots, notes_out)
         return 0, notes_out + [f"Lead databases: {len(wanting)} interested leads miss contacts, but none has a "
                                "LinkedIn profile (their own profile page did not link one), so they were not looked "
                                "up — no credits spent."]
@@ -503,6 +560,7 @@ async def _enrich_records(records: List[CandidateRecord], keys: dict, require_bo
             done += 1
         elif f["email"] or f["phone"]:
             partial += 1
+    await _guess_work_emails([r for r in wanting if not r.email], companies, keys, respect_robots, notes_out)
     summary = (f"Lead databases: {len(wanting)} interested leads missing contacts → looked up {len(todo)} by "
                f"LinkedIn profile" + (f" ({no_identity} without a LinkedIn profile skipped)" if no_identity else "")
                + f" → filled {done}"

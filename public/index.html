@@ -325,7 +325,7 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const COLS = ["activity_date", "shows_interest", "name", "phone", "email", "current_role", "skills", "current_location",
+const COLS = ["activity_date", "shows_interest", "name", "phone", "email", "email_guess", "current_role", "skills", "current_location",
               "target_countries", "platform", "evidence_snippet", "source_url"];
 const LIST_COLS = ["skills", "target_countries"];
 const EDITABLE = ["name", "phone", "email", "current_role", "skills", "current_location", "target_countries",
@@ -751,7 +751,8 @@ function imRenderLeads() {
         ${L.website ? `<div><b>Website</b> <a href="${esc(L.website)}" target="_blank" rel="noopener noreferrer">${esc(L.website.replace(/^https?:\/\//, ""))}</a></div>` : ""}
       </div>
       ${L.org_contacts && ((L.org_contacts.people || []).length || (L.org_contacts.phones || []).length > 1) ?
-        `<p class="status" style="margin:6px 0 0">${(L.org_contacts.people || []).slice(0, 4).map((p) => esc(p.name + " (" + p.role + ")")).join(" · ")}` +
+        `<p class="status" style="margin:6px 0 0">${(L.org_contacts.people || []).slice(0, 4).map((p) => esc(p.name + " (" + p.role + ")" +
+          (p.email ? " " + p.email : p.email_guess ? " — guessed: " + p.email_guess.email + " (" + p.email_guess.confidence + ")" : ""))).join(" · ")}` +
         `${(L.org_contacts.phones || []).length ? " · Phones: " + esc(L.org_contacts.phones.join(", ")) : ""}` +
         `${(L.org_contacts.whatsapp || []).length ? " · WhatsApp: " + esc(L.org_contacts.whatsapp.join(", ")) : ""}</p>` : ""}
       ${(L.evidence || []).slice(0, 2).map((q) => `<div class="im-quote">“${esc(q)}”</div>`).join("")}
