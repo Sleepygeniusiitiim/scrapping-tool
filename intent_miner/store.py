@@ -149,6 +149,36 @@ def save_document(run_id: str, d: dict) -> None:
        {**d, "run": run_id or None}, what="Saving document")
 
 
+def recheck_candidates(sources: List[str], older_than_hours: int, only_productive: bool, limit: int) -> List[dict]:
+    """Pages read before (by either engine) that are worth re-reading for new comments: read at least
+    `older_than_hours` ago; with only_productive, only pages that gave leads or had several posts/comments.
+    Oldest first. Unchanged pages are skipped cheaply by the content hash when re-processed."""
+    _ensure()
+    productive = """AND (d.units >= 3 OR EXISTS (SELECT 1 FROM im_lead_sources s WHERE s.url = d.canonical_url))""" \
+        if only_productive else ""
+    rows = _q(f"""
+        SELECT url, source, title, last_seen FROM (
+            SELECT d.canonical_url AS url, d.source, d.title, d.last_seen FROM im_documents d
+            WHERE d.status = 'ok' AND d.last_seen < NOW() - make_interval(hours => %s) {productive}
+            UNION ALL
+            SELECT u.url, NULL, NULL, u.scraped_at FROM scraped_urls u
+            WHERE u.status IN ('ok', 'snippet') AND u.scraped_at < NOW() - make_interval(hours => %s)
+              {"AND EXISTS (SELECT 1 FROM candidates c WHERE split_part(c.source_url, '#', 1) = u.url)"
+               if only_productive else ""}
+              AND NOT EXISTS (SELECT 1 FROM im_documents d2 WHERE d2.canonical_url = u.url)
+        ) x ORDER BY last_seen ASC LIMIT %s""", (older_than_hours, older_than_hours, limit * 3), "all")
+    from .providers.base import source_of
+    out, seen = [], set()
+    for r in rows:
+        src = r["source"] or source_of(r["url"])
+        if r["url"] in seen or (sources and src not in sources and not (src == "forums" and "search" in sources)):
+            continue
+        seen.add(r["url"])
+        out.append({"url": r["url"], "source": src, "title": r["title"] or "", "snippet": "",
+                    "last_seen": db._serialize_row({"t": r["last_seen"]})["t"]})
+    return out[:limit]
+
+
 def failed_documents(limit: int = 100) -> List[dict]:
     rows = _q("""SELECT canonical_url AS url, source, title, status, error, attempts, last_seen FROM im_documents
                  WHERE status IN ('failed', 'blocked') ORDER BY last_seen DESC LIMIT %s""", (limit,), "all")

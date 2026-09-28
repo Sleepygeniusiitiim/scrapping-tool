@@ -55,6 +55,15 @@ class RedditProvider(BaseProvider):
         return str(_token["value"])
 
     async def _get(self, path: str, params: dict) -> dict:
+        try:
+            return await self._get_raw(path, params)
+        except RuntimeError:
+            raise
+        except Exception as exc:                  # timeouts, HTML instead of JSON, connection resets
+            self.note("failed")
+            raise RuntimeError(f"Reddit {type(exc).__name__}: {str(exc)[:120]}")
+
+    async def _get_raw(self, path: str, params: dict) -> dict:
         async with self.limiter:
             async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
                 token = await self._auth(c)

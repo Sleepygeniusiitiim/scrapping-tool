@@ -233,6 +233,13 @@
       <button id="imHealthBtn">🩺 Provider health</button>
       <button id="imFailedBtn">♻️ Failed pages</button>
     </div>
+    <div class="row" style="margin-top:8px">
+      <button id="recheckBtn" title="Re-read pages from earlier runs to catch new comments / replies. Pages whose content did not change are skipped cheaply.">🔁 Re-check old pages for new comments</button>
+      <label>read more than <select id="recheckAge" style="width:auto"><option value="24">1 day</option><option value="72" selected>3 days</option>
+        <option value="168">1 week</option><option value="720">1 month</option></select> ago</label>
+      <label><input id="recheckProductive" type="checkbox" checked>only pages that gave leads or have comments</label>
+      <label>max <input id="recheckMax" type="number" min="5" max="300" value="60" style="width:80px"> pages</label>
+    </div>
     <div id="imSpec" class="im-spec"></div>
     <div id="imExtra"></div>
     <div class="row" style="margin-top:10px" id="imExport" hidden>
@@ -861,6 +868,53 @@ async function runCombined(intent, totals, rounds, mode) {
     logEv("wave_end", `${name} done — ${stats.records} candidates.`, name);
   }
 }
+// Re-read pages from earlier runs: new comments on old posts become new leads; unchanged pages are skipped.
+$("recheckBtn").onclick = async () => {
+  if (state.running) { alert("A run is already in progress."); return; }
+  const intent = $("intent").value.trim();
+  if (!intent) { alert("Enter the discovery intent first (it decides who counts as a lead)."); return; }
+  const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
+  Object.assign(state, { stop: false, runRecords: [], waveStats: {}, logLines: [] });
+  $("progress").classList.remove("hidden"); renderStats(); renderRun(); setRunning(true);
+  try {
+    let spec = null;
+    try { spec = JSON.parse($("imSpec").dataset.spec || "null"); } catch (_) {}
+    if (!spec) {
+      logEv("info", "Understanding the command…");
+      const months = Number($("maxAge").value);
+      const u = await api("/api/im/understand", { command: intent, sources, max_age_days: months ? Math.round(months * 30.5) : null,
+        num_queries: 4 });
+      spec = u.spec; im.runId = u.run_id; imRenderSpec(spec); $("imSpec").dataset.spec = JSON.stringify(spec);
+    }
+    const r = await api(`/api/im/recheck?sources=${encodeURIComponent(sources.join(","))}&hours=${$("recheckAge").value}` +
+      `&only_productive=${$("recheckProductive").checked}&limit=${Number($("recheckMax").value) || 60}`);
+    const items = r.items;
+    logEv("dedup", `Re-check: ${items.length} pages read before are due for a re-read (oldest first).`);
+    if (!items.length) return;
+    const settings = { ...imSettings({ mode: $("searchMode").value === "intent" ? "intent" : "combined" }, intent,
+      spec.queries.map((q) => q.query)), wave_tag: "recheck" };
+    const stats = state.waveStats["Re-check"] = { wave: "Re-check", found: items.length, duplicates: 0, fresh: items.length,
+      crawled: 0, blocked: 0, failed: 0, records: 0, dropped: 0 };
+    let unchanged = 0, leads = 0;
+    for (let b = 0; b < items.length && !state.stop; b += 5) {
+      const batch = items.slice(b, b + 5);
+      try {
+        const res = await api("/api/im/process", { spec, run_id: im.runId, items: batch, settings });
+        const st = res.stats;
+        stats.crawled += st.fetched; stats.blocked += st.blocked; stats.failed += st.failed; stats.records += st.records;
+        unchanged += st.unchanged || 0; leads += st.leads || 0;
+        res.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads(); addRunRecords(res.records || []);
+        renderStats(); renderRun();
+        logEv("crawl", `Re-check batch ${b / 5 + 1}: ${st.fetched} re-read, ${st.unchanged || 0} unchanged (skipped), ` +
+          `${st.units} posts/comments → ${st.leads} leads · ${st.records} candidates saved`, "Re-check");
+        (res.warnings || []).forEach((w) => logEv("warning", w, "Re-check"));
+      } catch (e) { logEv("warning", `Re-check batch ${b / 5 + 1} failed: ${e.message.slice(0, 200)}`, "Re-check"); }
+    }
+    logEv("done", `Re-check complete: ${items.length} old pages, ${unchanged} unchanged, ${leads} leads from new or updated content.`);
+  } catch (e) { logEv("error", e.message); }
+  finally { setRunning(false); renderRun(); }
+};
+
 $("imLoad").onclick = async () => {
   try {
     const r = await api(`/api/im/leads?min_score=${Number($("imMin").value) || 0}`);

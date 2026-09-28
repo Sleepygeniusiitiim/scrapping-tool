@@ -162,6 +162,14 @@ that the mailbox exists). Not done: guessing emails from name patterns, SMTP pro
 What cannot be copied from those tools: their personal mobile numbers mostly come from contributor
 networks (users' address books uploaded via their extensions / apps) and purchased data.
 
+## Re-checking old pages for new comments
+
+**🔁 Re-check old pages for new comments** (🧠 section) re-reads pages from earlier runs of either
+engine — oldest first, read more than 1 day / 3 days / 1 week / 1 month ago, optionally only pages that
+gave leads or have several posts / comments — with the current intent and settings. Pages whose content
+hash has not changed are skipped without any AI cost; changed pages are scored again, so new comments
+become new leads while existing people are merged, not duplicated.
+
 ## YouTube comments and blog comments
 
 - **YouTube** (source "YouTube comments"): the official YouTube Data API v3 (`YOUTUBE_API_KEY`, or the Google

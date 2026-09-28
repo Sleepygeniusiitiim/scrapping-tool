@@ -595,6 +595,13 @@ async def im_process_ep(body: IMProcessIn, gemini=Depends(_gemini), keys: dict =
                                       body.settings.model_dump(), body.run_id)
     except db.SupabaseError as exc:
         raise HTTPException(502, str(exc))
+    except GeminiError as exc:
+        raise HTTPException(502, str(exc))
+    except Exception as exc:                        # say what broke instead of a bare "HTTP 500"
+        import traceback
+        where = traceback.extract_tb(exc.__traceback__)[-1]
+        raise HTTPException(500, f"{type(exc).__name__}: {str(exc)[:200]} "
+                                 f"(at {where.filename.rsplit('/', 1)[-1]}:{where.lineno})")
     res["warnings"] = getattr(gemini, "notices", []) + res["warnings"]
     return res
 
@@ -641,6 +648,15 @@ async def im_salesforce_ep(body: IMSalesforceIn, keys: dict = Depends(_keys)):
     for c in res["created"]:
         await run_in_threadpool(_im_db, im_store.set_status, [c["id"]], "EXPORTED", c["salesforce_id"])
     return res
+
+
+@router.get("/im/recheck")
+def im_recheck_ep(sources: str = "", hours: int = 24, only_productive: bool = True, limit: int = 60):
+    """Pages read before, to re-read for new comments / updates."""
+    _db()
+    src = [s for s in sources.split(",") if s]
+    return {"items": _im_db(im_store.recheck_candidates, src, max(1, min(hours, 24 * 90)), only_productive,
+                            max(1, min(limit, 300)))}
 
 
 @router.get("/im/failed")

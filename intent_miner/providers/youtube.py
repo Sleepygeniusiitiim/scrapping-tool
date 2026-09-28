@@ -41,6 +41,15 @@ class YouTubeProvider(BaseProvider):
                 "").strip()
 
     async def _get(self, path: str, params: dict) -> dict:
+        try:
+            return await self._get_raw(path, params)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            self.note("failed")
+            raise RuntimeError(f"YouTube {type(exc).__name__}: {str(exc)[:120]}")
+
+    async def _get_raw(self, path: str, params: dict) -> dict:
         if not self.key:
             raise RuntimeError("No YouTube Data API key (YOUTUBE_API_KEY)")
         async with self.limiter:

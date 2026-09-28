@@ -120,10 +120,23 @@ async def fetch_docs(items: List[dict], provs: Dict[str, object]) -> List[RawDoc
         tasks.append(_reddit_doc(provs["reddit"], provs["web"], it, hit))
     tasks += [provs["quora"].fetch(it["url"], it) for it in quora]
     tasks += [provs["youtube"].fetch(it["url"], it) for it in youtube]
-    results = await asyncio.gather(*tasks)
-    docs += list(results)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    fetched = [it for it in reddit] + [it for it in quora] + [it for it in youtube]
+    for it, r in zip(fetched, results):
+        if isinstance(r, Exception):           # one broken page never fails the whole batch
+            d = snippet_doc(it["url"], it.get("source") or source_of(it["url"]), it)
+            d.status, d.error = "failed", f"{type(r).__name__}: {str(r)[:120]}"
+            docs.append(d)
+        else:
+            docs.append(r)
     if web:
-        docs += await provs["web"].fetch_many(web)
+        try:
+            docs += await provs["web"].fetch_many(web)
+        except Exception as exc:
+            for it in web:
+                d = snippet_doc(it["url"], it.get("source") or source_of(it["url"]), it)
+                d.status, d.error = "failed", f"{type(exc).__name__}: {str(exc)[:120]}"
+                docs.append(d)
     return docs
 
 
