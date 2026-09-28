@@ -217,6 +217,29 @@ async def crawl(website: str, respect_robots: bool = True, max_pages: int = 6) -
             "all_emails": sorted(out["emails"])[:40]}
 
 
+async def company_profile(keys: Dict[str, str], company: str, respect_robots: bool = True) -> Optional[dict]:
+    """An employer's own site, mail domain, email format and published people / addresses (one crawl).
+    `company` may be a name ("Fortis Hospital Mohali") or a domain / URL ("fortishealthcare.com")."""
+    import email_patterns
+    company = (company or "").strip()
+    if not company:
+        return None
+    if re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+/?", company, re.I):
+        site = company if company.startswith("http") else "https://" + company.rstrip("/") + "/"
+    else:
+        site = await asyncio.to_thread(find_website, keys, company, "")
+    if not site:
+        return None
+    res = await crawl(site, respect_robots, max_pages=5)
+    site_domain = urlparse(site).netloc.lower().removeprefix("www.")
+    domain = email_domain(res.get("all_emails", []), site_domain)
+    pattern = res.get("email_format") or (email_patterns.infer(res.get("all_emails", []), domain, res.get("people", []))
+                                          if domain else None)
+    return {"site": site, "site_domain": site_domain, "domain": domain or site_domain, "domain_from_emails": bool(domain),
+            "format": pattern, "people": res.get("people", []), "emails": res.get("all_emails", []),
+            "pages": res.get("pages", 0)}
+
+
 async def guess_for_person(keys: Dict[str, str], full_name: str, company: str, respect_robots: bool = True
                            ) -> Optional[dict]:
     """A person's likely work email: find their employer's site, learn its email format from the addresses it
@@ -224,17 +247,12 @@ async def guess_for_person(keys: Dict[str, str], full_name: str, company: str, r
     import email_patterns
     if not email_patterns.name_parts(full_name) or not company:
         return None
-    site = await asyncio.to_thread(find_website, keys, company, "")
-    if not site:
+    prof = await company_profile(keys, company, respect_robots)
+    if not prof or not prof["domain_from_emails"]:
         return None
-    res = await crawl(site, respect_robots, max_pages=5)
-    domain = email_domain(res.get("all_emails", []), urlparse(site).netloc.removeprefix("www."))
-    if not domain:
-        return None
-    pattern = res.get("email_format") or email_patterns.infer(res.get("all_emails", []), domain, res.get("people", []))
-    g = email_patterns.guess(full_name, domain, pattern)
+    g = email_patterns.guess(full_name, prof["domain"], prof["format"])
     if g:
-        g["company_site"] = site
+        g["company_site"] = prof["site"]
     return g
 
 

@@ -217,6 +217,39 @@ restricts their use, and leaked copies are illegal to use for outreach.
   and similar themes) are read as one comment per author with date and profile link (`fetcher.html_comments`);
   the site's own replies ("send your CV to …") are recruiter messages and never leads.
 
+## Waterfall enrichment and email verification
+
+When a page gives an interested lead no complete contact, `pipeline._enrich_records` cascades through these steps,
+each only for the leads the previous ones left without a contact:
+
+1. **own profile page** — real name, LinkedIn link, published phone / email;
+2. **search result of that exact profile** — bio contacts, employer from the headline;
+3. **employer's website** — employer from the bio, the headline ("Staff Nurse at Fortis Hospital") or the post
+   ("working at …"); its site gives the **mail domain**, the **email format** and, if the company lists the
+   person, their real address;
+4. **lead databases** — by LinkedIn profile, or by **name + employer / domain** (ContactOut, Lusha, RocketReach,
+   Apollo, **Hunter** email-finder);
+5. **work-email guess + SMTP check** (last resort: employed, nothing found anywhere) — the likely addresses
+   (the company's own format first, then first.last, first, firstlast, flast, …) are all tested in one SMTP session;
+   a confirmed mailbox is reported as verified, on a catch-all domain only the company's own format is offered
+   and marked inconclusive, and if every address bounces no guess is given;
+6. **verification of every email** → the `email_status` column.
+
+`email_verify.py` checks without sending anything: syntax → disposable-inbox list → DNS (MX, implicit MX via
+the A record, null MX) → SMTP handshake (`EHLO`, `MAIL FROM`, `RCPT TO:<address>`, `QUIT` — no `DATA`) →
+catch-all probe (a random address in the same session: if it is accepted too, "250" proves nothing).
+Statuses: valid / invalid / catch-all (inconclusive) / disposable / domain takes no mail / unverified.
+
+**Port 25 on Vercel:** outbound SMTP (port 25) is blocked on Vercel's functions, like most cloud platforms, so
+there the mailbox step falls back to, in order:
+* `SMTP_VERIFY_URL` + `SMTP_VERIFY_TOKEN` — the same file running on any small server with port 25 open:
+  `SMTP_VERIFY_TOKEN=… SMTP_VERIFY_FROM=verify@yourdomain SMTP_HELO_DOMAIN=host.yourdomain python email_verify.py serve 8025`
+* Hunter / ZeroBounce / NeverBounce verification (`HUNTER_API_KEY`, `ZEROBOUNCE_API_KEY`, `NEVERBOUNCE_API_KEY`)
+* DNS only (domain checked, mailbox "unverified").
+
+Use a sender on a domain you own (`SMTP_VERIFY_FROM`) and probe sparingly; many RCPT checks from one IP get it
+rate-limited or block-listed. 🔑 keys → **Verify emails / find a work email** tests both by hand.
+
 ## Profile bios and work-email guesses
 
 For every interested lead still missing a contact (after their comment and their own profile page):

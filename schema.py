@@ -90,6 +90,8 @@ class CandidateRecord(BaseModel):
     contact_source: Optional[str] = Field(None, description="posted_on_page | shared_in_reply | enriched:<service>")
     email_guess: Optional[str] = Field(None, description="GUESSED work email from the employer's email format "
                                                            "(unverified), with confidence")
+    email_status: Optional[str] = Field(None, description="Verification of `email`: valid / invalid / catch-all "
+                                                           "(inconclusive) / disposable / unverified, with method")
 
     @field_validator("activity_date", mode="before")
     @classmethod

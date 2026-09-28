@@ -141,6 +141,19 @@
         <div style="align-self:flex-end"><button id="tBtn">🔎 Test lookup</button></div>
       </div>
       <pre class="log" id="tOut" style="display:none;white-space:pre-wrap"></pre>
+      <h3 style="font-size:14px;margin:14px 0 6px">Verify emails / find a work email</h3>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 6px">Zero-send check: syntax, disposable inbox, DNS / MX,
+        then the mail server is asked (SMTP RCPT) whether the mailbox exists — nothing is sent. “Catch-all” means the
+        domain accepts every address, so the answer is inconclusive. Vercel blocks port 25; set <code>SMTP_VERIFY_URL</code>
+        (email_verify.py running on any small server) or a Hunter / ZeroBounce / NeverBounce key for mailbox checks.</p>
+      <div class="grid">
+        <div><label for="vEmails">Emails (comma / new line)</label><textarea id="vEmails" rows="2"></textarea></div>
+        <div style="align-self:flex-end"><button id="vBtn">✉️ Verify</button></div>
+        <div><label for="fName">Full name</label><input id="fName" placeholder="Harpreet Kaur"></div>
+        <div><label for="fCo">Company or domain</label><input id="fCo" placeholder="fortishealthcare.com"></div>
+        <div style="align-self:flex-end"><button id="fBtn">🔎 Find work email</button></div>
+      </div>
+      <pre class="log" id="vOut" style="display:none;white-space:pre-wrap"></pre>
       <p style="color:var(--muted);font-size:13px;margin-top:10px">Keys are saved as you type. Click
         “Test connections” at the top to see which services are active.</p>
     </details>
@@ -366,7 +379,7 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const COLS = ["activity_date", "shows_interest", "name", "phone", "email", "email_guess", "current_role", "skills", "current_location",
+const COLS = ["activity_date", "shows_interest", "name", "phone", "email", "email_status", "email_guess", "current_role", "skills", "current_location",
               "target_countries", "platform", "evidence_snippet", "source_url"];
 const LIST_COLS = ["skills", "target_countries"];
 const EDITABLE = ["name", "phone", "email", "current_role", "skills", "current_location", "target_countries",
@@ -644,6 +657,9 @@ const INTEGRATIONS = [
   ["lusha", "Lusha API key", "lusha.com → Settings → API", "Lead databases (phone / email lookup)"],
   ["rocketreach", "RocketReach API key", "rocketreach.co → Account → API", "Lead databases (phone / email lookup)"],
   ["apollo", "Apollo.io API key", "apollo.io → Settings → Integrations → API (emails only; phones need a webhook)", "Lead databases (phone / email lookup)"],
+  ["hunter", "Hunter.io API key", "hunter.io → API → key (email finder by name + company domain, and verification)", "Lead databases (phone / email lookup)"],
+  ["zerobounce", "ZeroBounce API key", "zerobounce.net → API (used when SMTP checks are not possible from the server)", "Email verification"],
+  ["neverbounce", "NeverBounce API key", "neverbounce.com → Apps → API (used when SMTP checks are not possible)", "Email verification"],
   ["youtube", "YouTube Data API key", "console.cloud.google.com → enable YouTube Data API v3 → Credentials → API key", "YouTube (comments on job videos)"],
   ["reddit_client_id", "Reddit app client id", "reddit.com/prefs/apps → create app (script) → id under the name", "Reddit API (Intent Miner)"],
   ["reddit_client_secret", "Reddit app secret", "reddit.com/prefs/apps → secret", "Reddit API (Intent Miner)"],
@@ -720,6 +736,27 @@ $("tBtn").onclick = async () => {
     out.textContent = r.results.map((x) => `${x.provider}: ` + (x.error ? "❌ " + x.error :
       `HTTP ${x.status} · emails: ${x.emails.join(", ") || "none"} · phones: ${x.phones.join(", ") || "none"}` +
       (x.emails.length || x.phones.length ? "" : `\n   reply: ${x.reply || "(empty)"}`))).join("\n");
+  } catch (e) { out.textContent = "❌ " + e.message; }
+};
+
+$("vBtn").onclick = async () => {
+  const out = $("vOut"); out.style.display = "block"; out.textContent = "Checking…";
+  const emails = $("vEmails").value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+  if (!emails.length) { out.textContent = "Enter at least one email."; return; }
+  try {
+    const r = await api("/api/verify/email", { emails });
+    out.textContent = r.results.map((x) => `${x.email}: ${x.label}\n   ${x.reason || ""}${x.mx ? " · MX " + x.mx : ""}`).join("\n");
+  } catch (e) { out.textContent = "❌ " + e.message; }
+};
+$("fBtn").onclick = async () => {
+  const out = $("vOut"); out.style.display = "block"; out.textContent = "Finding the company site, its email format, then checking addresses…";
+  try {
+    const r = await api("/api/email/find", { name: $("fName").value.trim(), company: $("fCo").value.trim(),
+      respect_robots: $("robots").checked });
+    out.textContent = `Site: ${r.site} · mail domain: ${r.domain}${r.domain_from_emails ? "" : " (from the site; no published addresses)"}\n` +
+      `Format: ${r.format ? r.format.format + " (" + r.format.confidence + ") — " + r.format.evidence.join("; ") : "unknown — no personal addresses published"}\n` +
+      (r.published.length ? `Published on the site: ${r.published.map((p) => p.name + " " + p.email).join(", ")}\n` : "") +
+      r.candidates.map((c) => `${c.email}  [${c.format}]  ${c.label}${c.reason ? " — " + c.reason : ""}`).join("\n");
   } catch (e) { out.textContent = "❌ " + e.message; }
 };
 

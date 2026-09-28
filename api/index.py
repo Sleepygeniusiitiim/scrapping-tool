@@ -848,7 +848,11 @@ class EnrichTestIn(BaseModel):
 @router.post("/enrich/test")
 async def enrich_test(body: EnrichTestIn, keys: dict = Depends(_keys)):
     """One real lookup per lead database, with each service's own reply — to see why lookups fail."""
-    person = {"linkedin_url": body.linkedin_url.strip(), "name": body.name.strip(), "company": body.company.strip()}
+    co = body.company.strip()
+    is_domain = bool(re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+/?", co, re.I))
+    person = {"linkedin_url": body.linkedin_url.strip(), "name": body.name.strip(),
+              "company": "" if is_domain else co,
+              "domain": re.sub(r"^(?:https?://)?(?:www\.)?", "", co).rstrip("/") if is_domain else ""}
     names = [p for p in integrations.ENRICH_ORDER if keys.get(p)]
     if not names:
         raise HTTPException(400, "No lead-database key is set (page or Vercel env vars).")
@@ -856,6 +860,43 @@ async def enrich_test(body: EnrichTestIn, keys: dict = Depends(_keys)):
     return {"results": [{"provider": integrations.SERVICES[p][1], "status": r.get("status"),
                          "emails": r.get("emails", []), "phones": r.get("phones", []),
                          "error": r.get("error"), "reply": r.get("raw", "")} for p, r in zip(names, results)]}
+
+
+class VerifyIn(BaseModel):
+    emails: List[str] = Field(..., min_length=1, max_length=25)
+
+
+@router.post("/verify/email")
+async def verify_email(body: VerifyIn, keys: dict = Depends(_keys)):
+    """Zero-send verification: syntax, disposable, DNS / MX, SMTP RCPT check, catch-all probe."""
+    import email_verify
+    res = await email_verify.verify_many([e.strip() for e in body.emails], keys)
+    return {"results": [{"email": e, **v, "label": email_verify.label(v)} for e, v in res.items()]}
+
+
+class FindEmailIn(BaseModel):
+    name: str = Field(..., min_length=3, max_length=120)
+    company: str = Field(..., min_length=2, max_length=200)
+    respect_robots: bool = True
+
+
+@router.post("/email/find")
+async def find_email(body: FindEmailIn, keys: dict = Depends(_keys)):
+    """The waterfall's last steps for one person: employer site → mail domain + format → likely addresses →
+    SMTP check of each."""
+    import company_contacts
+    import email_verify
+    prof = await company_contacts.company_profile(keys, body.company, body.respect_robots)
+    if not prof:
+        raise HTTPException(404, "Could not find the company's website — enter its domain (e.g. fortishealthcare.com).")
+    cands = pipeline._candidates_for(body.name, prof["domain"], prof["format"])
+    if not cands:
+        raise HTTPException(400, "Enter first and last name.")
+    res = await email_verify.verify_many([e for _, e in cands], keys)
+    return {"site": prof["site"], "domain": prof["domain"], "domain_from_emails": prof["domain_from_emails"],
+            "format": prof["format"], "published": [p for p in prof["people"] if p.get("email")][:10],
+            "candidates": [{"email": e, "format": f, **res.get(e, {}), "label": email_verify.label(res.get(e))}
+                           for f, e in cands]}
 
 
 # ---------------------------------------------------------------------------

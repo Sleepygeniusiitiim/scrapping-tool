@@ -40,6 +40,9 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
     "lusha": ("LUSHA_API_KEY", "Lusha", "enrich"),
     "contactout": ("CONTACTOUT_API_KEY", "ContactOut", "enrich"),
     "rocketreach": ("ROCKETREACH_API_KEY", "RocketReach", "enrich"),
+    "hunter": ("HUNTER_API_KEY", "Hunter.io (email finder by name + company domain; also verifies)", "enrich"),
+    "zerobounce": ("ZEROBOUNCE_API_KEY", "ZeroBounce (email verification)", "verify"),
+    "neverbounce": ("NEVERBOUNCE_API_KEY", "NeverBounce (email verification)", "verify"),
     "youtube": ("YOUTUBE_API_KEY", "YouTube Data API key", "source"),
     "reddit_client_id": ("REDDIT_CLIENT_ID", "Reddit API app client id", "source"),
     "reddit_client_secret": ("REDDIT_CLIENT_SECRET", "Reddit API app secret", "source"),
@@ -49,7 +52,7 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
 }
 SEARCH_ORDER = ["serper", "google_cse", "serpapi", "scrapedo", "brave"]
 UNBLOCK_ORDER = ["scrapedo", "scraperapi", "zenrows", "scrapingbee", "jina"]
-ENRICH_ORDER = ["contactout", "lusha", "rocketreach", "apollo"]
+ENRICH_ORDER = ["contactout", "lusha", "rocketreach", "apollo", "hunter"]
 
 
 def resolve_keys(page_keys: Optional[dict]) -> Dict[str, str]:
@@ -82,6 +85,8 @@ def summary(keys: Dict[str, str]) -> Dict[str, List[str]]:
     kinds["enrich"] = [n for n in ENRICH_ORDER if keys.get(n)]
     kinds["sources"] = (["reddit API"] if keys.get("reddit_client_id") and keys.get("reddit_client_secret") else []) + \
         (["YouTube API"] if keys.get("youtube") else [])
+    kinds["verify"] = [n for n in ("hunter", "zerobounce", "neverbounce") if keys.get(n)] + \
+        (["remote SMTP verifier"] if os.getenv("SMTP_VERIFY_URL") else [])
     kinds["crm"] = ["salesforce"] if keys.get("salesforce_instance_url") and keys.get("salesforce_token") else []
     return kinds
 
@@ -248,11 +253,13 @@ def _personal_first(emails: List[str]) -> List[str]:
 
 
 async def enrich_one(name: str, keys: Dict[str, str], person: dict) -> dict:
-    """Look one person up. person: {name, linkedin_url, company}. Returns {emails, phones, error}."""
+    """Look one person up. person: {name, linkedin_url, company, domain}. Returns {emails, phones, error}."""
     li = person.get("linkedin_url") or ""
     full = (person.get("name") or "").strip()
     first, _, last = full.partition(" ")
+    last = last.split()[-1] if last.split() else ""
     company = person.get("company") or ""
+    domain = (person.get("domain") or "").lower().removeprefix("www.")
     try:
         async with httpx.AsyncClient(timeout=25) as c:
             if name == "contactout":
@@ -263,12 +270,14 @@ async def enrich_one(name: str, keys: Dict[str, str], person: dict) -> dict:
                                 headers={"authorization": "basic", "token": keys["contactout"]})
             elif name == "lusha":
                 params = {"linkedinUrl": li} if li else {"firstName": first, "lastName": last, "companyName": company}
-                if not li and not (first and last and company):
+                if not li and domain:
+                    params["companyDomain"] = domain
+                if not li and not (first and last and (company or domain)):
                     return {"error": "Lusha needs a LinkedIn URL, or name + company"}
                 r = await c.get("https://api.lusha.com/v2/person", params=params, headers={"api_key": keys["lusha"]})
             elif name == "rocketreach":
-                params = {"linkedin_url": li} if li else {"name": full, "current_employer": company}
-                if not li and not (full and company):
+                params = {"linkedin_url": li} if li else {"name": full, "current_employer": company or domain}
+                if not li and not (full and (company or domain)):
                     return {"error": "RocketReach needs a LinkedIn URL, or name + company"}
                 r = await c.get("https://api.rocketreach.co/api/v2/person/lookup", params=params,
                                 headers={"Api-Key": keys["rocketreach"]})
@@ -276,14 +285,21 @@ async def enrich_one(name: str, keys: Dict[str, str], person: dict) -> dict:
                 q = {"reveal_personal_emails": "true"}
                 if li:
                     q["linkedin_url"] = li
-                elif full and company:
-                    q.update({"name": full, "organization_name": company})
+                elif full and (company or domain):
+                    q.update({"name": full, **({"organization_name": company} if company else {}),
+                              **({"domain": domain} if domain else {})})
                 else:
                     return {"error": "Apollo needs a LinkedIn URL, or name + company"}
                 # Apollo reads match parameters from the query string.
                 r = await c.post("https://api.apollo.io/api/v1/people/match", params=q, json={},
                                  headers={"x-api-key": keys["apollo"], "Content-Type": "application/json",
                                           "Cache-Control": "no-cache"})
+            elif name == "hunter":
+                if not (first and last and domain):
+                    return {"error": "Hunter needs first + last name and the company's email domain"}
+                r = await c.get("https://api.hunter.io/v2/email-finder",
+                                params={"domain": domain, "first_name": first, "last_name": last,
+                                        "api_key": keys["hunter"]})
             else:
                 return {"error": f"unknown provider {name}"}
     except Exception as exc:
@@ -338,7 +354,7 @@ async def enrich_person(keys: Dict[str, str], person: dict, providers: Optional[
     """Try providers in order until both phone and email are found."""
     stopped = stopped if stopped is not None else set()
     found = {"email": None, "phone": None, "provider": None, "tried": [], "errors": [], "profile_url": None}
-    if not person.get("linkedin_url") and not person.get("company"):
+    if not person.get("linkedin_url") and not person.get("company") and not person.get("domain"):
         # Guessing a LinkedIn profile from a Google name search often finds the wrong person, so it is only
         # done when explicitly allowed; normally the person's own profile page supplies the link.
         url = await asyncio.to_thread(find_linkedin_url, keys, person.get("name") or "", person.get("hints") or "") \

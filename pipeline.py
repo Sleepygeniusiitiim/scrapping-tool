@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import supabase_db as db
 import rule_extractor
@@ -489,88 +489,208 @@ async def _search_bios(records: List[CandidateRecord], keys: dict, notes: List[s
     return companies
 
 
-async def _guess_work_emails(records: List[CandidateRecord], companies: Dict[int, str], keys: dict,
-                             respect_robots: bool, notes: List[str]) -> None:
-    """LAST RESORT, only for leads who are working (employer known) and for whom no phone number and no email
-    was found anywhere else (comment, own profile, bio, lead databases): learn the employer's email format
-    from its website and apply it to their name."""
+MAX_DOMAIN_LOOKUPS = 4
+MAX_VERIFY_PER_BATCH = 15
+_EMPLOYER = re.compile(r"\b(?:work(?:ing|s)?|employed|job|nurse|engineer|operator|driver|teacher|trainer|manager|"
+                       r"executive|technician|staff)\s+(?:at|with|in)\s+([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,4})")
+_ROLE_AT = re.compile(r"\s(?:at|@)\s+([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z0-9][A-Za-z0-9&.'-]*){0,4})")
+
+
+def _employer(r: CandidateRecord) -> Optional[str]:
+    """Employer named in the person's own headline ("Staff Nurse at Fortis Hospital") or post ("working at …")."""
+    for rx, text in ((_ROLE_AT, r.current_role or ""), (_EMPLOYER, r.evidence_snippet or "")):
+        m = rx.search(" " + text)
+        if m and not re.fullmatch(r"(?:India|Home|Present|Dubai|Germany|UAE|Canada|UK|USA)", m.group(1).strip()):
+            return m.group(1).strip()
+    return None
+
+
+async def _company_profiles(records: List[CandidateRecord], companies: Dict[int, str], keys: dict,
+                            respect_robots: bool, notes: List[str]) -> Dict[int, dict]:
+    """Waterfall step: the employer's website → mail domain, email format, and the person's own address if
+    the company publishes it (a real contact). One crawl per company. Returns {id(record): profile}."""
     import company_contacts
-    todo = [r for r in records if id(r) in companies and not r.email_guess and not r.phone and not r.email
+    import email_patterns
+    for r in records:                               # employer from the person's own text when no bio gave one
+        if id(r) not in companies and (emp := _employer(r)):
+            companies[id(r)] = emp
+    wanted = list(dict.fromkeys(companies[id(r)] for r in records if id(r) in companies and not r.email))
+    wanted = wanted[:MAX_DOMAIN_LOOKUPS]
+    if not wanted:
+        return {}
+    res = await asyncio.gather(*(company_contacts.company_profile(keys, c, respect_robots) for c in wanted),
+                               return_exceptions=True)
+    by_company = {c: p for c, p in zip(wanted, res) if isinstance(p, dict)}
+    out, published = {}, 0
+    for r in records:
+        prof = by_company.get(companies.get(id(r), ""))
+        if not prof:
+            continue
+        out[id(r)] = prof
+        parts = email_patterns.name_parts(r.name or "")
+        if r.email or not parts:
+            continue
+        for person in prof["people"]:              # the company lists this person with their address
+            if person.get("email") and email_patterns.name_parts(person.get("name", "")) == parts:
+                r.email = clean_email(person["email"])
+                r.contact_source = r.contact_source or "company_website"
+                published += 1
+                break
+    notes.append(f"Employer websites: {len(wanted)} employers → {len(by_company)} sites found → "
+                 f"{sum(1 for p in by_company.values() if p['domain_from_emails'])} mail domains confirmed, "
+                 f"{sum(1 for p in by_company.values() if p['format'])} email formats learned, "
+                 f"{published} leads' own addresses published there")
+    return out
+
+
+def _candidates_for(name: str, domain: str, pattern: Optional[dict]) -> List[Tuple[str, str]]:
+    """Addresses to test: the company's known format first, then the most common formats."""
+    import email_patterns
+    parts = email_patterns.name_parts(name)
+    if not parts:
+        return []
+    order = ([pattern["format"]] if pattern else []) + ["first.last", "first", "firstlast", "flast", "f.last",
+                                                          "first_last", "last.first", "firstl"]
+    seen, out = set(), []
+    for fmt in order:
+        e = f"{email_patterns.render(fmt, *parts)}@{domain}"
+        if e not in seen:
+            seen.add(e)
+            out.append((fmt, e))
+    return out[:7]
+
+
+async def _guess_work_emails(records: List[CandidateRecord], profiles: Dict[int, dict], keys: dict,
+                             notes: List[str]) -> None:
+    """LAST RESORT, only for leads who are working (employer known) and for whom no phone number and no email
+    was found anywhere else: build the likely addresses from their name and the employer's mail domain, then
+    test them with a zero-send SMTP check. A mailbox the server confirms is reported as verified; on a catch-all
+    domain only the format the company itself uses is offered, marked inconclusive."""
+    import email_verify
+    todo = [r for r in records if id(r) in profiles and not r.email_guess and not r.phone and not r.email
             ][:MAX_EMAIL_GUESSES]
     if not todo:
         return
-    res = await asyncio.gather(*(company_contacts.guess_for_person(keys, r.name or "", companies[id(r)],
-                                                                   respect_robots) for r in todo),
-                               return_exceptions=True)
-    n = 0
-    for r, g in zip(todo, res):
-        if isinstance(g, dict) and g.get("email"):
-            r.email_guess = f"{g['email']} (guessed, {g['confidence']} confidence, format {g['format']})"
-            n += 1
-    notes.append(f"Work-email guesses (last resort — employed, no phone / email found anywhere): {len(todo)} leads → "
-                 f"{n} guessed from the employer's published email format (unverified — marked 'guessed')")
+    stats = {"verified": 0, "catch_all": 0, "rejected": 0, "unverified": 0}
+    for r in todo:
+        prof = profiles[id(r)]
+        cands = _candidates_for(r.name or "", prof["domain"], prof["format"])
+        if not cands:
+            continue
+        res = await email_verify.verify_many([e for _, e in cands], keys)
+        valid = [(f, e) for f, e in cands if res.get(e, {}).get("status") == "valid"]
+        fmt_guess = cands[0] if prof["format"] else None
+        if valid:
+            f, e = valid[0]
+            r.email_guess = f"{e} (mailbox verified by SMTP, format {f}; not published by the person)"
+            stats["verified"] += 1
+        elif all(res.get(e, {}).get("status") in ("invalid", "no_mail") for _, e in cands):
+            stats["rejected"] += 1                  # every likely address bounced: no guess at all
+        elif fmt_guess and any(res.get(e, {}).get("status") == "catch_all" for _, e in cands):
+            r.email_guess = (f"{fmt_guess[1]} (guessed, {prof['format']['confidence']} confidence, format "
+                             f"{fmt_guess[0]}; domain accepts all mail — cannot be verified)")
+            stats["catch_all"] += 1
+        elif fmt_guess and res.get(fmt_guess[1], {}).get("status") != "invalid":
+            r.email_guess = (f"{fmt_guess[1]} (guessed, {prof['format']['confidence']} confidence, format "
+                             f"{fmt_guess[0]}; mailbox not verified)")
+            stats["unverified"] += 1
+    notes.append(f"Work-email guesses (last resort — employed, no phone / email anywhere): {len(todo)} leads → "
+                 f"{stats['verified']} mailboxes confirmed by SMTP, {stats['catch_all']} on catch-all domains "
+                 f"(inconclusive), {stats['unverified']} unverified format guesses, {stats['rejected']} with every "
+                 "likely address rejected (no guess given)")
+
+
+async def _verify_found(records: List[CandidateRecord], keys: dict, notes: List[str]) -> None:
+    """Check every email the waterfall produced: DNS / MX, zero-send SMTP, catch-all and disposable flags."""
+    import email_verify
+    todo = [r for r in records if r.email and not r.email_status][:MAX_VERIFY_PER_BATCH]
+    if not todo:
+        return
+    res = await email_verify.verify_many([r.email for r in todo], keys)
+    counts: Dict[str, int] = {}
+    for r in todo:
+        v = res.get(r.email)
+        if v:
+            r.email_status = email_verify.label(v)
+            counts[v["status"]] = counts.get(v["status"], 0) + 1
+    smtp = any((res.get(r.email) or {}).get("method", "").startswith("smtp") for r in todo)
+    notes.append("Email check (DNS / MX" + (" + SMTP" if smtp else "; SMTP port 25 not reachable from this server")
+                 + f"): {len(todo)} addresses → " + ", ".join(f"{n} {k.replace('_', '-')}" for k, n in counts.items()))
 
 
 async def _enrich_records(records: List[CandidateRecord], keys: dict, require_both: bool,
                           respect_robots: bool = True) -> tuple[int, List[str]]:
-    """For every interested lead missing a phone / email: open their own profile first (real name, LinkedIn
-    link, published contact), then look the LinkedIn-identified ones up in the lead databases. With
-    require_both, a looked-up contact is kept only when the lead then has BOTH a phone and an email.
-    Returns (leads filled, log notes) — the first notes say what happened."""
+    """Waterfall enrichment for every interested lead whose page gave no complete contact. Each step runs only
+    for the leads the previous steps left without one:
+        1. their own profile page        (real name, LinkedIn link, published phone / email)
+        2. search result of that profile (bio contacts, employer from the headline)
+        3. employer's website            (mail domain, email format, the person's address if published)
+        4. lead databases                (LinkedIn URL, or name + company / domain: ContactOut, Lusha,
+                                          RocketReach, Apollo, Hunter)
+        5. work-email guess + SMTP check (last resort: employed, nothing found anywhere)
+        6. verification of every email   (DNS / MX, SMTP mailbox check, catch-all, disposable)
+    With require_both, a looked-up contact is kept only when the lead then has BOTH a phone and an email.
+    Returns (leads filled from databases, log notes)."""
+    import email_patterns
     wanting = [r for r in records if r.shows_interest and not (r.phone and r.email)]
-    if not wanting:
-        return 0, []
     notes_out: List[str] = []
+    if not wanting:
+        await _verify_found(records, keys, notes_out)
+        return 0, notes_out
+    missing = lambda rs: [r for r in rs if not (r.phone and r.email)]
     pv = await _visit_profiles(wanting[:MAX_ENRICH_PER_BATCH * 2], respect_robots)
     if pv.get("visited"):
         notes_out.append(f"Profiles: opened {pv['visited']} commenters' own profiles → {pv['named']} real names, "
                          f"{pv['linkedin']} LinkedIn links, {pv['contacts']} published contacts"
                          + (f" ({pv['walled']} behind a login wall / blocked)" if pv["walled"] else ""))
-    wanting = [r for r in wanting if not (r.phone and r.email)]
-    if not wanting:
-        return 0, notes_out
-    companies = await _search_bios(wanting, keys, notes_out)
-    wanting = [r for r in wanting if not (r.phone and r.email)]
-    if not wanting:
-        return 0, notes_out
-    if not integrations.summary(keys)["enrich"]:
-        await _guess_work_emails(wanting, companies, keys, respect_robots, notes_out)
-        return 0, notes_out + [f"Lead databases: {len(wanting)} interested leads still miss a phone / email, but no "
-                               "Apollo / Lusha / ContactOut / RocketReach key is set."]
-    todo = [r for r in wanting if _identifiable(r)][:MAX_ENRICH_PER_BATCH]
-    no_identity = len(wanting) - len([r for r in wanting if _identifiable(r)])
-    if not todo:
-        await _guess_work_emails(wanting, companies, keys, respect_robots, notes_out)
-        return 0, notes_out + [f"Lead databases: {len(wanting)} interested leads miss contacts, but none has a "
-                               "LinkedIn profile (their own profile page did not link one), so they were not looked "
-                               "up — no credits spent."]
-    stopped: set = set()
-    sem = asyncio.Semaphore(3)
+    wanting = missing(wanting)
+    companies = await _search_bios(wanting, keys, notes_out) if wanting else {}
+    wanting = missing(wanting)
+    profiles = await _company_profiles(wanting, companies, keys, respect_robots, notes_out) if wanting else {}
+    wanting = missing(wanting)
+    done = 0
+    if wanting and not integrations.summary(keys)["enrich"]:
+        notes_out.append(f"Lead databases: {len(wanting)} interested leads still miss a phone / email, but no "
+                         "Apollo / Lusha / ContactOut / RocketReach / Hunter key is set.")
+    elif wanting:
+        def lookup_ok(r):
+            return _identifiable(r) or (email_patterns.name_parts(r.name or "") and
+                                        (id(r) in profiles or id(r) in companies))
+        todo = [r for r in wanting if lookup_ok(r)][:MAX_ENRICH_PER_BATCH]
+        skipped = len([r for r in wanting if not lookup_ok(r)])
+        stopped: set = set()
+        sem = asyncio.Semaphore(3)
 
-    async def one(r: CandidateRecord):
-        async with sem:
-            return await integrations.enrich_person(
-                keys, {"name": r.name, "linkedin_url": r.profile_url}, None, stopped)
+        async def one(r: CandidateRecord):
+            prof = profiles.get(id(r)) or {}
+            async with sem:
+                return await integrations.enrich_person(
+                    keys, {"name": r.name, "linkedin_url": r.profile_url if _identifiable(r) else None,
+                           "company": companies.get(id(r)), "domain": prof.get("domain")}, None, stopped)
 
-    results = await asyncio.gather(*(one(r) for r in todo))
-    done, partial, notes = 0, 0, set()
-    for r, f in zip(todo, results):
-        notes.update(f["errors"][:2])
-        email, phone = r.email or f["email"], r.phone or f["phone"]
-        if (f["email"] or f["phone"]) and (not require_both or (email and phone)):
-            r.email, r.phone = clean_email(email), clean_phone(phone)
-            r.contact_source = f"enriched:{f['provider']}"
-            done += 1
-        elif f["email"] or f["phone"]:
-            partial += 1
-    summary = (f"Lead databases: {len(wanting)} interested leads missing contacts → looked up {len(todo)} by "
-               f"LinkedIn profile" + (f" ({no_identity} without a LinkedIn profile skipped)" if no_identity else "")
-               + f" → filled {done}"
-               + (f" ({partial} found only a phone or only an email — not kept because 'both phone & email' is ticked)"
-                  if partial else ""))
-    guess_notes: List[str] = []
-    await _guess_work_emails(wanting, companies, keys, respect_robots, guess_notes)   # last step, after lookups
-    return done, notes_out + [summary] + [f"Lead database: {n}" for n in list(notes)[:3]] + guess_notes
+        results = await asyncio.gather(*(one(r) for r in todo))
+        partial, notes = 0, set()
+        for r, f in zip(todo, results):
+            notes.update(f["errors"][:2])
+            email, phone = r.email or f["email"], r.phone or f["phone"]
+            if (f["email"] or f["phone"]) and (not require_both or (email and phone)):
+                r.email, r.phone = clean_email(email), clean_phone(phone)
+                r.contact_source = f"enriched:{f['provider']}"
+                done += 1
+            elif f["email"] or f["phone"]:
+                partial += 1
+        by_li = sum(1 for r in todo if _identifiable(r))
+        notes_out.append(
+            f"Lead databases: {len(wanting)} interested leads missing contacts → looked up {len(todo)} "
+            f"({by_li} by LinkedIn profile, {len(todo) - by_li} by name + employer / domain)"
+            + (f", {skipped} skipped (no LinkedIn and no employer — too ambiguous to look up)" if skipped else "")
+            + f" → filled {done}"
+            + (f" ({partial} found only a phone or only an email — not kept because 'both phone & email' is ticked)"
+               if partial else ""))
+        notes_out += [f"Lead database: {n}" for n in list(notes)[:3]]
+    await _guess_work_emails(missing(wanting), profiles, keys, notes_out)     # last step, after lookups
+    await _verify_found(records, keys, notes_out)
+    return done, notes_out
 
 
 def _hit_date(hit: dict) -> Optional[str]:

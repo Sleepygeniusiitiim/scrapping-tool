@@ -109,6 +109,8 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS activity_date DATE;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS shows_interest BOOLEAN;
 -- Guessed work email (employer's email format applied to the name) — unverified, kept apart from email.
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS email_guess TEXT;
+-- Verification of the email: valid / invalid / catch-all (inconclusive) / disposable / unverified (+ method).
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS email_status TEXT;
 """
 
 
@@ -394,6 +396,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
             r.get("shows_interest"),
             r.get("contact_source"),
             r.get("email_guess"),
+            r.get("email_status"),
         )
         for r in by_url.values()
     ]
@@ -408,7 +411,7 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                         INSERT INTO {CANDIDATES_TABLE} (
                             name, "current_role", skills, current_location,
                             target_countries, evidence_snippet, email, phone, source_url, platform, profile_url, activity_date,
-                            shows_interest, contact_source, email_guess
+                            shows_interest, contact_source, email_guess, email_status
                         )
                         VALUES %s
                         ON CONFLICT (source_url) DO UPDATE SET
@@ -430,6 +433,10 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
                                              OR COALESCE({CANDIDATES_TABLE}.shows_interest, FALSE),
                             contact_source = COALESCE({CANDIDATES_TABLE}.contact_source, EXCLUDED.contact_source),
                             email_guess = COALESCE(EXCLUDED.email_guess, {CANDIDATES_TABLE}.email_guess),
+                            email_status = CASE WHEN EXCLUDED.email IS NULL THEN {CANDIDATES_TABLE}.email_status
+                                                ELSE COALESCE(EXCLUDED.email_status,
+                                                     CASE WHEN EXCLUDED.email = {CANDIDATES_TABLE}.email
+                                                          THEN {CANDIDATES_TABLE}.email_status END) END,
                             discovered_at = NOW();
                         """,
                         list(chunk),
@@ -481,7 +488,7 @@ def fetch_all_candidates() -> List[dict]:
                            platform, discovered_at, contact_source, contact_shared_at,
                            COALESCE(outreach_status, 'new') AS outreach_status, outreach_message,
                            outreach_sent_at, reply_text, replied_at, profile_url, activity_date, shows_interest,
-                           email_guess
+                           email_guess, email_status
                     FROM {CANDIDATES_TABLE}
                     ORDER BY activity_date DESC NULLS LAST, discovered_at DESC;
                     """
