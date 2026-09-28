@@ -18,7 +18,7 @@ INTENT_TYPES = (
     "investment", "travel", "education", "immigration", "relocation", "complaint", "comparison",
     "price_inquiry", "informational", "irrelevant",
 )
-SOURCES = ("search", "reddit", "quora", "forums", "rss", "linkedin", "facebook")
+SOURCES = ("search", "reddit", "quora", "forums", "rss", "linkedin", "facebook", "youtube", "blogs")
 
 
 _VAGUE_PLACE = re.compile(r"abroad|overseas|international|unspecified|any ?where|any country|worldwide|global|"

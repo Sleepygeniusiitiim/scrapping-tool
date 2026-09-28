@@ -31,6 +31,8 @@ def _key(url: str) -> tuple:
     seg = [s for s in (p.path or "").split("/") if s]
     if host.endswith("linkedin.com") and len(seg) >= 2 and seg[0] == "in":
         return ("linkedin.com", seg[1].lower())
+    if host.endswith("youtube.com") and len(seg) >= 2 and seg[0] in ("channel", "c", "user"):
+        return ("youtube.com", seg[1].lower())
     return (host.split(".", host.count(".") - 1)[-1] if host.count(".") > 1 else host, seg[0].lower().lstrip("@")) \
         if seg else (host, "")
 

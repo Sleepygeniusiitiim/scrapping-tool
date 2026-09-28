@@ -24,6 +24,7 @@ from .classify import classify
 from .models import QuerySpec, RawDocument, Unit
 from .providers.base import SOURCE_QUALITY, source_of
 from .providers.reddit import RedditProvider
+from .providers.youtube import YouTubeProvider
 from .providers.web import QuoraProvider, RssProvider, SearchProvider, WebProvider, snippet_doc
 
 STAGE1_MIN = 25          # keyword score needed to go further (or an explicit first-person need)
@@ -37,6 +38,7 @@ def providers(keys: Dict[str, str], settings: dict) -> Dict[str, object]:
         "search": SearchProvider(keys, settings.get("backend", "auto"), settings.get("region", "wt-wt"),
                                  settings.get("max_results", 20)),
         "reddit": RedditProvider(keys),
+        "youtube": YouTubeProvider(keys),
         "quora": QuoraProvider(keys),
         "web": WebProvider(keys, settings.get("respect_robots", True), settings.get("timeout", 15)),
         "rss": RssProvider(keys, settings.get("feeds", [])),
@@ -62,6 +64,8 @@ async def discover(spec: QuerySpec, source: str, query: str, keys: Dict[str, str
                 # Reddit API unavailable → search-engine discovery of Reddit threads.
                 error = str(exc)
                 hits = await provs["search"].search(f"site:reddit.com {query}", spec, limit)
+        elif source == "youtube":
+            hits = await provs["youtube"].search(query, spec, limit)
         elif source == "rss":
             hits = await provs["rss"].search(query, spec, limit)
         else:
@@ -101,10 +105,10 @@ def _doc_from_json(j: dict) -> RawDocument:
 # Processing (one batch of discovered items)
 # ---------------------------------------------------------------------------
 async def fetch_docs(items: List[dict], provs: Dict[str, object]) -> List[RawDocument]:
-    reddit, web, quora = [], [], []
+    reddit, web, quora, youtube = [], [], [], []
     for it in items:
         src = it.get("source") or source_of(it["url"])
-        (reddit if src == "reddit" else quora if src == "quora" else web).append(it)
+        (reddit if src == "reddit" else quora if src == "quora" else youtube if src == "youtube" else web).append(it)
     docs: List[RawDocument] = []
     for it in items:
         if it.get("doc") and (it.get("source") or source_of(it["url"])) not in ("reddit",):
@@ -115,6 +119,7 @@ async def fetch_docs(items: List[dict], provs: Dict[str, object]) -> List[RawDoc
         hit = {**it, "doc": _doc_from_json(it["doc"]) if it.get("doc") else None}
         tasks.append(_reddit_doc(provs["reddit"], provs["web"], it, hit))
     tasks += [provs["quora"].fetch(it["url"], it) for it in quora]
+    tasks += [provs["youtube"].fetch(it["url"], it) for it in youtube]
     results = await asyncio.gather(*tasks)
     docs += list(results)
     if web:

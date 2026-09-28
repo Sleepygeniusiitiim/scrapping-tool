@@ -158,6 +158,8 @@
       <label><input type="checkbox" value="forums" checked>Forums &amp; websites</label>
       <label><input type="checkbox" value="linkedin">LinkedIn (search-indexed)</label>
       <label><input type="checkbox" value="facebook">Facebook (search-indexed)</label>
+      <label><input type="checkbox" value="youtube" checked>YouTube comments</label>
+      <label><input type="checkbox" value="blogs" checked>Blogs</label>
       <label><input type="checkbox" value="rss">RSS feeds</label>
     </div>
     <div class="row" style="margin-top:6px">
@@ -603,6 +605,7 @@ const INTEGRATIONS = [
   ["lusha", "Lusha API key", "lusha.com → Settings → API", "Lead databases (phone / email lookup)"],
   ["rocketreach", "RocketReach API key", "rocketreach.co → Account → API", "Lead databases (phone / email lookup)"],
   ["apollo", "Apollo.io API key", "apollo.io → Settings → Integrations → API (emails only; phones need a webhook)", "Lead databases (phone / email lookup)"],
+  ["youtube", "YouTube Data API key", "console.cloud.google.com → enable YouTube Data API v3 → Credentials → API key", "YouTube (comments on job videos)"],
   ["reddit_client_id", "Reddit app client id", "reddit.com/prefs/apps → create app (script) → id under the name", "Reddit API (Intent Miner)"],
   ["reddit_client_secret", "Reddit app secret", "reddit.com/prefs/apps → secret", "Reddit API (Intent Miner)"],
   ["salesforce_instance_url", "Salesforce instance URL", "https://yourcompany.my.salesforce.com", "Salesforce (Intent Miner export)"],
@@ -700,7 +703,7 @@ $("impBtn").onclick = async () => {
 const im = { stop: false, runId: "", leads: new Map() };
 function imLog(msg) { logEv("info", msg); }
 const SOURCE_LABEL = { search: "Search engines", reddit: "Reddit", quora: "Quora", forums: "Forums & websites",
-  linkedin: "LinkedIn", facebook: "Facebook", rss: "RSS feeds" };
+  linkedin: "LinkedIn", facebook: "Facebook", rss: "RSS feeds", youtube: "YouTube", blogs: "Blogs" };
 function imSettings(main, intent, planQueries) {
   const m = main || {};
   return { backend: $("backend").value, region: $("region").value, max_results: num("maxRes") || 20,

@@ -34,6 +34,13 @@ Return JSON with:
     * "quora": site:quora.com …
     * "forums": inurl:forum / inurl:thread / known forums for this field …
     * "linkedin": site:linkedin.com/posts …   * "facebook": site:facebook.com …
+    * "youtube": plain keywords for YouTube video search (no site:) — recruitment / "jobs abroad" / visa /
+      how-to-apply videos whose comment sections are full of "interested" viewers, e.g. "Germany nursing
+      jobs for Indian nurses", "Dubai driver vacancy apply"
+    * "blogs": blog posts / articles on ANY website whose comment sections hold readers asking for the job or
+      sharing their number — recruitment-agency and consultancy blogs (inurl:blog …), job-news sites, and
+      blog platforms (site:blogspot.com, site:wordpress.com, site:medium.com). E.g. inurl:blog "nursing jobs
+      in Germany" apply, "Dubai driver vacancy" "leave a reply", site:blogspot.com gulf jobs interested
   At most one quoted phrase per query; use the professions, places and intent terms; vary them.
   origin / destination must be real countries, regions or cities — if the command only says "abroad" or
   "overseas", leave destination empty (put "abroad" in high_intent_terms instead).
@@ -80,7 +87,8 @@ async def understand(ai, command: str, sources: List[str], max_age_days: Optiona
     seen, queries = set(), []
     for q in spec.queries:
         src = q.source.strip().lower()
-        src = src if src in ("search", "reddit", "quora", "forums", "linkedin", "facebook") else "search"
+        src = src if src in ("search", "reddit", "quora", "forums", "linkedin", "facebook", "youtube", "blogs") \
+            else "search"
         if allowed and src not in allowed:
             continue
         text = re.sub(r"\s+", " ", q.query).strip()

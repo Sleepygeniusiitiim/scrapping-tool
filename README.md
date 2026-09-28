@@ -162,6 +162,17 @@ that the mailbox exists). Not done: guessing emails from name patterns, SMTP pro
 What cannot be copied from those tools: their personal mobile numbers mostly come from contributor
 networks (users' address books uploaded via their extensions / apps) and purchased data.
 
+## YouTube comments and blog comments
+
+- **YouTube** (source "YouTube comments"): the official YouTube Data API v3 (`YOUTUBE_API_KEY`, or the Google
+  Programmable Search key if that API is enabled on its project; free 10,000 units/day — a video search is
+  100 units, 100 comments 1 unit). Recruitment / jobs-abroad videos are found, and every comment and reply
+  becomes a unit with the viewer's name, channel link and date — "Interested sir, HMV 5 years, 98…".
+- **Blogs** (source "Blogs"): comment sections of blog posts on any website — recruitment-agency blogs,
+  job-news sites, Blogspot / WordPress / Medium. Comments rendered as HTML (WordPress, wpDiscuz, Blogger
+  and similar themes) are read as one comment per author with date and profile link (`fetcher.html_comments`);
+  the site's own replies ("send your CV to …") are recruiter messages and never leads.
+
 ## Profile bios and work-email guesses
 
 For every interested lead still missing a contact (after their comment and their own profile page):

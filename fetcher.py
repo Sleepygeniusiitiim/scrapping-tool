@@ -214,9 +214,64 @@ def contact_mentions(text: str) -> str:
     return "\n".join(out)
 
 
+_CMT_BLOCKS = {"comment", "comment-body", "wpd-comment", "wc-comment", "comment-item", "comment-block",
+               "comment-container", "comment-wrapper", "review", "single-comment", "commentlist-item"}
+_CMT_TEXTS = {"comment-content", "comment-text", "comment_text", "wpd-comment-text", "comment-body-text",
+              "comment-message", "message", "review-text", "commentbody", "comment-entry"}
+_NOT_AUTHOR = re.compile(r"avatar|says|meta|date|time|link", re.I)
+
+
+def _tokens(el) -> set:
+    return {c.lower() for c in (el.get("class") or [])}
+
+
+def _is_author(el) -> bool:
+    toks = _tokens(el)
+    return bool(toks & {"fn", "user", "username", "commenter", "name", "author-name", "comment-author-name"} or
+                any("author" in t and not _NOT_AUTHOR.search(t) for t in toks))
+
+
+def html_comments(soup: BeautifulSoup) -> List[str]:
+    """Reader comments on any site's blog post / article (WordPress, wpDiscuz, Blogger, generic themes):
+    one 'COMMENT by Name [date]: text' line per comment (replies are separate comments)."""
+    lines, seen, used = [], set(), set()
+    for text_el in soup.find_all(lambda t: bool(_tokens(t) & _CMT_TEXTS)):
+        if id(text_el) in used:
+            continue
+        used.add(id(text_el))
+        # the comment this text belongs to: nearest ancestor that is a comment block
+        block = text_el.find_parent(lambda t: bool(_tokens(t) & _CMT_BLOCKS))
+        if block is None:
+            continue
+        author_el = next((e for e in block.find_all(_is_author) if not e.find_parent(
+            lambda t: bool(_tokens(t) & _CMT_TEXTS))), None)
+        if author_el is None:
+            continue
+        author = re.sub(r"\s+", " ", author_el.get_text(" ", strip=True))
+        author = re.sub(r"\s*(?:says|said|replied|wrote)\b.*$|:\s*$", "", author, flags=re.I).strip()[:60]
+        text = re.sub(r"\s+", " ", text_el.get_text(" ", strip=True)).strip()
+        text = re.sub(r"\s*(?:Reply|Log in to Reply|Like|Report)\s*$", "", text).strip()
+        if not author or len(text) < 2 or len(author.split()) > 6:
+            continue
+        t = block.find("time")
+        when = dates.parse(t.get("datetime") or t.get_text(" ", strip=True)) if t is not None else None
+        key = (author.lower(), text[:120])
+        if key in seen:
+            continue
+        seen.add(key)
+        link = author_el if author_el.name == "a" else author_el.find("a")
+        href = link.get("href", "") if link is not None else ""
+        href = href if href.startswith("http") and "#" not in href else ""
+        lines.append(f"COMMENT by {author}{f' <{href}>' if href else ''}{f' [{when}]' if when else ''}: {text[:1500]}")
+    return lines
+
+
 def html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     thread = structured_thread(soup)
+    blog_comments = html_comments(BeautifulSoup(html, "html.parser"))
+    if blog_comments:
+        thread = "\n".join(x for x in [thread] + blog_comments if x)
     published = page_date(soup)
     for tag in soup(_DROP_TAGS):
         tag.decompose()

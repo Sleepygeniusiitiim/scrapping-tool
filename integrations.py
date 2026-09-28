@@ -40,6 +40,7 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
     "lusha": ("LUSHA_API_KEY", "Lusha", "enrich"),
     "contactout": ("CONTACTOUT_API_KEY", "ContactOut", "enrich"),
     "rocketreach": ("ROCKETREACH_API_KEY", "RocketReach", "enrich"),
+    "youtube": ("YOUTUBE_API_KEY", "YouTube Data API key", "source"),
     "reddit_client_id": ("REDDIT_CLIENT_ID", "Reddit API app client id", "source"),
     "reddit_client_secret": ("REDDIT_CLIENT_SECRET", "Reddit API app secret", "source"),
     "salesforce_instance_url": ("SALESFORCE_INSTANCE_URL", "Salesforce instance URL", "crm"),
@@ -78,7 +79,8 @@ def summary(keys: Dict[str, str]) -> Dict[str, List[str]]:
         if keys.get(name) or (name == "jina" and os.getenv("DISABLE_JINA", "") != "1"):
             kinds["unblock"].append(name)
     kinds["enrich"] = [n for n in ENRICH_ORDER if keys.get(n)]
-    kinds["sources"] = ["reddit API"] if keys.get("reddit_client_id") and keys.get("reddit_client_secret") else []
+    kinds["sources"] = (["reddit API"] if keys.get("reddit_client_id") and keys.get("reddit_client_secret") else []) + \
+        (["YouTube API"] if keys.get("youtube") else [])
     kinds["crm"] = ["salesforce"] if keys.get("salesforce_instance_url") and keys.get("salesforce_token") else []
     return kinds
 

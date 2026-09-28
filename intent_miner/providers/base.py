@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -86,6 +87,11 @@ class BaseProvider(ABC):
         ...
 
 
+BLOG_HOSTS = ("medium.com", "blogspot.com", "blogger.com", "wordpress.com", "substack.com", "tumblr.com",
+              "hashnode.dev", "hashnode.com", "dev.to", "wixsite.com", "weebly.com", "ghost.io", "livejournal.com",
+              "quora.com/spaces")
+
+
 def source_of(url: str) -> str:
     """URL classifier: which adapter reads this URL."""
     host = (urlparse(url).hostname or "").lower()
@@ -98,13 +104,19 @@ def source_of(url: str) -> str:
         return "linkedin"
     if host.endswith("facebook.com") or host.endswith("fb.com"):
         return "facebook"
+    if host.endswith("youtube.com") or host == "youtu.be":
+        return "youtube"
+    if any(host == b or host.endswith("." + b) for b in BLOG_HOSTS):
+        return "blogs"
     if any(x in path for x in (".rss", "/feed", ".xml", "/rss")):
         return "rss"
+    if re.search(r"/blogs?/|/\d{4}/\d{2}/", path):
+        return "blogs"
     return "forums"
 
 
 # Configurable reliability signal of each source type, used in ranking (not a judgement of the people).
 SOURCE_QUALITY = {
-    "forums": 85, "reddit": 80, "quora": 70, "linkedin": 75, "facebook": 65, "rss": 70,
+    "forums": 85, "reddit": 80, "quora": 70, "linkedin": 75, "facebook": 65, "rss": 70, "youtube": 75, "blogs": 65,
     "portal": 75, "blog": 55, "web": 35, "snippet": 25,
 }
