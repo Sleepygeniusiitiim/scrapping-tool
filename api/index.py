@@ -498,7 +498,7 @@ class IMSettings(BaseModel):
     respect_robots: bool = True
     timeout: int = Field(15, ge=5, le=30)
     feeds: List[str] = Field(default_factory=list, max_length=20)
-    min_score: int = Field(60, ge=0, le=100)
+    min_score: int = Field(50, ge=0, le=100)
     use_llm: bool = True
     save_to_candidates: bool = True
     reprocess: bool = False

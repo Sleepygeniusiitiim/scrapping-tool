@@ -134,6 +134,10 @@ class WebProvider(BaseProvider):
                                   link or None, when or page_date))
         if doc.units:
             return doc
+        comments = social_comments(markdown.split("## Page text", 1)[-1])
+        if sum(1 for c in comments if c.kind == "comment") >= 2:
+            doc.units += comments
+            return doc
         # No structured thread: split the page text into blocks; each block keeps the nearest stated name.
         text = markdown.split("## Page text", 1)[-1]
         blocks, cur = [], []
@@ -158,6 +162,38 @@ class WebProvider(BaseProvider):
             if len(doc.units) >= 60:
                 break
         return doc
+
+
+_SOCIAL = re.compile(
+    r"(?:^|\s)@?([A-Za-z0-9_.]{3,30})\s+(?:Edited\s*·?\s*)?(\d{1,3})\s?(s|m|h|d|w|y|min|mins|hr|hrs|days?|wks?|"
+    r"weeks?|yrs?|years?)\b\s*(?:ago)?\s+(.{2,600}?)(?=\s+(?:\d+\s+likes?\s+)?(?:Reply|Like\s+Reply|See translation)\b)",
+    re.IGNORECASE)
+_NOT_HANDLE = {"likes", "like", "reply", "replies", "view", "views", "more", "comments", "comment", "hide", "and"}
+
+
+def social_comments(text: str) -> List[Unit]:
+    """Comment lists as social sites render them in text: 'shrikantsingh640 15w Can I apply this job 1 like Reply'.
+    Each comment becomes its own unit, with the handle as author and a date from the relative age."""
+    flat = re.sub(r"\s+", " ", text or "")
+    out, seen = [], set()
+    first = _SOCIAL.search(flat)
+    caption = flat[:first.start()].strip() if first else ""
+    if len(caption) >= 20:                   # the post / reel caption the comments reply to
+        out.append(Unit("post", None, caption[:2000], None, None))
+    for handle, n, unit, body in _SOCIAL.findall(flat):
+        if handle.lower() in _NOT_HANDLE or handle.isdigit():
+            continue
+        body = body.strip()
+        key = (handle.lower(), body[:80])
+        if key in seen or len(body) < 2:
+            continue
+        seen.add(key)
+        u = unit.lower()
+        days = (int(n) * 7 if u.startswith("w") else int(n) * 365 if u.startswith("y") else
+                int(n) if u.startswith("d") else 0)
+        when = dates.parse(f"{days} days ago") if days else dates.today().isoformat()
+        out.append(Unit("comment", handle, body, None, when))
+    return out
 
 
 def snippet_doc(url: str, source: str, hit: dict) -> RawDocument:

@@ -134,7 +134,7 @@ async def _reddit_doc(reddit, web, item, hit) -> RawDocument:
 async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], settings: dict,
                   run_id: str = "") -> dict:
     provs = providers(keys, settings)
-    min_score = int(settings.get("min_score", 60))
+    min_score = int(settings.get("min_score", 50))
     stats = {"fetched": 0, "failed": 0, "blocked": 0, "duplicates": 0, "unchanged": 0, "units": 0,
              "stage1": 0, "stage2": 0, "llm_calls": 0, "llm_units": 0, "relevant": 0,
              "high": 0, "medium": 0, "low": 0, "too_old": 0, "leads": 0}
@@ -149,7 +149,8 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         d.url = canonicalize_url(d.url) or d.url
         for u in d.units:
             u.text = processing.clean(u.text)
-        d.units = [u for u in d.units if len(u.text) >= 20]
+        # short replies ("Interested", "DM me") are real signals in comments; posts need some substance
+        d.units = [u for u in d.units if len(u.text) >= (3 if u.kind == "comment" else 20)]
         hashes[d.url] = processing.content_hash(d.title + "\n" + d.text) if d.units else None
         stats["fetched" if d.status == "ok" else d.status if d.status in ("failed", "blocked") else "failed"] += 1
     known = await asyncio.to_thread(store.known_hashes, [h for h in hashes.values() if h])
@@ -186,9 +187,15 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
                     continue
             else:
                 kw, kw_why = scorer.keyword(context)
+                if u.kind == "comment":
+                    post = f"{d.title} {d.units[0].text[:600] if d.units and d.units[0] is not u else ''}"
+                    bonus, bonus_why = scorer.reply_context(u.text, post)
+                    kw, kw_why = min(100, kw + bonus), kw_why + bonus_why
                 explicit = scorer.explicit(u)
                 if kw < STAGE1_MIN and explicit < 100:
                     continue
+                if rule_extractor._HIRING.search(u.text) and explicit < 100:
+                    continue                      # the job ad / recruiter post itself, not a candidate
             stats["stage1"] += 1
             tl, tl_label = scorer.timeline(u.text)
             loc, loc_why = scorer.location(f"{d.title} {u.text}" if u.kind != "comment" else
@@ -207,7 +214,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
                 s[3]["semantic"] = scoring.semantic_from_cosine(scoring.cosine(vecs[0], v))
     passed = [s for s in shortlist if s[3]["semantic"] >= STAGE2_MIN or s[3]["keyword"] >= 55]
     stats["stage2"] = len(passed)
-    passed.sort(key=lambda s: scoring.combine(s[3], orgs), reverse=True)
+    passed.sort(key=lambda s: scoring.combine(s[3], orgs, with_llm=False), reverse=True)
     passed = passed[:MAX_LLM_UNITS_PER_BATCH]
 
     # ---- Stage 3: LLM on the shortlist only, contacts redacted -------------------------------------
@@ -249,7 +256,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             if r.explicit_need:
                 parts["explicit"] = 100
             parts["keyword"] = max(parts["keyword"], min(100, r.intent_strength))
-        intent_score = scoring.combine(parts, orgs)
+        intent_score = scoring.combine(parts, orgs, with_llm=r is not None)   # AI weight only when the AI judged it
         fresh = scoring.freshness(u.date or d.date)
         if orgs:
             fresh = max(fresh, 60)             # a business listing does not go stale like a post
@@ -257,8 +264,8 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         score = scoring.lead_score(intent_score, fresh, quality)
         t = scoring.tier(score)
         stats["relevant"] += 1
-        interested = (r is not None and r.explicit_need) or parts["explicit"] >= 100 or \
-            rule_extractor.shows_interest(u.text)
+        # the author's own interest: first person or a reply comment ("Interested"), not an article's "nurses who want…"
+        interested = (r is not None and r.explicit_need) or parts["explicit"] >= 100
         if settings.get("only_interested") and not interested and not orgs:
             stats["not_interested"] = stats.get("not_interested", 0) + 1
             events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
@@ -434,7 +441,8 @@ async def _classic(ai, spec: QuerySpec, docs: List[RawDocument], hits: Dict[str,
     intent = settings.get("intent") or spec.summary
     keywords = list(dict.fromkeys([k.lower() for k in spec.professions] +
                                   rule_extractor.keywords_from(intent, settings.get("plan_queries") or [])))
-    places = spec.destination or spec.origin
+    from .models import concrete_places
+    places = concrete_places(spec.destination) or concrete_places(spec.origin)
     months = max(1, round(spec.max_age_days / 30)) if spec.max_age_days else 0
     jobs = []
     for d in docs:

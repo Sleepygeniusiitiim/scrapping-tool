@@ -218,7 +218,7 @@
       same settings: sources, time window (“Only leads active in the last…”), interested-only, page reading, lead databases.</p>
     <details><summary>Lead scoring settings</summary>
       <div class="grid" style="margin-top:8px">
-        <div><label for="imMin">Minimum lead score</label><input id="imMin" type="number" min="0" max="100" value="60"></div>
+        <div><label for="imMin">Minimum lead score</label><input id="imMin" type="number" min="0" max="100" value="50"></div>
       </div>
       <div class="row" style="margin-top:8px">
         <label><input id="imReprocess" type="checkbox">Re-score pages seen before</label>
@@ -770,6 +770,12 @@ async function runCombined(intent, totals, rounds, mode) {
   $("planText").textContent = Object.entries(bySrc).map(([k, qs]) => `${SOURCE_LABEL[k] || k}\n  ` + qs.join("\n  ")).join("\n\n");
   $("planBox").classList.remove("hidden");
   const settings = imSettings({ mode }, intent, spec.queries.map((q) => q.query));
+  if ($("extraction").value === "rules")
+    logEv("info", "Page reading is “rules — no AI tokens”: posts are judged by keyword rules only. For better accuracy " +
+      "choose “hybrid” (the AI then checks only the shortlisted posts, a few calls per batch).");
+  if (!sources.includes("linkedin") && !sources.includes("facebook"))
+    logEv("info", "Tip: LinkedIn / Facebook posts are where most candidates comment “interested” with their number — " +
+      "tick them under Sources (and untick “Respect robots.txt” to read them).");
   const batch = Math.min(8, num("batch") || 5), maxUrls = num("maxUrls") || 30;
   const seen = new Set();
   for (const [src, queries] of Object.entries(bySrc)) {

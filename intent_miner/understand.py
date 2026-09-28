@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
-from .models import INTENT_TYPES, QuerySpec, SourcedQuery
+from .models import INTENT_TYPES, QuerySpec, SourcedQuery, concrete_places
 
 SYSTEM = f"""You turn a recruiter's / sales person's natural-language command into a structured search plan
 for finding PEOPLE who publicly show that intent in online discussions (Reddit, Quora, forums, public
@@ -35,6 +35,12 @@ Return JSON with:
     * "forums": inurl:forum / inurl:thread / known forums for this field …
     * "linkedin": site:linkedin.com/posts …   * "facebook": site:facebook.com …
   At most one quoted phrase per query; use the professions, places and intent terms; vary them.
+  origin / destination must be real countries, regions or cities — if the command only says "abroad" or
+  "overseas", leave destination empty (put "abroad" in high_intent_terms instead).
+  For target "people", most "search" queries should find pages where such people write in their own
+  words, ideally with contact details: comments under recruiter / agency posts on instagram.com,
+  facebook.com and linkedin.com/posts ("interested", "how to apply", phone numbers), "jobs wanted" /
+  "looking for job" classifieds, job-seeker forums and Q&A threads — not articles or guides ABOUT the topic.
   For target "organizations": professions = the kinds of organization and their services (e.g. "driving
   school", "HMV driver training institute", "commercial vehicle training centre"); high_intent_terms =
   words that mark a real business page ("contact us", "call", "address", "admission", "enquiry", "fees",
@@ -65,6 +71,11 @@ async def understand(ai, command: str, sources: List[str], max_age_days: Optiona
                                         max_retries=3)
     if max_age_days:
         spec.max_age_days = max_age_days
+    # "abroad / overseas" is a wish, not a place: keep it as an intent phrase, not a location filter
+    vague = [p for p in spec.destination + spec.origin if p not in concrete_places([p])]
+    spec.destination, spec.origin = concrete_places(spec.destination), concrete_places(spec.origin)
+    if vague:
+        spec.high_intent_terms = list(dict.fromkeys(spec.high_intent_terms + ["abroad", "overseas", "foreign"]))
     allowed = set(sources or [])
     seen, queries = set(), []
     for q in spec.queries:

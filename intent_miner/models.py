@@ -21,6 +21,15 @@ INTENT_TYPES = (
 SOURCES = ("search", "reddit", "quora", "forums", "rss", "linkedin", "facebook")
 
 
+_VAGUE_PLACE = re.compile(r"abroad|overseas|international|unspecified|any ?where|any country|worldwide|global|"
+                          r"foreign|outside|other countr|not specified|n/a|^any$", re.IGNORECASE)
+
+
+def concrete_places(places: List[str]) -> List[str]:
+    """'Abroad / overseas (country unspecified)' is not a place to match on; keep real countries / cities."""
+    return [p for p in places if p and not _VAGUE_PLACE.search(p)]
+
+
 def _clean(v) -> List[str]:
     if v is None:
         return []

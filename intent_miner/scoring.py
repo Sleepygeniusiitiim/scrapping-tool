@@ -18,7 +18,7 @@ import httpx
 
 import rule_extractor
 
-from .models import QuerySpec, Unit, UnitIntent
+from .models import QuerySpec, Unit, UnitIntent, concrete_places
 
 WEIGHTS = {"keyword": 0.25, "semantic": 0.20, "explicit": 0.20, "timeline": 0.15, "location": 0.10, "llm": 0.10}
 # Organization leads: no personal "need" or timeline — match of business type, location and a reachable contact.
@@ -38,7 +38,8 @@ def _terms_rx(terms: List[str]) -> Optional[re.Pattern]:
     terms = sorted({t.strip().lower() for t in terms if t and len(t.strip()) > 1}, key=len, reverse=True)
     if not terms:
         return None
-    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(t) for t in terms) + r")(?!\w)", re.I)
+    # plural forms count too ("nurses", "drivers", "coaches")
+    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(t) for t in terms) + r")(?:s|es)?(?!\w)", re.I)
 
 
 class Scorer:
@@ -119,16 +120,26 @@ class Scorer:
         if rule_extractor._HIRING.search(t) and not rule_extractor.shows_interest(t):
             return 0
         first_person = re.search(r"\b(?:i|i'm|i am|my|me|ich|mujhe|main)\b", t, re.I)
-        return 100 if rule_extractor.shows_interest(t) and first_person else (60 if first_person else 20)
+        # A comment under a job / opportunity post that says "Interested" is the author's own interest.
+        if rule_extractor.shows_interest(t) and (first_person or unit.kind == "comment"):
+            return 100
+        return 60 if first_person else 20
+
+    def reply_context(self, comment: str, post: str) -> tuple[int, List[str]]:
+        """Bonus for a comment whose post is about the role ('Interested' under a nurse-recruitment post)."""
+        if not post or (self.prof and self.prof.search(comment)):
+            return 0, []
+        hit = (self.prof.search(post) if self.prof else None) or (self.prof_words.search(post) if self.prof_words else None)
+        return (35, [f"replying to a post about {hit.group(0)}"]) if hit else (0, [])
 
     def timeline(self, text: str) -> tuple[int, Optional[str]]:
         for rx, score, label in _TIMELINE:
             if rx.search(text):
                 return score, label
-        return 0, None
+        return 30, None                         # not stated: neutral, not a mismatch
 
     def location(self, text: str) -> tuple[int, List[str]]:
-        dest, orig = self.spec.destination, self.spec.origin
+        dest, orig = concrete_places(self.spec.destination), concrete_places(self.spec.origin)
         if not dest and not orig:
             return 100, []
         d = bool(dest) and rule_extractor.mentions_any(text, dest)
@@ -136,7 +147,7 @@ class Scorer:
         why = ([f"{', '.join(dest)} mentioned"] if d else []) + ([f"{', '.join(orig)} mentioned"] if o else [])
         if d and (o or not orig):
             return 100, why
-        return (70 if d else 45 if o else 0), why
+        return (70 if d else 60 if o else 40), why      # 40 = no place stated (unknown, not wrong)
 
 
 def freshness(date_iso: Optional[str]) -> int:
@@ -149,8 +160,12 @@ def freshness(date_iso: Optional[str]) -> int:
     return 100 if age <= 7 else 85 if age <= 30 else 65 if age <= 90 else 40 if age <= 180 else 20
 
 
-def combine(parts: Dict[str, float], organizations: bool = False) -> int:
-    weights = ORG_WEIGHTS if organizations else WEIGHTS
+def combine(parts: Dict[str, float], organizations: bool = False, with_llm: bool = True) -> int:
+    weights = dict(ORG_WEIGHTS if organizations else WEIGHTS)
+    if not with_llm:                        # rules-only run: share the AI's weight out over the other signals
+        weights.pop("llm", None)
+        total = sum(weights.values())
+        weights = {k: w / total for k, w in weights.items()}
     return int(round(sum((parts.get(k) or 0) * w for k, w in weights.items())))
 
 
