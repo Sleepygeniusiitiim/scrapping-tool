@@ -274,6 +274,25 @@
     <div id="dbView"></div>
   </section>
   <section id="tab-outreach" class="hidden">
+    <details class="panel" id="metaBox" style="margin-bottom:12px">
+      <summary>🤖 Auto-reply to “interested” comments on your own Instagram / Facebook posts</summary>
+      <p class="status">When someone comments “interested” (or similar) on a post from <b>your official</b> Instagram
+        Business account or Facebook Page, the tool replies under the comment, sends them a private message asking
+        for their name, WhatsApp, email and experience, and saves what they reply as a candidate — through Meta’s
+        official API. Only your own posts: Meta does not allow automated replies on other people’s posts.</p>
+      <div id="metaEnv" class="status"></div>
+      <p class="status">Webhook URL for Meta: <code id="metaHook"></code></p>
+      <label><input id="metaEnabled" type="checkbox"> Auto-reply is ON (otherwise comments are only saved)</label>
+      <div class="grid" style="margin-top:8px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">
+        <div><label for="metaPublic">Public reply under the comment ({name} = their first name)</label><textarea id="metaPublic" rows="3"></textarea></div>
+        <div><label for="metaDm">Private message asking for details</label><textarea id="metaDm" rows="5"></textarea></div>
+        <div><label for="metaThanks">Thank-you after they share contact details</label><textarea id="metaThanks" rows="3"></textarea></div>
+        <div><label for="metaKw">Extra words that count as interest (comma-separated)</label><textarea id="metaKw" rows="3"></textarea></div>
+      </div>
+      <div class="row" style="margin-top:8px"><button id="metaSave">💾 Save</button><button id="metaRefresh">🔄 Refresh conversations</button>
+        <span class="status" id="metaMsg"></span></div>
+      <div class="table-wrap" style="margin-top:8px"><table id="metaTable"></table></div>
+    </details>
     <div class="panel">
       <p class="status" style="margin-top:0">The AI drafts a message; you send it yourself (LinkedIn and Facebook forbid automated
         messaging). &ldquo;Copy &amp; open&rdquo; copies the message and opens the candidate's post so you can reply or DM.
@@ -885,6 +904,35 @@ $("imFailedBtn").onclick = async () => {
       }
     };
   } catch (e) { alert(e.message); }
+};
+
+// ---------- auto-reply on own Instagram / Facebook posts ----------
+$("metaHook").textContent = location.origin + "/api/meta/webhook";
+async function metaLoad() {
+  try {
+    const r = await api("/api/meta/status");
+    const e = r.env, ok = (k) => (e[k] ? "✅ " : "❌ ") + k;
+    $("metaEnv").textContent = "Vercel settings: " + ["META_VERIFY_TOKEN", "META_APP_SECRET", "META_PAGE_TOKEN", "META_PAGE_ID",
+      "META_IG_USER_ID"].map(ok).join(" · ");
+    const st = r.settings;
+    $("metaEnabled").checked = st.enabled === "1"; $("metaPublic").value = st.public_reply; $("metaDm").value = st.dm_text;
+    $("metaThanks").value = st.thanks_text; $("metaKw").value = st.extra_keywords;
+    const t = $("metaTable"); t.replaceChildren();
+    const cols = ["updated_at", "platform", "username", "name", "comment_text", "status", "phone", "email", "last_message", "error"];
+    const h = t.createTHead().insertRow(); cols.forEach((c) => { const th = document.createElement("th"); th.textContent = c; h.appendChild(th); });
+    const b = t.createTBody();
+    r.threads.forEach((x) => { const tr = b.insertRow(); cols.forEach((c) => { tr.insertCell().textContent = (x[c] ?? "").toString().slice(0, 160); }); });
+    $("metaMsg").textContent = `${r.threads.length} conversations · ${r.threads.filter((x) => x.phone || x.email).length} shared contact details`;
+  } catch (err) { $("metaMsg").textContent = err.message; }
+}
+$("metaBox").addEventListener("toggle", () => { if ($("metaBox").open) metaLoad(); });
+$("metaRefresh").onclick = metaLoad;
+$("metaSave").onclick = async () => {
+  try {
+    await api("/api/meta/settings", { enabled: $("metaEnabled").checked, public_reply: $("metaPublic").value,
+      dm_text: $("metaDm").value, thanks_text: $("metaThanks").value, extra_keywords: $("metaKw").value });
+    $("metaMsg").textContent = "Saved."; metaLoad();
+  } catch (err) { $("metaMsg").textContent = err.message; }
 };
 
 $("testBtn").onclick = async () => {

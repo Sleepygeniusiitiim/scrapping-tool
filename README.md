@@ -148,6 +148,32 @@ name (Mobile No. / Phone → phone, Key Skills → skills, Last Active / Applied
 people applied to my job" to mark them interested. The tool does not log in to portals with your
 password — automated logins break their terms and get recruiter accounts blocked.
 
+## Auto-reply on your own Instagram / Facebook posts (Outreach tab)
+
+Someone comments "interested" on a post from your official Instagram Business account or Facebook
+Page → the tool replies under the comment, sends them one private message asking for name, WhatsApp,
+email and experience, and when they answer, saves their details as a candidate
+(`contact_source = shared_in_reply`) and thanks them. "STOP" marks them not interested. Only your own
+posts are possible: Meta's API cannot reply on other people's posts, and bots commenting elsewhere are spam.
+
+Setup (once):
+1. Make the Instagram account Professional (Business / Creator) and link it to your Facebook Page.
+2. developers.facebook.com → Create App (type Business) → add **Webhooks**, **Messenger** and
+   **Instagram** (API with Facebook Login). As app admin, your own accounts work without App Review.
+3. Get a long-lived **Page access token** with `pages_show_list, pages_read_engagement,
+   pages_manage_engagement, pages_messaging, instagram_basic, instagram_manage_comments,
+   instagram_manage_messages, business_management` (Graph API Explorer → exchange for a long-lived token).
+4. Vercel env vars: `META_VERIFY_TOKEN` (any secret you choose), `META_APP_SECRET`, `META_PAGE_TOKEN`,
+   `META_PAGE_ID`, `META_IG_USER_ID` (optional `META_GRAPH_VERSION`, default v23.0). Redeploy.
+5. Webhooks → callback URL `https://<your-app>.vercel.app/api/meta/webhook`, verify token =
+   `META_VERIFY_TOKEN`. Subscribe **Page**: `feed`, `messages`; **Instagram**: `comments`, `messages`.
+   Then subscribe the Page to the app: `POST /{page-id}/subscribed_apps?subscribed_fields=feed,messages`.
+6. Instagram app → Settings → Messages → Connected tools → allow access to messages.
+7. Outreach tab → 🤖 Auto-reply → edit the texts, tick **Auto-reply is ON**, Save.
+
+Meta's rules the tool follows: one private reply per comment (within 7 days of the comment), further
+messages only inside the 24-hour window after the person writes back, no promotional follow-ups.
+
 ## How contacts are found for interested commenters
 
 1. **Their own words** — a phone / email the person wrote in their comment or post.

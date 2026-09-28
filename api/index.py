@@ -30,7 +30,8 @@ try:
 except Exception:
     pass
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException  # noqa: E402
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request  # noqa: E402
+from fastapi.responses import PlainTextResponse  # noqa: E402
 from fastapi.concurrency import run_in_threadpool  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
@@ -42,6 +43,7 @@ from ai_chain import FALLBACK_ORDER, AIChain  # noqa: E402
 import integrations  # noqa: E402
 import dates  # noqa: E402
 import portal_import  # noqa: E402
+import meta_autoreply  # noqa: E402
 from intent_miner import engine as im_engine, export as im_export, store as im_store  # noqa: E402
 from intent_miner.models import QuerySpec  # noqa: E402
 from intent_miner.understand import understand as im_understand  # noqa: E402
@@ -653,6 +655,65 @@ def im_health_ep():
     return {"providers": _im_db(im_store.provider_health), "runs": _im_db(im_store.list_runs, 10)}
 
 
+# ---------------------------------------------------------------------------
+# Auto-reply on your own Instagram / Facebook posts (Meta official APIs)
+# ---------------------------------------------------------------------------
+meta_public = APIRouter()        # Meta calls the webhook itself: no app password, signature-checked instead
+
+
+@meta_public.get("/meta/webhook")
+def meta_verify(request: Request):
+    q = request.query_params
+    token = os.getenv("META_VERIFY_TOKEN", "").strip()
+    if q.get("hub.mode") == "subscribe" and token and hmac.compare_digest(q.get("hub.verify_token", ""), token):
+        return PlainTextResponse(q.get("hub.challenge", ""))
+    raise HTTPException(403, "Verification failed: META_VERIFY_TOKEN does not match.")
+
+
+@meta_public.post("/meta/webhook")
+async def meta_webhook(request: Request):
+    raw = await request.body()
+    if not meta_autoreply.verify_signature(raw, request.headers.get("x-hub-signature-256")):
+        raise HTTPException(403, "Bad signature (check META_APP_SECRET).")
+    try:
+        payload = json.loads(raw or b"{}")
+    except ValueError:
+        raise HTTPException(400, "Not JSON")
+    try:
+        results = await meta_autoreply.process_event(payload)
+    except db.SupabaseError as exc:
+        results = [{"error": str(exc)[:200]}]
+    return {"ok": True, "results": results}
+
+
+class MetaSettingsIn(BaseModel):
+    enabled: Optional[bool] = None
+    public_reply: Optional[str] = Field(None, max_length=1000)
+    dm_text: Optional[str] = Field(None, max_length=1000)
+    thanks_text: Optional[str] = Field(None, max_length=1000)
+    extra_keywords: Optional[str] = Field(None, max_length=500)
+
+
+@router.get("/meta/status")
+def meta_status(request: Request):
+    _db()
+    try:
+        return {"env": meta_autoreply.env_status(), "settings": meta_autoreply.get_settings(),
+                "threads": meta_autoreply.threads(200)}
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.post("/meta/settings")
+def meta_settings(body: MetaSettingsIn):
+    _db()
+    values = {k: ("1" if v else "0") if k == "enabled" else v for k, v in body.model_dump().items() if v is not None}
+    try:
+        return {"settings": meta_autoreply.save_settings(values)}
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+
+
 class EnrichTestIn(BaseModel):
     linkedin_url: str = ""
     name: str = ""
@@ -755,6 +816,7 @@ async def outreach_reply(body: ReplyIn, gemini=Depends(_gemini)):
 # always resolve regardless of how `@vercel/python` sets `scope["path"]`.
 app.include_router(router, prefix="/api")
 app.include_router(router, prefix="")
+app.include_router(meta_public, prefix="/api")
 
 # Local development: serve the page from the same server (Vercel serves public/ itself).
 if not os.getenv("VERCEL"):
