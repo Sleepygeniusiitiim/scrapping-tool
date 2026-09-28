@@ -361,7 +361,7 @@ def extract_people(content: str, url: str, keywords: List[str], snippet_only: bo
         if contacts <= seen_contacts:
             continue
         seen_contacts |= contacts
-        if _HIRING.search(own) and not _INTEREST.search(own):
+        if (_HIRING.search(line) and not _INTEREST.search(line)) or (_HIRING.search(own) and not _INTEREST.search(own)):
             continue                                  # "send your CV to hr@…" — the recruiter's contact
         if not _SELF.search(window):
             continue

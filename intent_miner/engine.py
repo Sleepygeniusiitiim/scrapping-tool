@@ -140,6 +140,8 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
              "high": 0, "medium": 0, "low": 0, "too_old": 0, "leads": 0}
     warnings: List[str] = []
 
+    # Shared dedup ledger with the classic search: pages read here are skipped by later runs of either.
+    await asyncio.to_thread(db.record_scraped_urls, [i["url"] for i in items], settings.get("wave_tag") or "IM")
     docs = await fetch_docs(items, provs)
     # ---- normalize + dedupe -----------------------------------------------------------------------
     hashes = {}
@@ -229,6 +231,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
 
     # ---- Scores, evidence, leads ------------------------------------------------------------------
     leads, events, candidates = [], [], []
+    cand_lead: Dict[str, dict] = {}
     for d, i, u, parts, why, lang in passed:
         r = llm.get((d.url, i))
         if r is not None:
@@ -245,6 +248,12 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         score = scoring.lead_score(intent_score, fresh, quality)
         t = scoring.tier(score)
         stats["relevant"] += 1
+        interested = (r is not None and r.explicit_need) or parts["explicit"] >= 100 or \
+            rule_extractor.shows_interest(u.text)
+        if settings.get("only_interested") and not interested:
+            stats["not_interested"] = stats.get("not_interested", 0) + 1
+            events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
+            continue
         if t == "NONE" or score < min_score:
             events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
             continue
@@ -274,7 +283,33 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         leads.append(lead)
         events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, key))
         if settings.get("save_to_candidates", True):
-            candidates.append(_candidate(lead, d, i, u))
+            cand = _candidate(lead, d, i, u)
+            cand_lead[cand.source_url] = lead
+            candidates.append(cand)
+
+    # ---- Classic per-page extraction on the same pages (the original pipeline's reader) ----------------
+    classic_records: List[CandidateRecord] = []
+    if settings.get("classic", True):
+        classic_records, classic_ai = await _classic(ai, spec, docs, hits_by_url(items), settings, stats, warnings)
+        stats["llm_calls"] += classic_ai
+        before = len(candidates)
+        candidates = _merge_classic(candidates, classic_records)
+        stats["classic_added"] = len(candidates) - before
+        for c in candidates:                    # details the page reader found for Intent Miner leads
+            L = cand_lead.get(c.source_url)
+            if L is not None:
+                L["email"], L["phone"] = L["email"] or c.email, L["phone"] or c.phone
+
+    # ---- Lead databases (Apollo / Lusha / ContactOut / RocketReach) for interested leads -------------
+    if settings.get("enrich") and candidates:
+        import pipeline
+        n, notes = await pipeline._enrich_records(candidates, keys, settings.get("require_both", True))
+        stats["enriched"] = n
+        warnings.extend(notes)
+        for c in candidates:                    # contacts found for Intent Miner leads go back onto the lead
+            L = cand_lead.get(c.source_url)
+            if L is not None and c.contact_source and c.contact_source.startswith("enriched"):
+                L["email"], L["phone"], L["status"] = L["email"] or c.email, L["phone"] or c.phone, "ENRICHED"
 
     saved = await asyncio.to_thread(store.upsert_leads, run_id, leads) if leads else []
     await asyncio.to_thread(store.save_events, run_id, events)
@@ -287,8 +322,114 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     health = _health(provs)
     await asyncio.to_thread(store.add_run_stats, run_id, stats)
     await asyncio.to_thread(store.save_health, run_id, health)
+    try:
+        await asyncio.to_thread(db.set_url_status, {
+            d.url: ("ok" if d.status == "ok" and d.via != "snippet" else "snippet" if d.units else
+                    "robots" if (d.error or "") == "disallowed by robots.txt" else
+                    "walled" if d.status == "blocked" else "failed") for d in docs})
+    except db.SupabaseError:
+        pass
+    stats["classic"] = stats.get("classic_added", 0)
+    stats["records"] = len(candidates)
+    stats["with_phone"] = sum(1 for c in candidates if c.phone)
+    stats["with_email"] = sum(1 for c in candidates if c.email)
     return {"stats": stats, "leads": saved, "warnings": warnings, "health": health,
+            "records": [c.model_dump() for c in candidates],
             "failed": [{"url": d.url, "status": d.status, "error": d.error} for d in docs if d.status != "ok"]}
+
+
+def _person_keys(c: CandidateRecord) -> set:
+    keys = set()
+    if c.email:
+        keys.add("e:" + c.email.lower())
+    if c.phone:
+        keys.add("p:" + re.sub(r"\D", "", c.phone)[-10:])
+    if c.name:
+        keys.add("n:" + re.sub(r"[^a-z]+", " ", c.name.lower()).strip() + "|" + c.source_url.split("#")[0])
+    return keys
+
+
+def _merge_classic(im_cands: List[CandidateRecord], classic: List[CandidateRecord]) -> List[CandidateRecord]:
+    """One record per person: a classic-reader record for someone the Intent Miner already has (same email,
+    phone, or same name on the same page) only fills in missing details; the rest are added."""
+    out = list(im_cands)
+    index: Dict[str, CandidateRecord] = {}
+    for c in out:
+        for k in _person_keys(c):
+            index.setdefault(k, c)
+    for c in classic:
+        match = next((index[k] for k in _person_keys(c) if k in index), None)
+        if match is None:
+            out.append(c)
+            for k in _person_keys(c):
+                index.setdefault(k, c)
+            continue
+        for f in ("email", "phone", "current_location", "current_role", "profile_url", "activity_date"):
+            if not getattr(match, f) and getattr(c, f):
+                setattr(match, f, getattr(c, f))
+        match.skills = list(dict.fromkeys((match.skills or []) + (c.skills or [])))[:15]
+        match.target_countries = list(dict.fromkeys((match.target_countries or []) + (c.target_countries or [])))
+    return out
+
+
+def hits_by_url(items: List[dict]) -> Dict[str, dict]:
+    return {canonicalize_url(i["url"]) or i["url"]: i for i in items}
+
+
+def _markdown(d: RawDocument) -> str:
+    """The text the classic reader expects: the fetched page, or a thread rebuilt from API units."""
+    if d.metadata.get("markdown"):
+        return d.metadata["markdown"]
+    lines = [f"# {d.title}"] if d.title else []
+    if d.date:
+        lines.append(f"Page date: {d.date}")
+    thread = [f"{'POST' if u.kind in ('post', 'answer', 'profile') else 'COMMENT'} by {u.author or 'unknown'}"
+              f"{f' <{u.author_url}>' if u.author_url else ''}{f' [{u.date}]' if u.date else ''}: {u.text}"
+              for u in d.units if u.kind != "snippet"]
+    if thread:
+        lines += ["", "## Post and comments (structured, with authors)", *thread]
+    lines += ["", "## Page text", d.text]
+    return "\n".join(lines)
+
+
+async def _classic(ai, spec: QuerySpec, docs: List[RawDocument], hits: Dict[str, dict], settings: dict,
+                   stats: dict, warnings: List[str]) -> tuple[List[CandidateRecord], int]:
+    """Run the original pipeline's page reader (rules / hybrid / AI, contact ownership checks, dates,
+    interest and location filters) on the pages the Intent Miner already fetched."""
+    import pipeline
+    mode = settings.get("extraction", "rules")
+    intent = settings.get("intent") or spec.summary
+    keywords = list(dict.fromkeys([k.lower() for k in spec.professions] +
+                                  rule_extractor.keywords_from(intent, settings.get("plan_queries") or [])))
+    places = spec.destination or spec.origin
+    months = max(1, round(spec.max_age_days / 30)) if spec.max_age_days else 0
+    jobs = []
+    for d in docs:
+        if not d.units:
+            continue
+        snippet_only = d.via == "snippet"
+        hit = hits.get(d.url, {})
+        text = (f"Title: {hit.get('title') or d.title}\nSnippet: {d.text}" if snippet_only else _markdown(d))
+        jobs.append((d, pipeline._extract_page(ai, intent, d.url, text, snippet_only, mode, keywords,
+                                               d.date or pipeline._hit_date(hit), places)))
+    results = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
+    out, ai_calls = [], 0
+    for (d, _), r in zip(jobs, results):
+        if isinstance(r, Exception):
+            if isinstance(r, GeminiQuotaError):
+                warnings.append(f"AI limit reached in the page reader: {str(r)[:120]}")
+            continue
+        recs, _, used_ai, _ = r
+        ai_calls += used_ai
+        for rec in recs:
+            if dates.older_than(rec.activity_date, months):
+                stats["too_old"] += 1
+                continue
+            if settings.get("only_interested") and not rec.shows_interest:
+                stats["not_interested"] = stats.get("not_interested", 0) + 1
+                continue
+            out.append(rec)
+    return out, ai_calls
 
 
 def _event(d, i, u, parts, r, lang, key) -> dict:

@@ -150,6 +150,24 @@
   <section class="panel">
     <label for="intent">Discovery intent</label>
     <textarea id="intent">Find Indian candidates who are interested for abroad opportunities in CNC</textarea>
+    <div class="row" style="margin-top:8px" id="imSources">
+      <span class="status" style="margin:0">Sources:</span>
+      <label><input type="checkbox" value="search" checked>Search engines</label>
+      <label><input type="checkbox" value="reddit" checked>Reddit</label>
+      <label><input type="checkbox" value="quora" checked>Quora</label>
+      <label><input type="checkbox" value="forums" checked>Forums &amp; websites</label>
+      <label><input type="checkbox" value="linkedin">LinkedIn (search-indexed)</label>
+      <label><input type="checkbox" value="facebook">Facebook (search-indexed)</label>
+      <label><input type="checkbox" value="rss">RSS feeds</label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label for="searchMode" style="margin:0">Search mode</label>
+      <select id="searchMode" style="width:auto">
+        <option value="combined">Combined — Intent Miner sources &amp; scoring + classic page reader (recommended)</option>
+        <option value="intent">Intent Miner only</option>
+        <option value="classic">Classic waves only</option>
+      </select>
+    </div>
     <details>
       <summary>Wave depth &amp; crawler settings</summary>
       <div class="grid" style="margin-top:10px">
@@ -193,48 +211,27 @@
     <pre class="log" id="log"></pre>
   </div>
 
-  <h2>🧠 Intent Miner <span style="font-size:13px;color:var(--muted);font-weight:400">— describe who you want; it finds public
-    conversations, scores intent with evidence and builds qualified leads</span></h2>
+  <h2>🧠 Understanding &amp; qualified leads <span style="font-size:13px;color:var(--muted);font-weight:400">— intent-scored
+    leads with evidence from the same run</span></h2>
   <section class="panel" id="imPanel">
-    <label for="imCommand">Command</label>
-    <textarea id="imCommand" rows="2" placeholder="Find people in India who are looking for CNC operator jobs in Germany and plan to move within 12 months"></textarea>
-    <div class="row" style="margin-top:8px" id="imSources">
-      <span class="status" style="margin:0">Sources:</span>
-      <label><input type="checkbox" value="search" checked>Search engines</label>
-      <label><input type="checkbox" value="reddit" checked>Reddit</label>
-      <label><input type="checkbox" value="quora" checked>Quora</label>
-      <label><input type="checkbox" value="forums" checked>Forums &amp; websites</label>
-      <label><input type="checkbox" value="linkedin">LinkedIn (search-indexed)</label>
-      <label><input type="checkbox" value="facebook">Facebook (search-indexed)</label>
-      <label><input type="checkbox" value="rss">RSS feeds</label>
-    </div>
-    <details style="margin-top:8px"><summary>Run settings</summary>
+    <p class="status" style="margin-top:0">Runs with 🚀 Start above (Search mode “Combined” or “Intent Miner only”) and uses the
+      same settings: sources, time window (“Only leads active in the last…”), interested-only, page reading, lead databases.</p>
+    <details><summary>Lead scoring settings</summary>
       <div class="grid" style="margin-top:8px">
-        <div><label for="imAge">Time window</label><select id="imAge"><option value="1">last 24 hours</option>
-          <option value="7">last 7 days</option><option value="30">last 30 days</option><option value="90" selected>last 90 days</option>
-          <option value="365">last 12 months</option><option value="">any time</option></select></div>
         <div><label for="imMin">Minimum lead score</label><input id="imMin" type="number" min="0" max="100" value="60"></div>
-        <div><label for="imMaxUrls">Max pages to read</label><input id="imMaxUrls" type="number" min="10" max="300" value="80"></div>
-        <div><label for="imMaxRes">Results per query</label><input id="imMaxRes" type="number" min="5" max="100" value="20"></div>
       </div>
       <div class="row" style="margin-top:8px">
-        <label><input id="imLLM" type="checkbox" checked>AI intent classification (shortlisted posts only)</label>
-        <label><input id="imCopy" type="checkbox" checked>Also add qualified leads to “All saved candidates”</label>
         <label><input id="imReprocess" type="checkbox">Re-score pages seen before</label>
       </div>
       <label for="imFeeds" style="margin-top:8px">RSS / Atom feeds (one per line, used when “RSS feeds” is ticked)</label>
       <textarea id="imFeeds" rows="2" placeholder="https://www.reddit.com/r/germany/new/.rss"></textarea>
-      <p class="status">Search backend, region and “Respect robots.txt” are taken from “Wave depth &amp; crawler settings” above.</p>
     </details>
     <div class="row" style="margin-top:12px">
-      <button class="primary" id="imRun">🧠 Understand &amp; run</button>
-      <button id="imStop" disabled>⏹ Stop</button>
       <button id="imLoad">📋 Show saved intent leads</button>
       <button id="imHealthBtn">🩺 Provider health</button>
       <button id="imFailedBtn">♻️ Failed pages</button>
     </div>
     <div id="imSpec" class="im-spec"></div>
-    <pre class="log" id="imLog" style="display:none;max-height:260px;overflow:auto"></pre>
     <div id="imExtra"></div>
     <div class="row" style="margin-top:10px" id="imExport" hidden>
       <button data-f="csv">⬇️ CSV</button><button data-f="xlsx">⬇️ Excel</button><button data-f="json">⬇️ JSON</button>
@@ -368,6 +365,8 @@ $("orKey").addEventListener("change", () => store("csa_key_" + llmProvider(), $(
 $("orModel").addEventListener("change", () => store("csa_model_" + llmProvider(), $("orModel").value.trim()));
 $("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("geminiKey").value.trim()));
 if (load("csa_extraction")) $("extraction").value = load("csa_extraction");
+if (load("csa_search_mode")) $("searchMode").value = load("csa_search_mode");
+$("searchMode").addEventListener("change", () => store("csa_search_mode", $("searchMode").value));
 if (load("csa_max_age") !== null && load("csa_max_age") !== "") $("maxAge").value = load("csa_max_age");
 $("maxAge").addEventListener("change", () => store("csa_max_age", $("maxAge").value));
 for (const id of ["onlyInterested", "useLeadDb", "requireBoth"]) {
@@ -680,16 +679,18 @@ $("impBtn").onclick = async () => {
 
 // ---------- Intent Miner ----------
 const im = { stop: false, runId: "", leads: new Map() };
-function imLog(msg) {
-  const el = $("imLog"); el.style.display = "block";
-  el.textContent += `${new Date().toLocaleTimeString()} ${msg}\n`; el.scrollTop = el.scrollHeight;
-}
-function imSettings() {
-  return { backend: $("backend").value, region: $("region").value, max_results: Number($("imMaxRes").value) || 20,
-    respect_robots: $("robots").checked, timeout: Number($("timeout").value) || 15,
+function imLog(msg) { logEv("info", msg); }
+const SOURCE_LABEL = { search: "Search engines", reddit: "Reddit", quora: "Quora", forums: "Forums & websites",
+  linkedin: "LinkedIn", facebook: "Facebook", rss: "RSS feeds" };
+function imSettings(main, intent, planQueries) {
+  const m = main || {};
+  return { backend: $("backend").value, region: $("region").value, max_results: num("maxRes") || 20,
+    respect_robots: $("robots").checked, timeout: num("timeout") || 15,
     feeds: $("imFeeds").value.split("\n").map((x) => x.trim()).filter(Boolean),
-    min_score: Number($("imMin").value) || 0, use_llm: $("imLLM").checked, save_to_candidates: $("imCopy").checked,
-    reprocess: $("imReprocess").checked };
+    min_score: Number($("imMin").value) || 0, use_llm: $("extraction").value !== "rules", save_to_candidates: true,
+    reprocess: $("imReprocess").checked, intent: intent || "", extraction: $("extraction").value,
+    only_interested: $("onlyInterested").checked, enrich: $("useLeadDb").checked, require_both: $("requireBoth").checked,
+    classic: (m.mode || $("searchMode").value) === "combined", plan_queries: planQueries || [] };
 }
 function esc(t) { const d = document.createElement("div"); d.textContent = t == null ? "" : String(t); return d.innerHTML; }
 function imRenderSpec(spec) {
@@ -741,58 +742,89 @@ function imRenderLeads() {
     box.appendChild(card);
   }
 }
-$("imRun").onclick = async () => {
-  const command = $("imCommand").value.trim();
-  if (command.length < 5) { alert("Type what you are looking for."); return; }
+// One run, both engines: Intent Miner understanding + sources + intent scoring, and the classic page reader
+// on the same pages. Progress goes to the main run log / wave table; records to "This run"; leads to the cards.
+async function runCombined(intent, totals, rounds, mode) {
   const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
-  im.stop = false; im.leads.clear(); $("imLog").textContent = ""; $("imExtra").innerHTML = ""; imRenderLeads();
-  $("imRun").disabled = true; $("imStop").disabled = false;
-  const settings = imSettings(); const totals = {};
-  try {
-    imLog("Understanding request…");
-    const u = await api("/api/im/understand", { command, sources, max_age_days: Number($("imAge").value) || null });
-    im.runId = u.run_id; imRenderSpec(u.spec); $("imSpec").dataset.spec = JSON.stringify(u.spec); (u.warnings || []).forEach((w) => imLog("⚠️ " + w));
-    const spec = u.spec;
-    imLog(`Plan: ${spec.queries.length} searches across ${[...new Set(spec.queries.map((q) => q.source))].join(", ")}` +
-          (sources.includes("rss") && settings.feeds.length ? ` + ${settings.feeds.length} feeds` : ""));
+  if (!sources.length) throw new Error("Tick at least one source.");
+  const months = Number($("maxAge").value);
+  const numQueries = Math.max(4, Math.min(60, num("numWaves") * num("qpw")));
+  const roundNo = rounds.round + 1;
+  logEv("info", roundNo > 1 ? `Round ${roundNo}: understanding the command again, avoiding ${rounds.queries.length} queries already used…`
+                            : "Understanding the command and planning searches…");
+  const u = await api("/api/im/understand", { command: intent, sources, max_age_days: months ? Math.round(months * 30.5) : null,
+    num_queries: numQueries, exclude_queries: rounds.queries });
+  const spec = u.spec;
+  im.runId = u.run_id; im.leads.clear(); imRenderLeads(); imRenderSpec(spec); $("imSpec").dataset.spec = JSON.stringify(spec);
+  (u.warnings || []).forEach((w) => logEv("warning", w));
+  saveRounds(intent, { round: roundNo, queries: rounds.queries.concat(spec.queries.map((q) => q.query)) });
+  refreshNextBtn();
+  const bySrc = {};
+  spec.queries.forEach((q) => (bySrc[q.source] = bySrc[q.source] || []).push(q.query));
+  if (sources.includes("rss") && $("imFeeds").value.trim()) bySrc.rss = ["feeds"];
+  logEv("plan", `Plan ready: ${spec.queries.length} searches across ${Object.keys(bySrc).map((k) => SOURCE_LABEL[k] || k).join(", ")}. ` +
+    `Looking for: ${(spec.professions || []).slice(0, 5).join(", ")}` +
+    ((spec.destination || []).length ? ` → ${spec.destination.join(", ")}` : ""));
+  $("planText").textContent = Object.entries(bySrc).map(([k, qs]) => `${SOURCE_LABEL[k] || k}\n  ` + qs.join("\n  ")).join("\n\n");
+  $("planBox").classList.remove("hidden");
+  const settings = imSettings({ mode }, intent, spec.queries.map((q) => q.query));
+  const batch = Math.min(8, num("batch") || 5), maxUrls = num("maxUrls") || 30;
+  const seen = new Set();
+  for (const [src, queries] of Object.entries(bySrc)) {
+    if (state.stop) break;
+    const name = SOURCE_LABEL[src] || src;
+    const stats = state.waveStats[name] = { wave: name, found: 0, duplicates: 0, fresh: 0, crawled: 0,
+      blocked: 0, failed: 0, records: 0, dropped: 0 };
+    renderStats();
+    logEv("wave_start", `Source: ${name} — ${queries.length} searches`, name);
     const hits = new Map();
-    const queries = spec.queries.slice();
-    if (sources.includes("rss") && settings.feeds.length) queries.push({ source: "rss", query: "feeds" });
     for (const q of queries) {
-      if (im.stop) break;
+      if (state.stop) break;
       try {
-        const r = await api("/api/im/discover", { spec, source: q.source, query: q.query, settings });
+        const r = await api("/api/im/discover", { spec, source: src, query: q, settings });
         let added = 0;
-        for (const h of r.hits) if (!hits.has(h.url)) { hits.set(h.url, h); added++; }
-        imLog(`🔍 [${q.source}] ${r.hits.length} results (+${added} new) ← ${q.query}` + (r.error ? `  ⚠️ ${r.error.slice(0, 120)}` : ""));
-      } catch (e) { imLog(`⚠️ [${q.source}] ${e.message.slice(0, 150)} ← ${q.query}`); }
-    }
-    const maxUrls = Number($("imMaxUrls").value) || 80;
-    const items = [...hits.values()].slice(0, maxUrls);
-    const bySource = {}; items.forEach((i) => { bySource[i.source] = (bySource[i.source] || 0) + 1; });
-    imLog(`Discovery done: ${hits.size} URLs · reading ${items.length} (${Object.entries(bySource).map(([k, n]) => `${n} ${k}`).join(", ")})`);
-    for (let b = 0; b < items.length && !im.stop; b += 5) {
-      const batch = items.slice(b, b + 5);
-      try {
-        const r = await api("/api/im/process", { spec, run_id: im.runId, items: batch, settings });
-        for (const [k, v] of Object.entries(r.stats)) totals[k] = (totals[k] || 0) + v;
-        r.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads();
-        imLog(`📄 Batch ${b / 5 + 1}: ${r.stats.fetched} read, ${r.stats.blocked + r.stats.failed} blocked/failed, ` +
-          `${r.stats.units} posts/comments → keyword ${r.stats.stage1} → semantic ${r.stats.stage2} → AI ${r.stats.llm_units}` +
-          ` → ${r.stats.leads} leads (${r.stats.high} high, ${r.stats.medium} medium)` +
-          (r.stats.unchanged ? ` · ${r.stats.unchanged} unchanged pages skipped` : ""));
-        (r.warnings || []).forEach((w) => imLog("⚠️ " + w));
+        for (const h of r.hits) if (!hits.has(h.url) && !seen.has(h.url)) { hits.set(h.url, h); added++; }
+        logEv("query", `${r.hits.length} results (+${added} new) ← ${q}` + (r.error ? `  ⚠️ ${r.error.slice(0, 120)}` : ""), name);
       } catch (e) {
-        imLog(`⚠️ Batch ${b / 5 + 1} failed: ${e.message.slice(0, 160)}`);
-        if (e.status === 401) break;
+        if (e.status === 401 || e.status === 503) throw e;
+        logEv("warning", `Search failed (${e.message.slice(0, 120)}): ${q}`, name);
       }
     }
-    imLog(`🏁 Done. Documents read ${totals.fetched || 0}, relevant posts ${totals.relevant || 0}, AI calls ${totals.llm_calls || 0}, ` +
-          `qualified leads ${im.leads.size} (high ${totals.high || 0}, medium ${totals.medium || 0}).`);
-  } catch (e) { imLog("❌ " + e.message); }
-  finally { $("imRun").disabled = false; $("imStop").disabled = true; }
-};
-$("imStop").onclick = () => { im.stop = true; imLog("Stopping after the current step…"); };
+    stats.found = hits.size;
+    const urls = [...hits.keys()];
+    urls.forEach((x) => seen.add(x));
+    let fresh = urls;
+    try { fresh = settings.reprocess ? urls : (await api("/api/dedup", { urls })).fresh; } catch (_) {}
+    stats.duplicates = urls.length - fresh.length;
+    fresh = fresh.slice(0, maxUrls); stats.fresh = fresh.length; renderStats();
+    logEv("dedup", `${urls.length} URLs found → ${stats.duplicates} already read before → ${fresh.length} to read`, name);
+    for (let b = 0; b < fresh.length && !state.stop; b += batch) {
+      const items = fresh.slice(b, b + batch).map((x) => hits.get(x));
+      try {
+        const r = await api("/api/im/process", { spec, run_id: im.runId, items, settings: { ...settings, wave_tag: `IM:${src}` } });
+        const st = r.stats;
+        stats.crawled += st.fetched; stats.blocked += st.blocked; stats.failed += st.failed; stats.records += st.records;
+        totals.crawled += st.fetched; totals.records += st.records;
+        r.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads();
+        addRunRecords(r.records || []); renderStats(); renderRun();
+        logEv("crawl", `Batch ${b / batch + 1}: ${st.fetched} read, ${st.blocked} blocked, ${st.failed} failed · ` +
+          `${st.units} posts/comments → keyword ${st.stage1} → semantic ${st.stage2} → AI ${st.llm_units}`, name);
+        logEv("saved", `Batch ${b / batch + 1}: ${st.leads} intent leads (${st.high} high, ${st.medium} medium) · ` +
+          `${st.records} candidates saved (${st.with_phone || 0} with phone, ${st.with_email || 0} with email` +
+          (mode === "combined" ? `, ${st.classic || 0} from the page reader` : "") + ")" +
+          (st.too_old ? ` · ${st.too_old} too old` : "") + (st.not_interested ? ` · ${st.not_interested} not interested` : "") +
+          (st.enriched ? ` · ${st.enriched} contacts from lead databases` : "") +
+          (st.unchanged ? ` · ${st.unchanged} unchanged pages skipped` : ""), name);
+        (r.warnings || []).forEach((w) => logEv("warning", w, name));
+      } catch (e) {
+        if (e.status === 401 || e.status === 503) throw e;
+        stats.failed += items.length; renderStats();
+        logEv("warning", `Batch ${b / batch + 1} failed: ${e.message.slice(0, 200)}`, name);
+      }
+    }
+    logEv("wave_end", `${name} done — ${stats.records} candidates.`, name);
+  }
+}
 $("imLoad").onclick = async () => {
   try {
     const r = await api(`/api/im/leads?min_score=${Number($("imMin").value) || 0}`);
@@ -924,7 +956,9 @@ async function startRun(nextRound) {
   const totals = { crawled: 0, records: 0 };
   const rounds = nextRound ? loadRounds(intent) : { round: 0, queries: [] };
   try {
-    await runPipeline(intent, totals, rounds);
+    const mode = $("searchMode").value;
+    if (mode === "classic") await runPipeline(intent, totals, rounds);
+    else await runCombined(intent, totals, rounds, mode);
     logEv("done", `${state.stop ? "Stopped by user." : "All waves complete."} ${totals.records} candidates saved from ${totals.crawled} scraped pages.`);
   } catch (e) {
     logEv("error", e.message);

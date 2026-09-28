@@ -502,12 +502,23 @@ class IMSettings(BaseModel):
     use_llm: bool = True
     save_to_candidates: bool = True
     reprocess: bool = False
+    # shared with the classic search settings (combined mode)
+    intent: str = Field("", max_length=2000)
+    extraction: str = Field("rules", pattern="^(rules|hybrid|ai)$")
+    only_interested: bool = False
+    enrich: bool = False
+    require_both: bool = True
+    classic: bool = True
+    plan_queries: List[str] = Field(default_factory=list, max_length=300)
+    wave_tag: str = Field("IM", max_length=60)
 
 
 class IMUnderstandIn(BaseModel):
     command: str = Field(..., min_length=5, max_length=2000)
     sources: List[str] = Field(default_factory=list)
     max_age_days: Optional[int] = Field(None, ge=1, le=3650)
+    num_queries: int = Field(16, ge=4, le=60)
+    exclude_queries: List[str] = Field(default_factory=list, max_length=500)
 
 
 class IMDiscoverIn(BaseModel):
@@ -559,7 +570,8 @@ def _im_db(fn, *a):
 async def im_understand_ep(body: IMUnderstandIn, gemini=Depends(_gemini)):
     _db()
     try:
-        spec = await im_understand(gemini, body.command, body.sources, body.max_age_days)
+        spec = await im_understand(gemini, body.command, body.sources, body.max_age_days, body.num_queries,
+                                   body.exclude_queries)
     except GeminiError as exc:
         raise HTTPException(502, f"Understanding the command failed: {exc}")
     run_id = await run_in_threadpool(_im_db, im_store.create_run, body.command, spec.model_dump())

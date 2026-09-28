@@ -34,16 +34,23 @@ Return JSON with:
 """
 
 
-def prompt(command: str, sources: List[str], max_age_days: Optional[int]) -> str:
+def prompt(command: str, sources: List[str], max_age_days: Optional[int], num_queries: int = 16,
+           exclude: Optional[List[str]] = None) -> str:
     lines = [f"Command: {command.strip()}", "",
-             f"Sources the user enabled: {', '.join(sources) or 'all'} — only generate queries for these."]
+             f"Sources the user enabled: {', '.join(sources) or 'all'} — only generate queries for these.",
+             f"Generate about {num_queries} queries in total, spread across those sources."]
     if max_age_days:
         lines.append(f"The user wants discussions from the last {max_age_days} days.")
+    if exclude:
+        lines.append("These queries were already run — do not repeat them or near-copies; use other synonyms, "
+                     "places and phrasings:")
+        lines += [f"- {q}" for q in exclude[-120:]]
     return "\n".join(lines)
 
 
-async def understand(ai, command: str, sources: List[str], max_age_days: Optional[int]) -> QuerySpec:
-    spec = await ai.generate_structured(prompt(command, sources, max_age_days), QuerySpec,
+async def understand(ai, command: str, sources: List[str], max_age_days: Optional[int], num_queries: int = 16,
+                     exclude: Optional[List[str]] = None) -> QuerySpec:
+    spec = await ai.generate_structured(prompt(command, sources, max_age_days, num_queries, exclude), QuerySpec,
                                         system_instruction=SYSTEM, temperature=0.4, thinking_budget=512,
                                         max_retries=3)
     if max_age_days:
@@ -59,6 +66,7 @@ async def understand(ai, command: str, sources: List[str], max_age_days: Optiona
         if text and text.lower() not in seen:
             seen.add(text.lower())
             queries.append(SourcedQuery(source=src, query=text))
-    spec.queries = queries[:30]
+    done = {q.strip().lower() for q in exclude or []}
+    spec.queries = [q for q in queries if q.query.lower() not in done][:max(num_queries, 4) + 4]
     spec.subreddits = [re.sub(r"^/?r/", "", s).strip("/ ") for s in spec.subreddits][:8]
     return spec

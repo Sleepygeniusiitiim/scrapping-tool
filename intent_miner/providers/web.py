@@ -107,7 +107,9 @@ class WebProvider(BaseProvider):
             src = source_of(o.url)
             if o.ok:
                 self.note("ok")
-                docs.append(self.parse(o.url, src, o.markdown, item, "direct" if o.via == "direct" else "unblocker"))
+                doc = self.parse(o.url, src, o.markdown, item, "direct" if o.via == "direct" else "unblocker")
+                doc.metadata["markdown"] = o.markdown          # for the classic per-page extraction
+                docs.append(doc)
                 continue
             self.note("blocked" if o.blocked else "failed")
             # Walled / refused page: the search snippet is still evidence (marked as such).

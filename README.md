@@ -80,6 +80,20 @@ In the **“🔑 Lead databases & search API keys”** section of the home page 
 
 ## 🧠 Intent Miner (added alongside the original pipeline)
 
+**Search modes** (Search panel, next to the sources): one command box and one 🚀 Start button run
+- **Combined (default)** — Intent Miner understanding, sources and intent scoring, *and* the classic
+  page reader on the same pages. Both write to the same place: the run log / per-source table,
+  "This run" and "All saved candidates", and the intent-lead cards. A person found by both is saved once
+  (matched on email, phone, or name on the same page); the classic reader only fills in missing details.
+- **Intent Miner only** — the same run without the classic page reader.
+- **Classic waves only** — the original wave pipeline, unchanged.
+
+Combined and Intent-Miner runs use the existing settings: sources, "Only leads active in the last…",
+"Only leads who say they're interested", Page reading (rules = no AI classification, hybrid / AI = AI on
+the shortlist), lead-database lookups, robots.txt, search backend, region, results per query, fresh URLs
+per source, batch size, Next round (new searches that avoid earlier ones), and the shared
+already-read-pages ledger.
+
 Type what you want ("Find people in India looking for CNC operator jobs in Germany within 12 months").
 
 ```
