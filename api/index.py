@@ -42,6 +42,9 @@ from ai_chain import FALLBACK_ORDER, AIChain  # noqa: E402
 import integrations  # noqa: E402
 import dates  # noqa: E402
 import portal_import  # noqa: E402
+from intent_miner import engine as im_engine, export as im_export, store as im_store  # noqa: E402
+from intent_miner.models import QuerySpec  # noqa: E402
+from intent_miner.understand import understand as im_understand  # noqa: E402
 import outreach  # noqa: E402
 from schema import CandidateRecord, clean_email, clean_phone  # noqa: E402
 
@@ -483,6 +486,159 @@ def import_export(body: ImportIn):
         raise HTTPException(502, str(exc))
     return {"saved": saved, **info,
             "with_phone": sum(1 for r in records if r.phone), "with_email": sum(1 for r in records if r.email)}
+
+
+# ---------------------------------------------------------------------------
+# Intent Miner (added alongside the original pipeline)
+# ---------------------------------------------------------------------------
+class IMSettings(BaseModel):
+    backend: str = "auto"
+    region: str = "wt-wt"
+    max_results: int = Field(20, ge=5, le=100)
+    respect_robots: bool = True
+    timeout: int = Field(15, ge=5, le=30)
+    feeds: List[str] = Field(default_factory=list, max_length=20)
+    min_score: int = Field(60, ge=0, le=100)
+    use_llm: bool = True
+    save_to_candidates: bool = True
+    reprocess: bool = False
+
+
+class IMUnderstandIn(BaseModel):
+    command: str = Field(..., min_length=5, max_length=2000)
+    sources: List[str] = Field(default_factory=list)
+    max_age_days: Optional[int] = Field(None, ge=1, le=3650)
+
+
+class IMDiscoverIn(BaseModel):
+    spec: QuerySpec
+    source: str = "search"
+    query: str = Field(..., min_length=1, max_length=500)
+    settings: IMSettings = Field(default_factory=IMSettings)
+
+
+class IMProcessIn(BaseModel):
+    spec: QuerySpec
+    run_id: str = ""
+    items: List[dict] = Field(..., min_length=1, max_length=8)
+    settings: IMSettings = Field(default_factory=IMSettings)
+
+
+class IMExportIn(BaseModel):
+    format: str = Field("csv", pattern="^(csv|xlsx|json)$")
+    min_score: int = Field(0, ge=0, le=100)
+    run_id: str = ""
+    mark_exported: bool = False
+
+
+class IMStatusIn(BaseModel):
+    lead_ids: List[str] = Field(..., min_length=1, max_length=500)
+    status: str
+
+
+class IMSalesforceIn(BaseModel):
+    min_score: int = Field(80, ge=0, le=100)
+    run_id: str = ""
+
+
+def _im_keys(keys: dict, x_llm_keys: Optional[str], x_gemini_key: Optional[str]) -> dict:
+    """Integration keys plus the AI keys usable for embeddings (Mistral / Gemini)."""
+    llm = _json_header(x_llm_keys)
+    return {**keys, **{k: v for k, v in (("mistral", llm.get("mistral")),
+                                          ("gemini", (x_gemini_key or "").strip())) if v}}
+
+
+def _im_db(fn, *a):
+    try:
+        return fn(*a)
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.post("/im/understand")
+async def im_understand_ep(body: IMUnderstandIn, gemini=Depends(_gemini)):
+    _db()
+    try:
+        spec = await im_understand(gemini, body.command, body.sources, body.max_age_days)
+    except GeminiError as exc:
+        raise HTTPException(502, f"Understanding the command failed: {exc}")
+    run_id = await run_in_threadpool(_im_db, im_store.create_run, body.command, spec.model_dump())
+    return {"spec": spec.model_dump(), "run_id": run_id, "warnings": getattr(gemini, "notices", [])}
+
+
+@router.post("/im/discover")
+async def im_discover_ep(body: IMDiscoverIn, keys: dict = Depends(_keys)):
+    return await im_engine.discover(body.spec, body.source, body.query, keys, body.settings.model_dump())
+
+
+@router.post("/im/process")
+async def im_process_ep(body: IMProcessIn, gemini=Depends(_gemini), keys: dict = Depends(_keys),
+                        x_llm_keys: Optional[str] = Header(default=None),
+                        x_gemini_key: Optional[str] = Header(default=None)):
+    _db()
+    try:
+        res = await im_engine.process(gemini, body.spec, body.items, _im_keys(keys, x_llm_keys, x_gemini_key),
+                                      body.settings.model_dump(), body.run_id)
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+    res["warnings"] = getattr(gemini, "notices", []) + res["warnings"]
+    return res
+
+
+@router.get("/im/leads")
+def im_leads_ep(min_score: int = 0, run_id: str = ""):
+    _db()
+    return {"leads": _im_db(im_store.list_leads, min_score, 2000, run_id)}
+
+
+@router.post("/im/export")
+def im_export_ep(body: IMExportIn):
+    import base64
+    _db()
+    leads = _im_db(im_store.list_leads, body.min_score, 5000, body.run_id)
+    data, mime = {"csv": (im_export.to_csv, "text/csv"), "json": (im_export.to_json, "application/json"),
+                  "xlsx": (im_export.to_xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                  }[body.format]
+    blob = data(leads)
+    if body.mark_exported and leads:
+        _im_db(im_store.set_status, [L["id"] for L in leads if L.get("status") in ("QUALIFIED", "ENRICHED")],
+               "EXPORTED")
+    return {"filename": f"intent-leads.{body.format}", "mime": mime, "count": len(leads),
+            "data_b64": base64.b64encode(blob).decode()}
+
+
+@router.post("/im/status")
+def im_status_ep(body: IMStatusIn):
+    _db()
+    if body.status not in im_store.LIFECYCLE:
+        raise HTTPException(400, "Unknown status.")
+    _im_db(im_store.set_status, body.lead_ids, body.status)
+    return {"updated": len(body.lead_ids)}
+
+
+@router.post("/im/salesforce")
+async def im_salesforce_ep(body: IMSalesforceIn, keys: dict = Depends(_keys)):
+    _db()
+    if not (keys.get("salesforce_instance_url") and keys.get("salesforce_token")):
+        raise HTTPException(400, "Add the Salesforce instance URL and access token under the API keys first.")
+    leads = await run_in_threadpool(_im_db, im_store.list_leads, body.min_score, 500, body.run_id)
+    res = await im_export.push_salesforce(leads, keys["salesforce_instance_url"], keys["salesforce_token"],
+                                          body.min_score)
+    for c in res["created"]:
+        await run_in_threadpool(_im_db, im_store.set_status, [c["id"]], "EXPORTED", c["salesforce_id"])
+    return res
+
+
+@router.get("/im/failed")
+def im_failed_ep():
+    _db()
+    return {"failed": _im_db(im_store.failed_documents, 200)}
+
+
+@router.get("/im/health")
+def im_health_ep():
+    _db()
+    return {"providers": _im_db(im_store.provider_health), "runs": _im_db(im_store.list_runs, 10)}
 
 
 class EnrichTestIn(BaseModel):

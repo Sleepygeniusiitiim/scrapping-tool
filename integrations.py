@@ -40,6 +40,10 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
     "lusha": ("LUSHA_API_KEY", "Lusha", "enrich"),
     "contactout": ("CONTACTOUT_API_KEY", "ContactOut", "enrich"),
     "rocketreach": ("ROCKETREACH_API_KEY", "RocketReach", "enrich"),
+    "reddit_client_id": ("REDDIT_CLIENT_ID", "Reddit API app client id", "source"),
+    "reddit_client_secret": ("REDDIT_CLIENT_SECRET", "Reddit API app secret", "source"),
+    "salesforce_instance_url": ("SALESFORCE_INSTANCE_URL", "Salesforce instance URL", "crm"),
+    "salesforce_token": ("SALESFORCE_ACCESS_TOKEN", "Salesforce access token", "crm"),
 }
 SEARCH_ORDER = ["serper", "google_cse", "serpapi", "scrapedo", "brave"]
 UNBLOCK_ORDER = ["scrapedo", "scraperapi", "zenrows", "scrapingbee", "jina"]
@@ -74,6 +78,8 @@ def summary(keys: Dict[str, str]) -> Dict[str, List[str]]:
         if keys.get(name) or (name == "jina" and os.getenv("DISABLE_JINA", "") != "1"):
             kinds["unblock"].append(name)
     kinds["enrich"] = [n for n in ENRICH_ORDER if keys.get(n)]
+    kinds["sources"] = ["reddit API"] if keys.get("reddit_client_id") and keys.get("reddit_client_secret") else []
+    kinds["crm"] = ["salesforce"] if keys.get("salesforce_instance_url") and keys.get("salesforce_token") else []
     return kinds
 
 
@@ -203,18 +209,32 @@ async def unblock_fetch(name: str, keys: Dict[str, str], url: str, timeout_s: in
 _PHONE_KEY = re.compile(r"phone|mobile|number|tel", re.IGNORECASE)
 
 
+# Parts of a lookup reply that describe the employer, not the person — their phones / emails are skipped.
+_COMPANY_KEYS = {"organization", "organisation", "account", "company", "employer", "current_employer_data",
+                 "employment_history", "companies", "org"}
+# Placeholder values some services return instead of a real contact (e.g. Apollo's locked emails).
+_PLACEHOLDER = re.compile(r"not_unlocked|email_not|noemail|no-email|example\.|@domain\.com$|unavailable|redacted|"
+                          r"\*\*\*", re.IGNORECASE)
+
+
 def _collect(node, emails: List[str], phones: List[str], key: str = "") -> None:
     if isinstance(node, dict):
         for k, v in node.items():
+            if str(k).lower() in _COMPANY_KEYS:
+                continue
             _collect(v, emails, phones, str(k))
     elif isinstance(node, list):
         for v in node:
             _collect(v, emails, phones, key)
     elif isinstance(node, str):
-        if EMAIL_RE.fullmatch(node.strip()):
-            emails.append(node.strip().lower())
-        elif _PHONE_KEY.search(key) and 8 <= len(re.sub(r"\D", "", node)) <= 15:
-            phones.append(node.strip())
+        value = node.strip()
+        if _PLACEHOLDER.search(value):
+            return
+        if EMAIL_RE.fullmatch(value):
+            emails.append(value.lower())
+        elif _PHONE_KEY.search(key) and not re.search(r"type|status|count|id$", key, re.IGNORECASE) \
+                and 8 <= len(re.sub(r"\D", "", value)) <= 15:
+            phones.append(value)
 
 
 def _personal_first(emails: List[str]) -> List[str]:

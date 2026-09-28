@@ -60,6 +60,17 @@
   .badge.sent { border-color: var(--warn); color: var(--warn); }
   .badge.replied { border-color: var(--ok); color: var(--ok); }
   .badge.not_interested { color: var(--muted); }
+  .im-card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 12px 14px; margin: 10px 0; }
+  .im-card h4 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .im-tier { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); }
+  .im-tier.HIGH { color: var(--ok); border-color: var(--ok); }
+  .im-tier.MEDIUM { color: var(--warn); border-color: var(--warn); }
+  .im-meta { display: grid; gap: 4px 16px; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); font-size: 13px; }
+  .im-meta b { color: var(--muted); font-weight: 500; }
+  .im-quote { margin: 8px 0; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--bg); font-size: 13px; }
+  .im-why { font-size: 13px; color: var(--muted); margin: 4px 0 0; padding: 0; list-style: none; }
+  .im-spec { font-size: 13px; }
+  .im-spec code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
   .filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); margin-bottom: 10px; }
   a { color: var(--accent); word-break: break-all; }
 </style>
@@ -181,6 +192,58 @@
     <div class="table-wrap" style="margin:12px 0"><table id="statsTable"></table></div>
     <pre class="log" id="log"></pre>
   </div>
+
+  <h2>🧠 Intent Miner <span style="font-size:13px;color:var(--muted);font-weight:400">— describe who you want; it finds public
+    conversations, scores intent with evidence and builds qualified leads</span></h2>
+  <section class="panel" id="imPanel">
+    <label for="imCommand">Command</label>
+    <textarea id="imCommand" rows="2" placeholder="Find people in India who are looking for CNC operator jobs in Germany and plan to move within 12 months"></textarea>
+    <div class="row" style="margin-top:8px" id="imSources">
+      <span class="status" style="margin:0">Sources:</span>
+      <label><input type="checkbox" value="search" checked>Search engines</label>
+      <label><input type="checkbox" value="reddit" checked>Reddit</label>
+      <label><input type="checkbox" value="quora" checked>Quora</label>
+      <label><input type="checkbox" value="forums" checked>Forums &amp; websites</label>
+      <label><input type="checkbox" value="linkedin">LinkedIn (search-indexed)</label>
+      <label><input type="checkbox" value="facebook">Facebook (search-indexed)</label>
+      <label><input type="checkbox" value="rss">RSS feeds</label>
+    </div>
+    <details style="margin-top:8px"><summary>Run settings</summary>
+      <div class="grid" style="margin-top:8px">
+        <div><label for="imAge">Time window</label><select id="imAge"><option value="1">last 24 hours</option>
+          <option value="7">last 7 days</option><option value="30">last 30 days</option><option value="90" selected>last 90 days</option>
+          <option value="365">last 12 months</option><option value="">any time</option></select></div>
+        <div><label for="imMin">Minimum lead score</label><input id="imMin" type="number" min="0" max="100" value="60"></div>
+        <div><label for="imMaxUrls">Max pages to read</label><input id="imMaxUrls" type="number" min="10" max="300" value="80"></div>
+        <div><label for="imMaxRes">Results per query</label><input id="imMaxRes" type="number" min="5" max="100" value="20"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label><input id="imLLM" type="checkbox" checked>AI intent classification (shortlisted posts only)</label>
+        <label><input id="imCopy" type="checkbox" checked>Also add qualified leads to “All saved candidates”</label>
+        <label><input id="imReprocess" type="checkbox">Re-score pages seen before</label>
+      </div>
+      <label for="imFeeds" style="margin-top:8px">RSS / Atom feeds (one per line, used when “RSS feeds” is ticked)</label>
+      <textarea id="imFeeds" rows="2" placeholder="https://www.reddit.com/r/germany/new/.rss"></textarea>
+      <p class="status">Search backend, region and “Respect robots.txt” are taken from “Wave depth &amp; crawler settings” above.</p>
+    </details>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="imRun">🧠 Understand &amp; run</button>
+      <button id="imStop" disabled>⏹ Stop</button>
+      <button id="imLoad">📋 Show saved intent leads</button>
+      <button id="imHealthBtn">🩺 Provider health</button>
+      <button id="imFailedBtn">♻️ Failed pages</button>
+    </div>
+    <div id="imSpec" class="im-spec"></div>
+    <pre class="log" id="imLog" style="display:none;max-height:260px;overflow:auto"></pre>
+    <div id="imExtra"></div>
+    <div class="row" style="margin-top:10px" id="imExport" hidden>
+      <button data-f="csv">⬇️ CSV</button><button data-f="xlsx">⬇️ Excel</button><button data-f="json">⬇️ JSON</button>
+      <button id="imSf" title="Creates Salesforce Leads for leads scoring 80+ that were not pushed before">☁️ Push 80+ to Salesforce</button>
+      <label><input id="imOnlyRun" type="checkbox" checked>this run only</label>
+      <span class="status" id="imExportMsg"></span>
+    </div>
+    <div id="imLeads"></div>
+  </section>
 
   <h2>Results</h2>
   <div class="tabs" role="tablist">
@@ -522,6 +585,10 @@ const INTEGRATIONS = [
   ["lusha", "Lusha API key", "lusha.com → Settings → API", "Lead databases (phone / email lookup)"],
   ["rocketreach", "RocketReach API key", "rocketreach.co → Account → API", "Lead databases (phone / email lookup)"],
   ["apollo", "Apollo.io API key", "apollo.io → Settings → Integrations → API (emails only; phones need a webhook)", "Lead databases (phone / email lookup)"],
+  ["reddit_client_id", "Reddit app client id", "reddit.com/prefs/apps → create app (script) → id under the name", "Reddit API (Intent Miner)"],
+  ["reddit_client_secret", "Reddit app secret", "reddit.com/prefs/apps → secret", "Reddit API (Intent Miner)"],
+  ["salesforce_instance_url", "Salesforce instance URL", "https://yourcompany.my.salesforce.com", "Salesforce (Intent Miner export)"],
+  ["salesforce_token", "Salesforce access token", "OAuth access token of a user allowed to create Leads", "Salesforce (Intent Miner export)"],
 ];
 (function buildIntegrations() {
   const box = $("intFields"); let group = "";
@@ -548,7 +615,8 @@ function integrationKeys() {
 function intLine(s) {
   if (!s) return "";
   const f = (xs) => xs.length ? xs.join(", ") : "none";
-  return `Google search: ${f(s.search)} · Unblockers: ${f(s.unblock)} · Lead databases: ${f(s.enrich)}`;
+  return `Google search: ${f(s.search)} · Unblockers: ${f(s.unblock)} · Lead databases: ${f(s.enrich)}` +
+    ` · Reddit API: ${f(s.sources || [])} · CRM: ${f(s.crm || [])}`;
 }
 
 $("enrichBtn").onclick = async () => {
@@ -608,6 +676,175 @@ $("impBtn").onclick = async () => {
       `${r.rows} rows. Columns used: ` + Object.entries(r.columns).map(([k, v]) => `${k} ← “${v}”`).join(", ");
     $("loadDb").onclick();
   } catch (e) { out.textContent = "❌ " + e.message; }
+};
+
+// ---------- Intent Miner ----------
+const im = { stop: false, runId: "", leads: new Map() };
+function imLog(msg) {
+  const el = $("imLog"); el.style.display = "block";
+  el.textContent += `${new Date().toLocaleTimeString()} ${msg}\n`; el.scrollTop = el.scrollHeight;
+}
+function imSettings() {
+  return { backend: $("backend").value, region: $("region").value, max_results: Number($("imMaxRes").value) || 20,
+    respect_robots: $("robots").checked, timeout: Number($("timeout").value) || 15,
+    feeds: $("imFeeds").value.split("\n").map((x) => x.trim()).filter(Boolean),
+    min_score: Number($("imMin").value) || 0, use_llm: $("imLLM").checked, save_to_candidates: $("imCopy").checked,
+    reprocess: $("imReprocess").checked };
+}
+function esc(t) { const d = document.createElement("div"); d.textContent = t == null ? "" : String(t); return d.innerHTML; }
+function imRenderSpec(spec) {
+  const li = (a) => (a || []).map((x) => `<code>${esc(x)}</code>`).join(" ") || "—";
+  const bySrc = {};
+  (spec.queries || []).forEach((q) => { (bySrc[q.source] = bySrc[q.source] || []).push(q.query); });
+  $("imSpec").innerHTML = `<div class="im-card"><h4>Understanding</h4><div class="im-meta">
+    <div><b>Request</b> ${esc(spec.summary)}</div><div><b>Intent</b> ${esc(spec.intent_type)}</div>
+    <div><b>Industry</b> ${esc(spec.industry || "—")}</div>
+    <div><b>Timeline</b> ${spec.timeline_months ? "≤ " + spec.timeline_months + " months" : "—"}</div>
+    <div><b>Time window</b> ${spec.max_age_days ? "last " + spec.max_age_days + " days" : "any"}</div></div>
+    <p><b>Profession / product:</b> ${li(spec.professions)}</p>
+    <p><b>Origin:</b> ${li(spec.origin)} &nbsp; <b>Destination:</b> ${li(spec.destination)}</p>
+    <p><b>High-intent terms:</b> ${li(spec.high_intent_terms)}</p>
+    <p><b>Negative terms:</b> ${li(spec.negative_terms)} &nbsp; <b>Subreddits:</b> ${li(spec.subreddits)}</p>
+    <details><summary>${(spec.queries || []).length} generated searches</summary>${Object.entries(bySrc).map(([k, v]) =>
+      `<p><b>${esc(k)}</b><br>${v.map(esc).join("<br>")}</p>`).join("")}</details></div>`;
+}
+function imRenderLeads() {
+  const leads = [...im.leads.values()].sort((a, b) => b.lead_score - a.lead_score);
+  $("imExport").hidden = !leads.length;
+  $("imLeads").innerHTML = leads.length ? `<p class="status">${leads.length} qualified leads · ` +
+    `${leads.filter((l) => l.tier === "HIGH").length} high, ${leads.filter((l) => l.tier === "MEDIUM").length} medium</p>` : "";
+  const box = $("imLeads");
+  for (const L of leads) {
+    const card = document.createElement("div"); card.className = "im-card";
+    const src = (L.sources || []);
+    card.innerHTML = `<h4><span class="im-tier ${esc(L.tier)}">${esc(L.tier)} · ${L.lead_score}</span>
+      ${esc(L.display_name || "(anonymous post)")} <span class="status" style="margin:0">${esc(L.platform || "")}</span></h4>
+      <div class="im-meta">
+        <div><b>Intent</b> ${esc((L.intent_type || "").replace(/_/g, " "))} · ${L.intent_score}</div>
+        <div><b>Profession</b> ${esc(L.profession || "—")}</div>
+        <div><b>Location</b> ${esc(L.origin || "—")}</div><div><b>Destination</b> ${esc(L.destination || "—")}</div>
+        <div><b>Timeline</b> ${esc(L.timeline || "—")}</div><div><b>Last activity</b> ${esc(L.last_activity || "unknown")}</div>
+        <div><b>Confidence</b> ${Math.round((L.confidence || 0) * 100)}%</div>
+        <div><b>Contact</b> ${esc([L.phone, L.email].filter(Boolean).join(" · ") || "—")}</div>
+      </div>
+      ${(L.evidence || []).slice(0, 2).map((q) => `<div class="im-quote">“${esc(q)}”</div>`).join("")}
+      <details><summary>Why this lead?</summary><ul class="im-why">${(L.why || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
+        ${(L.possible_matches || []).length ? `<p class="status">Possible same person elsewhere (needs verification): ${(L.possible_matches).map((m) => esc(m.name + " on " + m.platform)).join(", ")}</p>` : ""}</details>
+      <div class="row" style="margin-top:6px">${src.slice(0, 3).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.source)} source ↗</a>`).join(" ")}
+        ${L.profile_url ? `<a href="${esc(L.profile_url)}" target="_blank" rel="noopener noreferrer">profile ↗</a>` : ""}
+        <label style="margin-left:auto">Status <select data-id="${esc(L.id)}">${["QUALIFIED", "ENRICHED", "EXPORTED", "CONTACTED", "RESPONDED", "CONVERTED"]
+          .map((st) => `<option ${st === L.status ? "selected" : ""}>${st}</option>`).join("")}</select></label></div>`;
+    card.querySelector("select").onchange = async (e) => {
+      try { await api("/api/im/status", { lead_ids: [L.id], status: e.target.value }); L.status = e.target.value; }
+      catch (err) { alert(err.message); }
+    };
+    box.appendChild(card);
+  }
+}
+$("imRun").onclick = async () => {
+  const command = $("imCommand").value.trim();
+  if (command.length < 5) { alert("Type what you are looking for."); return; }
+  const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
+  im.stop = false; im.leads.clear(); $("imLog").textContent = ""; $("imExtra").innerHTML = ""; imRenderLeads();
+  $("imRun").disabled = true; $("imStop").disabled = false;
+  const settings = imSettings(); const totals = {};
+  try {
+    imLog("Understanding request…");
+    const u = await api("/api/im/understand", { command, sources, max_age_days: Number($("imAge").value) || null });
+    im.runId = u.run_id; imRenderSpec(u.spec); $("imSpec").dataset.spec = JSON.stringify(u.spec); (u.warnings || []).forEach((w) => imLog("⚠️ " + w));
+    const spec = u.spec;
+    imLog(`Plan: ${spec.queries.length} searches across ${[...new Set(spec.queries.map((q) => q.source))].join(", ")}` +
+          (sources.includes("rss") && settings.feeds.length ? ` + ${settings.feeds.length} feeds` : ""));
+    const hits = new Map();
+    const queries = spec.queries.slice();
+    if (sources.includes("rss") && settings.feeds.length) queries.push({ source: "rss", query: "feeds" });
+    for (const q of queries) {
+      if (im.stop) break;
+      try {
+        const r = await api("/api/im/discover", { spec, source: q.source, query: q.query, settings });
+        let added = 0;
+        for (const h of r.hits) if (!hits.has(h.url)) { hits.set(h.url, h); added++; }
+        imLog(`🔍 [${q.source}] ${r.hits.length} results (+${added} new) ← ${q.query}` + (r.error ? `  ⚠️ ${r.error.slice(0, 120)}` : ""));
+      } catch (e) { imLog(`⚠️ [${q.source}] ${e.message.slice(0, 150)} ← ${q.query}`); }
+    }
+    const maxUrls = Number($("imMaxUrls").value) || 80;
+    const items = [...hits.values()].slice(0, maxUrls);
+    const bySource = {}; items.forEach((i) => { bySource[i.source] = (bySource[i.source] || 0) + 1; });
+    imLog(`Discovery done: ${hits.size} URLs · reading ${items.length} (${Object.entries(bySource).map(([k, n]) => `${n} ${k}`).join(", ")})`);
+    for (let b = 0; b < items.length && !im.stop; b += 5) {
+      const batch = items.slice(b, b + 5);
+      try {
+        const r = await api("/api/im/process", { spec, run_id: im.runId, items: batch, settings });
+        for (const [k, v] of Object.entries(r.stats)) totals[k] = (totals[k] || 0) + v;
+        r.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads();
+        imLog(`📄 Batch ${b / 5 + 1}: ${r.stats.fetched} read, ${r.stats.blocked + r.stats.failed} blocked/failed, ` +
+          `${r.stats.units} posts/comments → keyword ${r.stats.stage1} → semantic ${r.stats.stage2} → AI ${r.stats.llm_units}` +
+          ` → ${r.stats.leads} leads (${r.stats.high} high, ${r.stats.medium} medium)` +
+          (r.stats.unchanged ? ` · ${r.stats.unchanged} unchanged pages skipped` : ""));
+        (r.warnings || []).forEach((w) => imLog("⚠️ " + w));
+      } catch (e) {
+        imLog(`⚠️ Batch ${b / 5 + 1} failed: ${e.message.slice(0, 160)}`);
+        if (e.status === 401) break;
+      }
+    }
+    imLog(`🏁 Done. Documents read ${totals.fetched || 0}, relevant posts ${totals.relevant || 0}, AI calls ${totals.llm_calls || 0}, ` +
+          `qualified leads ${im.leads.size} (high ${totals.high || 0}, medium ${totals.medium || 0}).`);
+  } catch (e) { imLog("❌ " + e.message); }
+  finally { $("imRun").disabled = false; $("imStop").disabled = true; }
+};
+$("imStop").onclick = () => { im.stop = true; imLog("Stopping after the current step…"); };
+$("imLoad").onclick = async () => {
+  try {
+    const r = await api(`/api/im/leads?min_score=${Number($("imMin").value) || 0}`);
+    im.leads.clear(); r.leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
+    imRenderLeads();
+  } catch (e) { alert(e.message); }
+};
+$("imExport").querySelectorAll("button[data-f]").forEach((btn) => btn.onclick = async () => {
+  try {
+    const r = await api("/api/im/export", { format: btn.dataset.f, min_score: Number($("imMin").value) || 0,
+      run_id: $("imOnlyRun").checked ? im.runId : "", mark_exported: true });
+    const bin = Uint8Array.from(atob(r.data_b64), (c) => c.charCodeAt(0));
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([bin], { type: r.mime }));
+    a.download = r.filename; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    $("imExportMsg").textContent = `Exported ${r.count} leads.`;
+  } catch (e) { $("imExportMsg").textContent = e.message; }
+});
+$("imSf").onclick = async () => {
+  try {
+    const r = await api("/api/im/salesforce", { min_score: 80, run_id: $("imOnlyRun").checked ? im.runId : "" });
+    $("imExportMsg").textContent = `Salesforce: ${r.created.length} created, ${r.skipped} skipped` +
+      (r.errors.length ? ` · ${r.errors.join(" | ")}` : "");
+  } catch (e) { $("imExportMsg").textContent = e.message; }
+};
+$("imHealthBtn").onclick = async () => {
+  try {
+    const r = await api("/api/im/health");
+    $("imExtra").innerHTML = `<div class="im-card"><h4>Provider health (latest run)</h4>` +
+      (r.providers.length ? r.providers.map((p) => `<div>${esc(p.provider)} — <b>${esc(p.health)}</b> · ${p.ok} ok, ${p.blocked} blocked, ${p.failed} failed</div>`).join("") : "<p class='status'>No runs yet.</p>") +
+      `<p class="status">LinkedIn: search-indexed pages only (API needs partner access) · Facebook: search-indexed public posts only · Quora: discovery via search</p></div>`;
+  } catch (e) { alert(e.message); }
+};
+$("imFailedBtn").onclick = async () => {
+  try {
+    const r = await api("/api/im/failed");
+    const box = $("imExtra");
+    box.innerHTML = `<div class="im-card"><h4>Failed / blocked pages (${r.failed.length})</h4>` +
+      r.failed.slice(0, 50).map((f) => `<div style="font-size:13px">${esc(f.status)} ×${f.attempts} — <a href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">${esc(f.url.slice(0, 90))}</a> <span class="status">${esc((f.error || "").slice(0, 80))}</span></div>`).join("") +
+      (r.failed.length ? `<div class="row" style="margin-top:8px"><button id="imRetry">♻️ Retry these with the last understanding</button></div>` : "") + "</div>";
+    const btn = $("imRetry");
+    if (btn) btn.onclick = async () => {
+      const specTxt = $("imSpec").dataset.spec;
+      if (!specTxt) { alert("Run a command first so the retry knows what to look for."); return; }
+      const spec = JSON.parse(specTxt), settings = imSettings(), items = r.failed.filter((f) => f.attempts < 4)
+        .map((f) => ({ url: f.url, source: f.source, title: f.title || "", snippet: "" }));
+      for (let b = 0; b < items.length; b += 5) {
+        const res = await api("/api/im/process", { spec, run_id: im.runId, items: items.slice(b, b + 5), settings });
+        res.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads();
+        imLog(`♻️ Retry batch ${b / 5 + 1}: ${res.stats.fetched} read now, ${res.stats.leads} leads`);
+      }
+    };
+  } catch (e) { alert(e.message); }
 };
 
 $("testBtn").onclick = async () => {

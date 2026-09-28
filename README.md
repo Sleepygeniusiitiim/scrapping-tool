@@ -78,6 +78,44 @@ In the **“🔑 Lead databases & search API keys”** section of the home page 
   (its phone reveal needs a webhook).
 - Only API keys are supported, not account passwords: automated logins break these services' terms.
 
+## 🧠 Intent Miner (added alongside the original pipeline)
+
+Type what you want ("Find people in India looking for CNC operator jobs in Germany within 12 months").
+
+```
+command → understanding (LLM: professions + synonyms, origin, destination, intent type, high-intent and
+negative terms, timeline, time window, subreddits, 12–20 searches per source)
+→ discovery: search engines (DuckDuckGo + Google APIs), Reddit API, Quora (via search), forums &
+  websites, search-indexed LinkedIn / Facebook pages, RSS / Atom feeds
+→ ingestion: posts, comments and answers with author and date (Reddit API; schema.org JSON-LD threads;
+  page blocks; search snippet when a page is not readable)
+→ normalization: clean text, language, canonical URL, content hash, near-duplicate removal
+→ intent engine: Stage 1 keyword score → Stage 2 semantic similarity (Mistral / Gemini embeddings,
+  lexical fallback) → Stage 3 LLM classification of the shortlist only, contacts redacted
+→ lead engine: score, tier, evidence quotes, "why this lead", entity resolution
+→ PostgreSQL (im_* tables) → cards, CSV / Excel / JSON, Salesforce
+```
+
+- **Scores.** intent = 25% keyword + 20% semantic + 20% explicit need + 15% timeline + 10% location
+  + 10% LLM confidence; lead score = 80% intent + 10% freshness (7d 100 · 30d 85 · 90d 65 · 180d 40 ·
+  older 20) + 10% source quality (forum 85, Reddit 80, LinkedIn 75, Quora 70, snippet 25). HIGH ≥ 80,
+  MEDIUM ≥ 60.
+- **Evidence.** Every lead keeps verbatim quotes (checked against the text) and a "why" checklist.
+- **Identity.** Same platform + author → one lead; same phone / email → merged; same name on another
+  platform → listed as a *possible* match needing verification, never merged automatically.
+- **Incremental.** Pages whose content hash was already classified are skipped (no AI cost).
+  Failed / blocked pages are kept (with attempts) and can be retried from "♻️ Failed pages".
+- **Lifecycle.** QUALIFIED → ENRICHED → EXPORTED → CONTACTED → RESPONDED → CONVERTED (per-lead dropdown).
+- **Qualified leads are also copied into “All saved candidates”**, so lead-database lookups and
+  outreach work on them unchanged.
+- **Reddit API:** create an app at reddit.com/prefs/apps (type "script") and add its client id and secret
+  (`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`). Without it Reddit threads are found through search
+  engines and read from their snippets. Reddit's developer terms forbid reselling / brokering Reddit data.
+- **Salesforce:** `SALESFORCE_INSTANCE_URL` + `SALESFORCE_ACCESS_TOKEN`; "Push 80+" creates Leads
+  (LeadSource "Intent Miner", evidence in Description) for leads not pushed before.
+- **Not built, by design:** logins, CAPTCHA bypass, private groups or messages, fake accounts, email
+  guessing, sending every page to an LLM.
+
 ## Importing from job-portal employer accounts
 
 Naukri (Resdex / RMS), foundit, WorkIndia, Indeed, Apna and Naukrigulf let employers download applicants
