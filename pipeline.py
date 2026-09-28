@@ -17,6 +17,7 @@ Prompts, grounding check and source-URL rules are the same as agent_pipeline.py.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -365,8 +366,11 @@ async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_w
 
 def run_query(query: str, max_results: int, region: str, backend: str, keys: Optional[dict] = None,
               max_age_months: int = 0) -> dict:
-    """backend: auto (DuckDuckGo + a Google API when one has a key) | duckduckgo | google."""
+    """backend: auto (DuckDuckGo + a Google API when one has a key) | duckduckgo | google |
+    all (every configured engine in parallel, results merged by reciprocal-rank fusion)."""
     keys = keys or {}
+    if backend == "all":
+        return _run_query_fanout(query, max_results, region, keys, max_age_months)
     token = scrapedo_token(keys)
     if token:
         keys = {**keys, "scrapedo": token}
@@ -419,7 +423,64 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
     }
 
 
-MAX_ENRICH_PER_BATCH = 10
+def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max_age_months: int) -> dict:
+    """Every configured engine at once (DuckDuckGo, Serper, Google CSE, SerpApi, Brave, Scrape.do) — each one
+    indexes pages the others miss. Results are merged with reciprocal-rank fusion: a page ranked high by
+    several engines comes first."""
+    from concurrent.futures import ThreadPoolExecutor
+    token = scrapedo_token(keys)
+    if token:
+        keys = {**keys, "scrapedo": token}
+    engines = ["ddg"] + integrations.search_available(keys)
+
+    def one(name: str):
+        if name == "ddg":
+            r = search_query(query, max_results=max_results, region=region, backend="auto",
+                             max_age_months=max_age_months)
+            return name, [{"url": h.url, "title": h.title, "snippet": h.snippet, "date": getattr(h, "date", None)}
+                          for h in r.hits], r.error
+        if name == "scrapedo":
+            r = google_search_scrapedo(query, token, max_results=max_results, region=region)
+            return name, [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in r.hits], r.error
+        found, err, _ = integrations.web_search(name, keys, query, max_results, region, max_age_months)
+        o = _Outcome(found, err, False)
+        return name, [{"url": h.url, "title": h.title, "snippet": h.snippet, "date": getattr(h, "date", None)}
+                      for h in o.hits], err
+
+    with ThreadPoolExecutor(max_workers=len(engines)) as ex:
+        results = list(ex.map(lambda n: _safe_engine(one, n), engines))
+    fused: Dict[str, dict] = {}
+    score: Dict[str, float] = {}
+    sources, errors = [], []
+    for name, hits, err in results:
+        sources.append(name if hits or not err else f"{name} ✗")
+        if err and not hits:
+            errors.append(f"{name}: {err}")
+        for rank, h in enumerate(hits):
+            score[h["url"]] = score.get(h["url"], 0.0) + 1.0 / (60 + rank)
+            cur = fused.setdefault(h["url"], {**h, "engines": []})
+            cur["engines"].append(name)
+            cur["snippet"] = cur.get("snippet") or h.get("snippet")
+            cur["date"] = cur.get("date") or h.get("date") or _hit_date(h)
+    ranked = sorted(fused.values(), key=lambda h: -score[h["url"]])
+    return {"query": query, "error": "; ".join(errors) if errors and not ranked else None, "rate_limited": False,
+            "sources": sources, "google_missing": len(engines) == 1, "hits": ranked[:max_results * 3]}
+
+
+def _safe_engine(fn, name):
+    try:
+        return fn(name)
+    except Exception as exc:
+        return name, [], f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _scaled(n: int) -> int:
+    """Per-batch limits: a background worker (WORKER_SCALE, default 3 there) does more per batch than a
+    web request that must finish within the serverless time limit."""
+    return max(1, int(n * float(os.getenv("WORKER_SCALE", "1") or 1)))
+
+
+MAX_ENRICH_PER_BATCH = _scaled(10)
 
 
 def _identifiable(r: CandidateRecord) -> bool:
@@ -457,8 +518,8 @@ async def _visit_profiles(records: List[CandidateRecord], respect_robots: bool) 
     return stats
 
 
-MAX_BIO_SEARCHES = 8
-MAX_EMAIL_GUESSES = 3
+MAX_BIO_SEARCHES = _scaled(8)
+MAX_EMAIL_GUESSES = _scaled(3)
 
 
 async def _search_bios(records: List[CandidateRecord], keys: dict, notes: List[str]) -> Dict[int, str]:
@@ -489,8 +550,8 @@ async def _search_bios(records: List[CandidateRecord], keys: dict, notes: List[s
     return companies
 
 
-MAX_DOMAIN_LOOKUPS = 4
-MAX_VERIFY_PER_BATCH = 15
+MAX_DOMAIN_LOOKUPS = _scaled(4)
+MAX_VERIFY_PER_BATCH = _scaled(15)
 _EMPLOYER = re.compile(r"\b(?:work(?:ing|s)?|employed|job|nurse|engineer|operator|driver|teacher|trainer|manager|"
                        r"executive|technician|staff)\s+(?:at|with|in)\s+([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,4})")
 _ROLE_AT = re.compile(r"\s(?:at|@)\s+([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z0-9][A-Za-z0-9&.'-]*){0,4})")

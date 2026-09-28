@@ -170,6 +170,30 @@ gave leads or have several posts / comments — with the current intent and sett
 hash has not changed are skipped without any AI cost; changed pages are scored again, so new comments
 become new leads while existing people are merged, not duplicated.
 
+## Enterprise architecture: gateway + workers, hybrid AI, headless browser, pgvector
+
+| Component | How it works now |
+|---|---|
+| Search | DuckDuckGo + every configured API. Backend **"all engines at once"** queries DuckDuckGo, Serper, Google CSE, SerpApi, Brave and Scrape.do in parallel and merges them by reciprocal-rank fusion (a page several engines rank high comes first). Platform APIs: Reddit, YouTube, Google Maps / Places, Meta (own posts). |
+| Protected sites | Workers fetch refused / JavaScript pages with **headless Chromium** (`browser_fetch.py`, Playwright): waits out bot-check pages, scrolls, clicks "load more comments"; through `PROXY_URL` (residential / rotating proxy) requests come from home IPs. Unblocker APIs remain the fallback. Logins are **not** automated — content behind LinkedIn / Instagram / Facebook logins stays out of reach (their terms; accounts get banned). |
+| AI extraction | **Hybrid** (`ai_router.py`): a small local model (Ollama / vLLM, `LOCAL_LLM_URL`, e.g. qwen2.5:3b) does the bulk post-by-post classification and page reading for free; Gemini and the hosted chain do the reasoning (understanding, source planning, record matching) and take over when the local model fails. |
+| Email retrieval | Permutations of the name on the employer's mail domain (company format first) tested with a live zero-send SMTP ping, catch-all probe, shared-inbox probe (info@ …), domain harvest from search — see "Waterfall enrichment". Needs port 25: workers on a host that allows it, or `SMTP_VERIFY_URL` / a verification API on Vercel. |
+| Matching | `vectors.py`: **pgvector hybrid search** on Neon — dense vectors (local nomic-embed-text, Gemini at 768-d or Mistral) + full-text (tsvector) + fuzzy names (pg_trgm), reciprocal-rank fusion. Used for government-record matching and the "Search everything saved" box; new leads are indexed as they are saved. |
+| Runtime | **Decoupled**: Vercel stays the API gateway + page; runs can be queued (`jobs.py`, `im_jobs` in Neon) and executed by persistent **workers** (`worker/worker.py`) with no time limit — claim with `FOR UPDATE SKIP LOCKED`, heartbeats, cancel, stale-job recovery, larger per-batch limits (`WORKER_SCALE`). |
+
+### Background workers
+
+1. Put `DATABASE_URL` and your keys in `.env` (see `.env.example`).
+2. On any Docker host (a VPS with ≥ 8 GB RAM for the local model; Railway / Render / Fly for the worker alone):
+   `docker compose -f worker/docker-compose.yml up -d --build` — starts the worker (with Chromium) and Ollama, which
+   pulls `qwen2.5:3b-instruct` and `nomic-embed-text` on first start. Without Docker: `pip install -r
+   worker/requirements.txt && playwright install chromium && python worker/worker.py`.
+3. In the page tick **☁️ Run in the background on a worker** and press Start. The log and leads update live; the
+   page can be closed and reopened (📦 Background jobs). `WORKERS=3` runs three in parallel.
+
+Mailbox checks from the worker need outbound port 25 (many VPS providers open it on request). Idle workers keep
+the search index embedded; 🧮 Embed the whole search index queues a full pass.
+
 ## Getting the most contacts out of every page
 
 Ideas taken from open-source tools (theHarvester, Photon, Reacher / check-if-email-exists, email-verifier):

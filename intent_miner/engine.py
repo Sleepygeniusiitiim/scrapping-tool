@@ -9,6 +9,7 @@ One processing step of an Intent Miner run (called per batch of discovered URLs 
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from typing import Dict, List, Optional
 
@@ -32,7 +33,13 @@ from .providers.web import QuoraProvider, RssProvider, SearchProvider, WebProvid
 STAGE1_MIN = 25          # keyword score needed to go further (or an explicit first-person need)
 STAGE2_MIN = 30          # semantic similarity needed for the LLM (or a strong keyword score)
 MAX_LLM_UNITS_PER_DOC = 12
-MAX_LLM_UNITS_PER_BATCH = 40
+def _scaled(n: int) -> int:
+    """Per-batch limits: a background worker (WORKER_SCALE, default 3 there) does more per batch than a
+    web request that must finish within the serverless time limit."""
+    return max(1, int(n * float(os.getenv("WORKER_SCALE", "1") or 1)))
+
+
+MAX_LLM_UNITS_PER_BATCH = _scaled(40)
 
 
 def providers(keys: Dict[str, str], settings: dict) -> Dict[str, object]:
@@ -263,14 +270,16 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     for s in passed:
         by_doc.setdefault(s[0].url, []).append(s)
     llm: Dict[tuple, object] = {}
-    use_llm = settings.get("use_llm", True) and ai is not None
+    import ai_router
+    bulk_ai = ai_router.bulk(ai)                # local small model first for post-by-post classification
+    use_llm = settings.get("use_llm", True) and bulk_ai is not None
 
     async def run_llm(url, group):
         units = []
         for d, i, u, *_ in group[:MAX_LLM_UNITS_PER_DOC]:
             red, _ = processing.redact(u.text)
             units.append((i, u.kind, u.author or "", red))
-        res = await classify(ai, spec, group[0][0].title, units)
+        res = await classify(bulk_ai, spec, group[0][0].title, units)
         stats["llm_calls"] += 1
         stats["llm_units"] += len(units)
         for i, r in res.items():
@@ -359,7 +368,8 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         warnings.append("Organization search: the classic page reader looks for individual candidates, so it "
                         "was skipped for this command.")
     if settings.get("classic", True) and not orgs:
-        classic_records, classic_ai = await _classic(ai, spec, docs, hits_by_url(items), settings, stats, warnings)
+        classic_records, classic_ai = await _classic(bulk_ai, spec, docs, hits_by_url(items), settings, stats,
+                                                     warnings)
         stats["llm_calls"] += classic_ai
         before = len(candidates)
         candidates = _merge_classic(candidates, classic_records)
@@ -397,6 +407,8 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         await _gov_match(ai, leads, candidates, cand_lead, settings, stats, warnings)
 
     saved = await asyncio.to_thread(store.upsert_leads, run_id, leads) if leads else []
+    if saved and settings.get("semantic_index", True):
+        await _index(saved, keys, warnings)
     await asyncio.to_thread(store.save_events, run_id, events)
     if candidates:
         try:
@@ -423,10 +435,20 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             "failed": [{"url": d.url, "status": d.status, "error": d.error} for d in docs if d.status != "ok"]}
 
 
-MAX_COMPANY_CRAWLS_PER_BATCH = 6
-MAX_MAPS_LOOKUPS_PER_BATCH = 6
-MAX_OWNER_SEARCHES_PER_BATCH = 4
-MAX_ROLE_PROBES_PER_BATCH = 4
+async def _index(saved: List[dict], keys: Dict[str, str], warnings: List[str]) -> None:
+    """Leads into the hybrid search index (full-text now; vectors when an embedding model is available)."""
+    import vectors
+    try:
+        await asyncio.to_thread(vectors.index_leads, saved)
+        await vectors.embed_pending(keys, ["lead"], limit=len(saved) + 8)
+    except Exception as exc:                       # search index is a convenience; never fail the batch
+        warnings.append(f"Search index not updated: {type(exc).__name__}: {str(exc)[:100]}")
+
+
+MAX_COMPANY_CRAWLS_PER_BATCH = _scaled(6)
+MAX_MAPS_LOOKUPS_PER_BATCH = _scaled(6)
+MAX_OWNER_SEARCHES_PER_BATCH = _scaled(4)
+MAX_ROLE_PROBES_PER_BATCH = _scaled(4)
 _gov_count = {"n": None, "at": 0.0}
 
 

@@ -45,6 +45,7 @@ import dates  # noqa: E402
 import portal_import  # noqa: E402
 import meta_autoreply  # noqa: E402
 import gov_registry  # noqa: E402
+import ai_router  # noqa: E402
 from intent_miner import engine as im_engine, export as im_export, store as im_store  # noqa: E402
 from intent_miner.models import QuerySpec  # noqa: E402
 from intent_miner.understand import understand as im_understand  # noqa: E402
@@ -353,7 +354,7 @@ async def process(
     _db(x_database_url)
     try:
         result = await pipeline.process_batch(
-            gemini,
+            ai_router.bulk(gemini),
             body.intent,
             [i.model_dump() for i in body.items],
             body.wave_tag,
@@ -732,6 +733,9 @@ def gov_import(body: GovImportIn):
         raise HTTPException(502, str(exc))
     except Exception as exc:
         raise HTTPException(400, f"Could not read this file ({type(exc).__name__}: {str(exc)[:160]}).")
+    if not info.get("saved") and info.get("rows") and "name" in (info.get("columns") or {}):
+        info["note"] = "Every record in this file was already imported (nothing new added)."
+        return info
     if not info.get("saved"):
         raise HTTPException(400, "No records found. The file needs a name column (e.g. \"Name of the Institute\", "
                                  f"\"Company Name\"). Columns recognised: {info.get('columns') or 'none'}")
@@ -793,6 +797,126 @@ async def gov_match(body: GovMatchIn, request: Request):
         await run_in_threadpool(_im_db, gov_registry.save_lead_match, L)
     return {"stats": stats, "leads": [db._serialize_row(dict(L)) for L in changed], "last_id": last_id,
             "more": len(leads) == body.limit, "warnings": getattr(gemini, "notices", [])}
+
+
+# ---------------------------------------------------------------------------
+# Background jobs (persistent workers — worker/worker.py)
+# ---------------------------------------------------------------------------
+class JobIn(BaseModel):
+    command: str = Field(..., min_length=5, max_length=2000)
+    sources: List[str] = Field(default_factory=list)
+    auto_sources: bool = True
+    max_age_days: Optional[int] = Field(None, ge=1, le=3650)
+    num_queries: int = Field(16, ge=4, le=60)
+    max_urls: int = Field(60, ge=5, le=2000)
+    batch: int = Field(5, ge=1, le=8)
+    settings: IMSettings = Field(default_factory=IMSettings)
+    use_page_keys: bool = False
+
+
+@router.post("/jobs")
+def job_create(body: JobIn, x_integrations: Optional[str] = Header(default=None),
+               x_llm_keys: Optional[str] = Header(default=None), x_gemini_key: Optional[str] = Header(default=None),
+               x_llm_provider: Optional[str] = Header(default=None)):
+    import jobs
+    _db()
+    opts = body.model_dump(exclude={"command", "use_page_keys"})
+    opts["llm_provider"] = (x_llm_provider or "").strip()
+    if body.use_page_keys:        # stored with the job only until it finishes (then erased)
+        opts["keys"] = _json_header_raw(x_integrations)
+        opts["llm_keys"] = {**_json_header(x_llm_keys), **({"gemini": x_gemini_key.strip()} if x_gemini_key else {})}
+    job = _im_db(jobs.enqueue, "run", body.command, opts)
+    return {"job": {k: job[k] for k in ("id", "status", "created_at")}, "workers": _im_db(jobs.workers)}
+
+
+@router.get("/jobs")
+def job_list():
+    import jobs
+    _db()
+    return {"jobs": _im_db(jobs.recent, 20), "workers": _im_db(jobs.workers)}
+
+
+@router.get("/jobs/{job_id}")
+def job_get(job_id: str, log_from: int = 0):
+    import jobs
+    _db()
+    job = _im_db(jobs.get, job_id, max(0, log_from))
+    if not job:
+        raise HTTPException(404, "No such job")
+    return {"job": job}
+
+
+@router.post("/jobs/{job_id}/cancel")
+def job_cancel(job_id: str):
+    import jobs
+    _db()
+    _im_db(jobs.cancel, job_id)
+    return {"ok": True}
+
+
+@router.post("/jobs-index")
+def job_index():
+    """Queue embedding the whole search index on a worker (no time limit there)."""
+    import jobs
+    _db()
+    return {"job": _im_db(jobs.enqueue, "index", "embed the search index", {}), "workers": _im_db(jobs.workers)}
+
+
+# ---------------------------------------------------------------------------
+# Hybrid semantic search over everything saved (pgvector + full-text + fuzzy names)
+# ---------------------------------------------------------------------------
+@router.get("/search")
+async def search_saved(q: str, kinds: str = "lead,candidate,gov", k: int = 30,
+                       x_gemini_key: Optional[str] = Header(default=None),
+                       x_llm_keys: Optional[str] = Header(default=None), keys: dict = Depends(_keys)):
+    import vectors
+    _db()
+    kinds_l = [x for x in kinds.split(",") if x in ("lead", "candidate", "gov")] or ["lead"]
+    try:
+        hits = await vectors.search(q, kinds_l, _im_keys(keys, x_llm_keys, x_gemini_key), min(max(k, 1), 100))
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+
+    def load():
+        out = []
+        by = {}
+        for h in hits:
+            by.setdefault(h["kind"], []).append(h["ref"])
+        rows = {}
+        if by.get("lead"):
+            for r in im_store._q("SELECT * FROM im_leads WHERE id::text = ANY(%s)", (by["lead"],), "all"):
+                rows[("lead", str(r["id"]))] = db._serialize_row(dict(r))
+        if by.get("candidate"):
+            for r in im_store._q("SELECT * FROM candidates WHERE id::text = ANY(%s)", (by["candidate"],), "all"):
+                rows[("candidate", str(r["id"]))] = db._serialize_row(dict(r))
+        if by.get("gov"):
+            for r in im_store._q("SELECT * FROM gov_records WHERE id::text = ANY(%s)", (by["gov"],), "all"):
+                rows[("gov", str(r["id"]))] = db._serialize_row(dict(r))
+        for h in hits:
+            row = rows.get((h["kind"], h["ref"]))
+            if row:
+                out.append({**h, "row": row})
+        return out
+    return {"results": await run_in_threadpool(load)}
+
+
+@router.post("/search/reindex")
+async def search_reindex(x_gemini_key: Optional[str] = Header(default=None),
+                         x_llm_keys: Optional[str] = Header(default=None), keys: dict = Depends(_keys)):
+    """Put saved leads / candidates / government lists into the search index and embed a slice of what is not
+    embedded yet (call again while `remaining` > 0)."""
+    import vectors
+    _db()
+
+    def texts():
+        leads = [dict(r) for r in im_store._q("SELECT * FROM im_leads ORDER BY last_seen DESC LIMIT 5000", None, "all")]
+        n = vectors.index_leads(leads) + vectors.index_candidates()
+        for d in gov_registry.datasets():
+            n += vectors.index_gov_dataset(d["dataset"])
+        return n
+    indexed = await run_in_threadpool(texts)
+    emb = await vectors.embed_pending(_im_keys(keys, x_llm_keys, x_gemini_key), None, limit=256)
+    return {"indexed": indexed, **emb, "status": await run_in_threadpool(vectors.status)}
 
 
 # ---------------------------------------------------------------------------

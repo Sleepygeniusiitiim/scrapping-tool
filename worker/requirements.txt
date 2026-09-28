@@ -1,0 +1,4 @@
+# Background worker = the web app's requirements + a real browser.
+-r ../requirements.txt
+playwright>=1.49
+uvicorn>=0.30

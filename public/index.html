@@ -200,7 +200,7 @@
         <div><label for="region">Search region</label>
           <select id="region"><option>in-en</option><option>wt-wt</option><option>us-en</option><option>uk-en</option><option>de-de</option></select></div>
         <div><label for="backend">Search backend</label>
-          <select id="backend"><option value="auto">auto (DuckDuckGo + Google)</option><option value="google">google only (search API)</option><option value="duckduckgo">duckduckgo only</option></select></div>
+          <select id="backend"><option value="all">all engines at once (DuckDuckGo + every search API key, merged)</option><option value="auto">auto (DuckDuckGo + Google)</option><option value="google">google only (search API)</option><option value="duckduckgo">duckduckgo only</option></select></div>
         <div><label for="maxAge" title="Search only recent pages, and drop leads whose post / comment is older. Leads with no date found are kept.">Only leads active in the last</label>
           <select id="maxAge"><option value="1">1 month</option><option value="3">3 months</option><option value="6" selected>6 months</option><option value="12">12 months</option><option value="24">2 years</option><option value="0">any time</option></select></div>
         <div><label for="extraction" title="How pages are read. Rules find emails, phone numbers, names, roles and countries with pattern matching — no AI tokens. The AI is then only used once per round, to plan the searches.">Page reading</label>
@@ -222,6 +222,12 @@
       <button id="stopBtn" disabled>⏹ Stop</button>
       <span class="status" id="runStatus"></span>
     </div>
+    <div class="row" style="margin-top:6px">
+      <label title="The run is queued in the database and a background worker (worker/worker.py) runs it with no time limit — headless browser, local AI model, SMTP checks. You can close this page."><input id="bgRun" type="checkbox">☁️ Run in the background on a worker (keeps going after you close the page)</label>
+      <label title="Send the keys typed on this page with the job (erased when it finishes). Otherwise the worker uses its own environment keys."><input id="bgKeys" type="checkbox">send this page's keys with the job</label>
+      <button id="jobsBtn">📦 Background jobs</button>
+    </div>
+    <div id="jobsBox"></div>
   </section>
 
   <div id="progress" class="hidden">
@@ -259,6 +265,17 @@
       <label><input id="recheckProductive" type="checkbox" checked>only pages that gave leads or have comments</label>
       <label>max <input id="recheckMax" type="number" min="5" max="300" value="60" style="width:80px"> pages</label>
     </div>
+    <details style="margin-top:8px"><summary>🔎 Search everything saved (meaning, words and misspelt names)</summary>
+      <p class="status">Finds saved leads, candidates and government-list records by meaning (“heavy vehicle trainer” finds
+        “HMV driving instructor”), exact words and registration numbers, and misspelt names — pgvector + full-text + fuzzy
+        search on your Neon database. Run “Update search index” once after upgrading, then new leads are indexed automatically.</p>
+      <div class="row"><input id="sq" placeholder="e.g. truck driving school owner Ludhiana" style="flex:1">
+        <label><input type="checkbox" class="skind" value="lead" checked>leads</label>
+        <label><input type="checkbox" class="skind" value="candidate" checked>candidates</label>
+        <label><input type="checkbox" class="skind" value="gov">government lists</label>
+        <button id="sBtn">🔎 Search</button><button id="sIdx">🧮 Update search index</button></div>
+      <div id="sOut"></div>
+    </details>
     <details style="margin-top:8px"><summary>🔗 Analyse specific posts / pages (paste links)</summary>
       <p class="status">Paste Instagram / Facebook / YouTube / Reddit / blog / forum links, one per line. Each page is read
         directly (no searching) and every commenter showing interest becomes a lead. Instagram: the public embed page shows
@@ -1095,6 +1112,38 @@ $("linksBtn").onclick = () => imReadPages("Pasted links", $("intent").value.trim
   return urls.slice(0, 100).map((url) => ({ url, title: "", snippet: "" }));
 }, { reprocess: true, any_age: true });
 
+// ---------- Hybrid search over saved data ----------
+$("sBtn").onclick = async () => {
+  const q = $("sq").value.trim(); if (!q) return;
+  const kinds = [...document.querySelectorAll(".skind:checked")].map((x) => x.value).join(",");
+  $("sOut").innerHTML = "<p class='status'>Searching…</p>";
+  try {
+    const r = await api(`/api/search?q=${encodeURIComponent(q)}&kinds=${kinds}`);
+    $("sOut").innerHTML = r.results.length ? r.results.map(({ kind, row, score, signals }) => {
+      const name = row.display_name || row.name || "(no name)";
+      const what = kind === "lead" ? [row.profession, row.origin, row.platform].filter(Boolean).join(" · ")
+        : kind === "gov" ? [row.category, row.district || row.city, row.state, row.dataset].filter(Boolean).join(" · ")
+        : [row.current_role, row.current_location, row.platform].filter(Boolean).join(" · ");
+      const contact = [row.phone, row.email].filter(Boolean).join(" · ");
+      return `<div class="im-card" style="padding:8px 12px"><b>${esc(name)}</b> <span class="status" style="margin:0">${esc(kind)} · ${esc(signals.join("+"))} · ${score}</span>
+        <div>${esc(what)}</div>${contact ? `<div>${esc(contact)}${waLink(row.phone) ? ` <a href="${waLink(row.phone)}" target="_blank" rel="noopener noreferrer">💬</a>` : ""}</div>` : ""}</div>`;
+    }).join("") : "<p class='status'>Nothing found.</p>";
+  } catch (e) { $("sOut").innerHTML = `<p class="status">❌ ${esc(e.message)}</p>`; }
+};
+$("sIdx").onclick = async () => {
+  $("sOut").innerHTML = "<p class='status'>Indexing…</p>";
+  try {
+    for (let i = 0; i < 40; i++) {
+      const r = await api("/api/search/reindex", {});
+      const st = r.status || {};
+      $("sOut").innerHTML = `<p class="status">${r.indexed} rows in the text index · ${r.embedded} embedded now` +
+        (r.remaining != null ? `, ${r.remaining} left` : "") + (r.note ? ` · ${esc(r.note)}` : "") +
+        ` · pgvector ${st.pgvector ? "on" : "not available"}, fuzzy names ${st.trigram ? "on" : "off"}</p>`;
+      if (!r.remaining || !r.embedded) break;
+    }
+  } catch (e) { $("sOut").innerHTML = `<p class="status">❌ ${esc(e.message)}</p>`; }
+};
+
 // ---------- Government lists ----------
 async function govList() {
   const r = await api("/api/gov/datasets");
@@ -1108,7 +1157,7 @@ async function govList() {
 }
 $("govListBtn").onclick = () => govList().catch((e) => { $("govOut").textContent = "❌ " + e.message; });
 function govDone(r) {
-  $("govOut").textContent = `Imported ${r.saved} records from ${r.rows} rows${r.skipped ? ` (${r.skipped} skipped)` : ""}. Columns used: ` +
+  $("govOut").textContent = (r.note ? r.note + " " : "") + `Imported ${r.saved} records from ${r.rows} rows${r.skipped ? ` (${r.skipped} skipped)` : ""}. Columns used: ` +
     Object.entries(r.columns || {}).map(([k, v]) => `${k} ← “${v}”`).join(", ");
 }
 $("govImportBtn").onclick = async () => {
@@ -1297,7 +1346,64 @@ function addRunRecords(recs) {
   }
 }
 
-$("startBtn").onclick = () => startRun(false);
+$("startBtn").onclick = () => $("bgRun").checked ? startJob() : startRun(false);
+
+// ---------- Background jobs (persistent workers) ----------
+const jobView = { id: "", from: 0, timer: null };
+async function startJob() {
+  const intent = $("intent").value.trim();
+  if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
+  const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
+  const months = Number($("maxAge").value);
+  try {
+    const r = await api("/api/jobs", { command: intent, sources, auto_sources: $("autoSources").checked,
+      max_age_days: months ? Math.round(months * 30.5) : null,
+      num_queries: Math.max(4, Math.min(60, num("numWaves") * num("qpw"))), max_urls: Math.max(num("maxUrls") || 30, 60),
+      batch: Math.min(8, num("batch") || 5), settings: imSettings({ mode: "combined" }, intent, []),
+      use_page_keys: $("bgKeys").checked });
+    $("runStatus").textContent = r.workers.length ? `Queued — ${r.workers.length} worker(s) online.` :
+      "Queued, but no worker is online: start worker/worker.py (see README) and it will pick this up.";
+    watchJob(r.job.id);
+  } catch (e) { $("runStatus").textContent = "❌ " + e.message; }
+}
+function watchJob(id) {
+  Object.assign(state, { stop: false, runRecords: [], waveStats: {}, logLines: [] });
+  $("progress").classList.remove("hidden"); $("doctor").innerHTML = "";
+  clearInterval(jobView.timer); Object.assign(jobView, { id, from: 0 });
+  const tick = async () => {
+    try {
+      const r = await api(`/api/jobs/${id}?log_from=${jobView.from}`);
+      const j = r.job;
+      (j.log || []).forEach((l) => state.logLines.push(l));
+      jobView.from = j.log_len;
+      $("log").textContent = state.logLines.slice(-300).join("\n"); $("log").scrollTop = $("log").scrollHeight;
+      const st = j.stats || {};
+      $("runStatus").textContent = `Job ${j.status}${j.worker ? " on " + j.worker : ""} · ${st.leads || 0} leads · ` +
+        `${st.records || 0} contacts (${st.with_phone || 0} phone, ${st.with_email || 0} email)` + (j.error ? ` · ${j.error}` : "");
+      if (j.run_id || st.run_id) {
+        const L = await api(`/api/im/leads?run_id=${encodeURIComponent(j.run_id || st.run_id)}`);
+        im.runId = j.run_id || st.run_id; im.leads.clear(); L.leads.forEach((x) => im.leads.set(x.id, x)); imRenderLeads();
+      }
+      if (["done", "failed", "cancelled"].includes(j.status)) clearInterval(jobView.timer);
+    } catch (e) { $("runStatus").textContent = "❌ " + e.message; clearInterval(jobView.timer); }
+  };
+  tick(); jobView.timer = setInterval(tick, 4000);
+}
+$("jobsBtn").onclick = async () => {
+  try {
+    const r = await api("/api/jobs");
+    $("jobsBox").innerHTML = `<div class="im-card"><h4>Background jobs</h4><p class="status">${r.workers.length ?
+      r.workers.map((w) => `🟢 ${esc(w.worker)} (${Object.entries(w.info || {}).filter(([, v]) => v).map(([k, v]) => v === true ? k : k + " " + v).join(", ")})`).join("<br>") :
+      "⚪ No worker online — see README “Background workers”."}</p>` +
+      (r.jobs.map((j) => `<div style="font-size:13px;margin:4px 0">${esc(j.status)} · ${esc((j.command || "").slice(0, 80))} · ` +
+        `${(j.stats || {}).leads || 0} leads, ${(j.stats || {}).records || 0} contacts <button data-open="${esc(j.id)}" style="padding:2px 8px">open</button>` +
+        (["queued", "running"].includes(j.status) ? ` <button data-cancel="${esc(j.id)}" style="padding:2px 8px">stop</button>` : "") + `</div>`).join("") || "<p class='status'>No jobs yet.</p>") +
+      `<div class="row" style="margin-top:6px"><button id="jobIdx">🧮 Embed the whole search index on a worker</button></div></div>`;
+    $("jobsBox").querySelectorAll("button[data-open]").forEach((b) => b.onclick = () => watchJob(b.dataset.open));
+    $("jobsBox").querySelectorAll("button[data-cancel]").forEach((b) => b.onclick = async () => { await api(`/api/jobs/${b.dataset.cancel}/cancel`, {}); $("jobsBtn").onclick(); });
+    $("jobIdx").onclick = async () => { const x = await api("/api/jobs-index", {}); watchJob(x.job.id); };
+  } catch (e) { $("jobsBox").textContent = "❌ " + e.message; }
+};
 $("nextBtn").onclick = () => startRun(true);
 
 async function startRun(nextRound) {

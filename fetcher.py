@@ -481,6 +481,25 @@ async def _unblock(name: str, keys: dict, proxy_client: Optional[primp.AsyncClie
     return _classify(url, final, status, ctype, body, via)
 
 
+_browser_sem: Optional[asyncio.Semaphore] = None
+
+
+async def _via_browser(url: str) -> Optional[CrawlOutcome]:
+    """Headless Chromium (BROWSER_FETCH=1 on a worker); None when not enabled."""
+    global _browser_sem
+    import browser_fetch
+    if not browser_fetch.enabled():
+        return None
+    if _browser_sem is None:
+        _browser_sem = asyncio.Semaphore(int(os.getenv("BROWSER_CONCURRENCY", "3") or 3))
+    async with _browser_sem:
+        try:
+            status, final, html = await browser_fetch.fetch_html(url)
+        except Exception as exc:
+            return CrawlOutcome(url=url, error=f"browser: {type(exc).__name__}: {str(exc)[:100]}", via="browser")
+    return _classify(url, final, status, "text/html", html, "browser")
+
+
 async def _fetch_one(client: primp.AsyncClient, proxy_client: Optional[primp.AsyncClient],
                      robots: Optional[_Robots], sems: Dict[str, asyncio.Semaphore],
                      url: str, timeout_s: float, unblockers: List[str], keys: dict) -> CrawlOutcome:
@@ -489,8 +508,13 @@ async def _fetch_one(client: primp.AsyncClient, proxy_client: Optional[primp.Asy
     outcome = await _paced_direct(client, sems, url, timeout_s)
     if outcome.ok or (outcome.error or "").startswith(("HTTP 404", "HTTP 410")):
         return outcome
-    # Blocked, walled or failed directly → retry through the configured unblocker services.
+    # Blocked, walled or failed directly → a real headless browser (workers), then the unblocker services.
     errors = [outcome.error or "failed"]
+    browser = await _via_browser(url)
+    if browser is not None:
+        if browser.ok:
+            return browser
+        errors.append(browser.error or "browser failed")
     for name in unblockers[:MAX_UNBLOCK_TRIES]:
         retry = await _unblock(name, keys, proxy_client, url)
         if retry.ok:

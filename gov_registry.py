@@ -314,7 +314,16 @@ def import_file(dataset: str, kind: str, filename: str, data: bytes, source_url:
     rows = portal_import._read_rows(filename, data)
     records, info = rows_to_records(dataset, kind, rows, source_url)
     info["saved"] = save_records(records, replace)
+    _index_dataset(dataset, info)
     return info
+
+
+def _index_dataset(dataset: str, info: dict) -> None:
+    try:
+        import vectors
+        info["indexed"] = vectors.index_gov_dataset(dataset)
+    except Exception as exc:
+        info["index_error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
 
 
 async def import_datagov(api_key: str, resource_id: str, dataset: str, kind: str, max_records: int = 5000,
@@ -351,6 +360,7 @@ async def import_datagov(api_key: str, resource_id: str, dataset: str, kind: str
     records, info = rows_to_records(dataset or title or resource_id, kind, [header] + rows,
                                     f"https://data.gov.in/resource/{resource_id}")
     info["saved"] = await asyncio.to_thread(save_records, records, replace)
+    await asyncio.to_thread(_index_dataset, dataset or title or resource_id, info)
     info["title"] = title
     return info
 
@@ -394,6 +404,23 @@ def _lead_text(L: dict) -> str:
                                      " ".join(L.get("evidence") or []), " ".join(L.get("why") or [])] if x)
 
 
+def _semantic_candidates(L: dict, kind: str) -> List[dict]:
+    """Records the hybrid search index ranks closest to the lead (meaning + words + fuzzy name)."""
+    import asyncio
+    import vectors
+    q = " ".join(str(x) for x in (L.get("display_name"), L.get("origin"), L.get("profession")) if x)
+    try:
+        hits = asyncio.run(vectors.search(q, ["gov"], None, 15))
+    except Exception:
+        return []
+    ids = [int(h["ref"]) for h in hits if str(h["ref"]).isdigit()]
+    if not ids:
+        return []
+    rows = _q("SELECT * FROM gov_records WHERE id = ANY(%s) AND kind = %s", (ids, kind), "all",
+              "Reading matched records")
+    return [dict(r) for r in rows]
+
+
 def _blocking(L: dict, kind: str) -> List[dict]:
     org = kind != "person"
     toks = _rare_tokens(L.get("display_name") or "", org)
@@ -412,11 +439,10 @@ def _blocking(L: dict, kind: str) -> List[dict]:
     if dom:
         conds.append("lower(website) LIKE %s")
         params.append(f"%{dom}%")
-    if not conds:
-        return []
-    rows = _q(f"SELECT * FROM gov_records WHERE kind = %s AND ({' OR '.join(conds)}) LIMIT 400",
-              [kind] + params, "all", "Searching government records")
-    return [dict(r) for r in rows]
+    rows = [dict(r) for r in _q(f"SELECT * FROM gov_records WHERE kind = %s AND ({' OR '.join(conds)}) LIMIT 400",
+                                [kind] + params, "all", "Searching government records")] if conds else []
+    seen = {r["id"] for r in rows}
+    return rows + [r for r in _semantic_candidates(L, kind) if r["id"] not in seen]
 
 
 def _place_score(L: dict, rec: dict) -> Tuple[float, str]:

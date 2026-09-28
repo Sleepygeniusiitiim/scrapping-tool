@@ -1,0 +1,27 @@
+# Worker + local model server on one machine (a VPS with ≥ 8 GB RAM; a GPU makes the model much faster).
+#   cp .env.example .env   (fill DATABASE_URL and your keys)
+#   docker compose -f worker/docker-compose.yml up -d --build        (run from the repository root)
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile
+    env_file: ../.env
+    environment:
+      LOCAL_LLM_URL: http://ollama:11434/v1/chat/completions
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen2.5:3b-instruct}
+      LOCAL_EMBED_MODEL: ${LOCAL_EMBED_MODEL:-nomic-embed-text}
+    depends_on: [ollama]
+    restart: unless-stopped
+    deploy:
+      replicas: ${WORKERS:-1}
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes: [ollama:/root/.ollama]
+    restart: unless-stopped
+    # pulls the bulk-parsing and embedding models on first start
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull ${LOCAL_LLM_MODEL:-qwen2.5:3b-instruct} && ollama pull ${LOCAL_EMBED_MODEL:-nomic-embed-text} && wait"]
+
+volumes:
+  ollama:

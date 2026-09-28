@@ -14,6 +14,7 @@ OpenAI-compatible AI client (OpenRouter, Cerebras, Groq, Mistral, DeepSeek, Kimi
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import logging
 import random
@@ -52,9 +53,13 @@ PROVIDERS = {
     "kimi": {"url": "https://api.moonshot.ai/v1/chat/completions", "label": "Kimi (Moonshot)",
              "model": "kimi-k2-turbo-preview", "fallbacks": ["kimi-latest", "moonshot-v1-32k"],
              "env": "MOONSHOT_API_KEY", "credits": "platform.moonshot.ai/console"},
+    # Self-hosted small model (Ollama / vLLM / llama.cpp server, any OpenAI-compatible endpoint): free bulk parsing.
+    "local": {"url": os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1/chat/completions").strip(),
+              "label": "Local model", "model": os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct").strip(),
+              "fallbacks": [], "env": "LOCAL_LLM_KEY", "credits": "your own server"},
 }
 # Providers whose API takes the older `max_tokens` instead of `max_completion_tokens`.
-_MAX_TOKENS_PROVIDERS = {"mistral", "deepseek", "kimi"}
+_MAX_TOKENS_PROVIDERS = {"mistral", "deepseek", "kimi", "local"}
 APP_URL = "https://scrapping-tool-theta.vercel.app"
 APP_TITLE = "Candidate Sourcing Agent"
 

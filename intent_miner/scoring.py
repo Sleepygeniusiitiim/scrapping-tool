@@ -182,6 +182,11 @@ async def embed(texts: List[str], keys: Dict[str, str]) -> Optional[List[List[fl
     """Embeddings from Mistral (mistral-embed) or Gemini when a key is available; None otherwise."""
     texts = [t[:2000] for t in texts]
     mistral = keys.get("mistral") or os.getenv("MISTRAL_API_KEY", "").strip()
+    local = local_embed(texts)
+    if local:
+        vecs = await local
+        if vecs:
+            return vecs
     try:
         if mistral:
             async with httpx.AsyncClient(timeout=30) as c:
@@ -199,6 +204,29 @@ async def embed(texts: List[str], keys: Dict[str, str]) -> Optional[List[List[fl
     except Exception:
         return None
     return None
+
+
+LOCAL_EMBED_MODEL = os.getenv("LOCAL_EMBED_MODEL", "nomic-embed-text")
+
+
+def local_embed(texts: List[str]):
+    """Coroutine for embeddings from the self-hosted model server, or None when none is configured."""
+    import ai_router
+    url = ai_router.embed_endpoint()
+    if not url:
+        return None
+
+    async def run() -> Optional[List[List[float]]]:
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
+                r = await c.post(url, json={"model": LOCAL_EMBED_MODEL, "input": texts},
+                                 headers={"Authorization": f"Bearer {os.getenv('LOCAL_LLM_KEY', 'local')}"})
+            if r.status_code == 200:
+                return [d["embedding"] for d in r.json()["data"]]
+        except Exception:
+            pass
+        return None
+    return run()
 
 
 def cosine(a: List[float], b: List[float]) -> float:
