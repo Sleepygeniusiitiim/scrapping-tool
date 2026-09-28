@@ -268,3 +268,51 @@ async def for_organization(keys: Dict[str, str], name: str, city: str, page_url:
     if not site:
         return None
     return await crawl(site, respect_robots)
+
+
+_DM_ROLE = re.compile(r"\b(owner|co-?founder|founder|managing director|director|proprietor|partner|principal|"
+                      r"chairman|ceo|md|chief executive|general manager|head)\b", re.IGNORECASE)
+
+
+def _dm_search(keys: Dict[str, str], query: str) -> List[dict]:
+    apis = [a for a in integrations.search_available(keys) if a != "scrapedo"]
+    if apis:
+        hits, _, _ = integrations.web_search(apis[0], keys, query, 10, "in-en")
+        return hits
+    from search_module import search_query
+    return [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in search_query(query, max_results=10).hits]
+
+
+async def decision_makers(keys: Dict[str, str], org_name: str, city: str = "") -> List[dict]:
+    """Owners / directors / founders of one business from search-indexed LinkedIn profiles: a result counts
+    only when its title or snippet names the business and a senior role ("Rajesh Kumar - Owner - Sharma
+    Driving School | LinkedIn")."""
+    toks = _tokens(org_name)
+    if not toks:
+        return []
+    query = (f'site:linkedin.com/in "{org_name}" '
+             "(owner OR founder OR director OR proprietor OR partner OR principal)")
+    try:
+        hits = await asyncio.to_thread(_dm_search, keys, query)
+    except Exception:
+        return []
+    out, seen = [], set()
+    for h in hits:
+        url = (h.get("url") or "").split("?")[0]
+        if not re.match(r"https?://([a-z]{2,3}\.)?linkedin\.com/in/", url):
+            continue
+        title, snippet = h.get("title") or "", h.get("snippet") or ""
+        text = f"{title} {snippet}".lower()
+        if sum(t in text for t in toks) < max(1, (len(toks) + 1) // 2):
+            continue                                      # not about this business
+        role = _DM_ROLE.search(f"{title} {snippet}")
+        if not role:
+            continue
+        name = re.split(r"\s[-–|]\s", title)[0].strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z.' ]{2,50}", name) or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        out.append({"name": name, "role": role.group(1).title(), "linkedin": url, "source": "linkedin search"})
+        if len(out) == 3:
+            break
+    return out

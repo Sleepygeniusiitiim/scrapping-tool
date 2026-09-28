@@ -24,6 +24,7 @@ from .classify import classify
 from .models import QuerySpec, RawDocument, Unit
 from .providers.base import SOURCE_QUALITY, source_of
 from .providers.instagram import InstagramProvider, post_code
+from .providers.maps import MapsProvider
 from .providers.reddit import RedditProvider
 from .providers.youtube import YouTubeProvider
 from .providers.web import QuoraProvider, RssProvider, SearchProvider, WebProvider, snippet_doc
@@ -44,6 +45,7 @@ def providers(keys: Dict[str, str], settings: dict) -> Dict[str, object]:
         "web": WebProvider(keys, settings.get("respect_robots", True), settings.get("timeout", 15)),
         "rss": RssProvider(keys, settings.get("feeds", [])),
         "instagram": InstagramProvider(keys, settings.get("respect_robots", True)),
+        "maps": MapsProvider(keys),
     }
 
 
@@ -68,6 +70,13 @@ async def discover(spec: QuerySpec, source: str, query: str, keys: Dict[str, str
                 hits = await provs["search"].search(f"site:reddit.com {query}", spec, limit)
         elif source == "youtube":
             hits = await provs["youtube"].search(query, spec, limit)
+        elif source == "maps":
+            try:
+                hits = await provs["maps"].search(query, spec, limit)
+            except RuntimeError as exc:
+                # No Maps key / API down → web search for the same businesses (their sites and listings).
+                error = str(exc)
+                hits = await provs["search"].search(f"{query} contact number", spec, limit)
         elif source == "rss":
             hits = await provs["rss"].search(query, spec, limit)
         else:
@@ -82,9 +91,9 @@ async def discover(spec: QuerySpec, source: str, query: str, keys: Dict[str, str
         url = canonicalize_url(h.get("url") or "")
         if not url:
             continue
-        item = {"url": url, "title": h.get("title", ""), "snippet": h.get("snippet", ""),
-                "date": h.get("date"), "source": source_of(url)}
         doc = h.get("doc")
+        item = {"url": url, "title": h.get("title", ""), "snippet": h.get("snippet", ""),
+                "date": h.get("date"), "source": doc.source if isinstance(doc, RawDocument) else source_of(url)}
         if isinstance(doc, RawDocument):     # API / feed already returned the content — send it along
             item["doc"] = _doc_to_json(doc)
         out.append(item)
@@ -93,13 +102,14 @@ async def discover(spec: QuerySpec, source: str, query: str, keys: Dict[str, str
 
 def _doc_to_json(d: RawDocument) -> dict:
     return {"url": d.url, "source": d.source, "title": d.title, "date": d.date, "via": d.via,
-            "units": [u.__dict__ for u in d.units]}
+            "units": [u.__dict__ for u in d.units], "metadata": dict(d.metadata)}
 
 
 def _doc_from_json(j: dict) -> RawDocument:
     d = RawDocument(url=j["url"], source=j.get("source", "rss"), title=j.get("title", ""), date=j.get("date"),
                     via=j.get("via", "api"))
     d.units = [Unit(**u) for u in j.get("units", [])]
+    d.metadata = {str(k): str(v) for k, v in (j.get("metadata") or {}).items()}
     return d
 
 
@@ -328,6 +338,9 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             "sources": [{"url": d.url, "source": d.source, "kind": u.kind, "date": u.date or d.date,
                          "score": score, "evidence": evidence[0] if evidence else ""}],
         }
+        if orgs:
+            lead["website"] = d.metadata.get("website") or None
+            lead["origin"] = lead["origin"] or d.metadata.get("city") or None
         leads.append(lead)
         events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, key))
         if settings.get("save_to_candidates", True):
@@ -405,7 +418,9 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             "failed": [{"url": d.url, "status": d.status, "error": d.error} for d in docs if d.status != "ok"]}
 
 
-MAX_COMPANY_CRAWLS_PER_BATCH = 5
+MAX_COMPANY_CRAWLS_PER_BATCH = 6
+MAX_MAPS_LOOKUPS_PER_BATCH = 6
+MAX_OWNER_SEARCHES_PER_BATCH = 4
 _gov_count = {"n": None, "at": 0.0}
 
 
@@ -437,23 +452,45 @@ async def _gov_match(ai, leads: List[dict], candidates: List[CandidateRecord], c
 
 async def _company_contacts(leads: List[dict], candidates: List[CandidateRecord], cand_lead: Dict[str, dict],
                             keys: Dict[str, str], settings: dict, stats: dict, warnings: List[str]) -> None:
-    """For organization leads: find their own site and collect the contacts it publishes."""
+    """For organization leads:
+        1. no phone yet (found on a directory / website) → its Google Maps listing (phone, website)
+        2. its own website → published phones / emails / WhatsApp, and people named with their role
+        3. owners / directors / founders → LinkedIn profiles found by search (name + title)"""
     import company_contacts
     from schema import clean_email, clean_phone
-    todo = [L for L in leads if L.get("display_name")][:MAX_COMPANY_CRAWLS_PER_BATCH]
-    page_of = {L["lead_key"]: (L.get("sources") or [{}])[0].get("url", "") for L in todo}
+    from .providers import maps
+    named = [L for L in leads if L.get("display_name")]
+    cand_of = {id(L): c for c, L in ((c, cand_lead.get(c.source_url)) for c in candidates) if L is not None}
+    before = {id(L): (L.get("email"), L.get("phone")) for L in named}
+
+    # 1. Maps listing for businesses that came without a phone
+    need = [L for L in named if not L.get("phone") and L.get("platform") != "maps"][:MAX_MAPS_LOOKUPS_PER_BATCH]
+    if need and maps.available(keys):
+        res = await asyncio.gather(*(maps.lookup(keys, L["display_name"], L.get("origin") or "") for L in need),
+                                   return_exceptions=True)
+        got = 0
+        for L, p in zip(need, res):
+            if isinstance(p, dict):
+                L["phone"] = L.get("phone") or clean_phone(p.get("phone"))
+                L["website"] = L.get("website") or p.get("website") or None
+                L["why"] = L.get("why", []) + [f"✓ Google Maps listing: {p['name']}, {p.get('address') or ''}"]
+                got += bool(p.get("phone"))
+        stats["maps_lookups"] = len(need)
+        warnings.append(f"Google Maps: looked up {len(need)} businesses found without a phone → {got} phones")
+
+    # 2. own website
+    todo = sorted(named, key=lambda L: (bool(L.get("email")), not L.get("website")))[:MAX_COMPANY_CRAWLS_PER_BATCH]
+    page_of = {L["lead_key"]: L.get("website") or (L.get("sources") or [{}])[0].get("url", "") for L in todo}
     results = await asyncio.gather(*(company_contacts.for_organization(
         keys, L["display_name"], L.get("origin") or "", page_of[L["lead_key"]], settings.get("respect_robots", True))
         for L in todo), return_exceptions=True)
-    cand_of = {id(L): c for c, L in ((c, cand_lead.get(c.source_url)) for c in candidates) if L is not None}
-    found = sites = 0
+    sites = 0
     for L, res in zip(todo, results):
         if isinstance(res, Exception) or not res:
             continue
         sites += 1
         L["website"] = res["website"]
         good = [e["email"] for e in res["emails"] if e["domain_accepts_mail"] is not False]
-        before = (L.get("email"), L.get("phone"))
         L["email"] = L.get("email") or (clean_email(good[0]) if good else None)
         L["phone"] = L.get("phone") or (clean_phone(res["phones"][0]) if res["phones"] else
                                         clean_phone(res["whatsapp"][0]) if res["whatsapp"] else None)
@@ -465,17 +502,37 @@ async def _company_contacts(leads: List[dict], candidates: List[CandidateRecord]
         if good:
             why.append(f"✓ {len(good)} published email(s); domain accepts mail")
         L["why"] = L.get("why", []) + why
-        if (L.get("email"), L.get("phone")) != before:
-            found += 1
+
+    # 3. decision makers on LinkedIn (owner / director / founder …) for leads whose site named nobody senior
+    senior = re.compile(r"owner|founder|director|proprietor|partner|principal|chairman|ceo|md\b", re.I)
+    who = [L for L in named if not any(senior.search(p.get("role", "")) for p in
+                                       ((L.get("org_contacts") or {}).get("people") or []))]
+    who = who[:MAX_OWNER_SEARCHES_PER_BATCH]
+    owners = 0
+    if who and settings.get("owner_search", True):
+        found = await asyncio.gather(*(company_contacts.decision_makers(keys, L["display_name"], L.get("origin") or "")
+                                       for L in who), return_exceptions=True)
+        for L, people in zip(who, found):
+            if isinstance(people, list) and people:
+                oc = L.get("org_contacts") or {"emails": [], "phones": [], "whatsapp": [], "social": [], "people": []}
+                oc["people"] = people + list(oc.get("people") or [])
+                L["org_contacts"] = oc
+                L["why"] = L.get("why", []) + ["✓ Decision makers (LinkedIn): " +
+                                               ", ".join(f"{p['name']} ({p['role']})" for p in people[:3])]
+                owners += 1
+    found_new = 0
+    for L in named:
+        if (L.get("email"), L.get("phone")) != before[id(L)]:
+            found_new += 1
             c = cand_of.get(id(L))
             if c is not None:
                 c.email, c.phone = c.email or L["email"], c.phone or L["phone"]
                 c.contact_source = c.contact_source or "company_website"
     stats["company_sites"] = sites
-    stats["company_contacts"] = found
-    if todo:
-        warnings.append(f"Company websites: {len(todo)} organizations → {sites} own sites read → "
-                        f"{found} got a new phone / email")
+    stats["company_contacts"] = found_new
+    stats["decision_makers"] = owners
+    warnings.append(f"Businesses: {len(todo)} websites tried → {sites} read, {owners} with owners / directors "
+                    f"found on LinkedIn, {found_new} got a new phone / email")
 
 
 def _person_keys(c: CandidateRecord) -> set:
@@ -515,6 +572,11 @@ def _merge_classic(im_cands: List[CandidateRecord], classic: List[CandidateRecor
 def _site_name(d: RawDocument) -> Optional[str]:
     """Organization name from a page title: 'ABC Driving School - Ludhiana | Justdial' → 'ABC Driving School'."""
     head = re.split(r"\s[-–|:]\s|\s\|", d.title or "")[0].strip()
+    # a directory / search listing ("Top 50 Driving Schools in Ludhiana") is not one business
+    if re.match(r"(?:top|best|list of|\d+\+?|popular|famous|all)\b", head, re.I) or \
+            re.search(r"\bnear me\b|\b(?:schools|centres|centers|institutes|academies|companies|dealers|"
+                      r"services|agencies|trainers)\s+(?:in|near|at)\b", head, re.I):
+        return None
     return head[:120] or None
 
 

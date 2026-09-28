@@ -174,6 +174,11 @@
       <label><input type="checkbox" value="youtube" checked>YouTube comments</label>
       <label><input type="checkbox" value="blogs" checked>Blogs</label>
       <label><input type="checkbox" value="rss">RSS feeds</label>
+      <label title="Local businesses with phone number, website and address (needs a Serper / SerpApi key or GOOGLE_PLACES_API_KEY)"><input type="checkbox" value="maps">Google Maps listings</label>
+      <label title="JustDial, IndiaMART, Sulekha, OLX … (read through your unblocker keys; untick Respect robots.txt)"><input type="checkbox" value="directories">Business directories</label>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <label><input id="autoSources" type="checkbox" checked>🤖 Let the AI choose the best sources for each command (ignores the ticks above)</label>
     </div>
     <div class="row" style="margin-top:6px">
       <label for="searchMode" style="margin:0">Search mode</label>
@@ -660,6 +665,7 @@ const INTEGRATIONS = [
   ["hunter", "Hunter.io API key", "hunter.io → API → key (email finder by name + company domain, and verification)", "Lead databases (phone / email lookup)"],
   ["zerobounce", "ZeroBounce API key", "zerobounce.net → API (used when SMTP checks are not possible from the server)", "Email verification"],
   ["neverbounce", "NeverBounce API key", "neverbounce.com → Apps → API (used when SMTP checks are not possible)", "Email verification"],
+  ["google_places", "Google Places API key (optional)", "console.cloud.google.com → enable Places API (New) → Credentials. Serper / SerpApi keys also give Maps listings", "Google Maps business listings"],
   ["youtube", "YouTube Data API key", "console.cloud.google.com → enable YouTube Data API v3 → Credentials → API key", "YouTube (comments on job videos)"],
   ["reddit_client_id", "Reddit app client id", "reddit.com/prefs/apps → create app (script) → id under the name", "Reddit API (Intent Miner)"],
   ["reddit_client_secret", "Reddit app secret", "reddit.com/prefs/apps → secret", "Reddit API (Intent Miner)"],
@@ -780,7 +786,8 @@ $("impBtn").onclick = async () => {
 const im = { stop: false, runId: "", leads: new Map() };
 function imLog(msg) { logEv("info", msg); }
 const SOURCE_LABEL = { search: "Search engines", reddit: "Reddit", quora: "Quora", forums: "Forums & websites",
-  linkedin: "LinkedIn", facebook: "Facebook", rss: "RSS feeds", youtube: "YouTube", blogs: "Blogs", instagram: "Instagram" };
+  linkedin: "LinkedIn", facebook: "Facebook", rss: "RSS feeds", youtube: "YouTube", blogs: "Blogs", instagram: "Instagram",
+  maps: "Google Maps", directories: "Directories" };
 function imSettings(main, intent, planQueries) {
   const m = main || {};
   return { backend: $("backend").value, region: $("region").value, max_results: num("maxRes") || 20,
@@ -806,6 +813,9 @@ function imRenderSpec(spec) {
     <p><b>Origin:</b> ${li(spec.origin)} &nbsp; <b>Destination:</b> ${li(spec.destination)}</p>
     <p><b>High-intent terms:</b> ${li(spec.high_intent_terms)}</p>
     <p><b>Negative terms:</b> ${li(spec.negative_terms)} &nbsp; <b>Subreddits:</b> ${li(spec.subreddits)}</p>
+    ${(spec.source_plan || []).length ? `<p><b>Best sources for this command:</b></p><ul class="im-why">${spec.source_plan.map((c) =>
+      `<li${c.weight < 50 ? ' style="opacity:.55"' : ""}><b>${esc(SOURCE_LABEL[c.source] || c.source)}</b> ${c.weight} — ${esc(c.reason)}</li>`).join("")}</ul>` : ""}
+    ${(spec.places || []).length ? `<p><b>Places searched one by one:</b> ${li(spec.places)}</p>` : ""}
     <details><summary>${(spec.queries || []).length} generated searches</summary>${Object.entries(bySrc).map(([k, v]) =>
       `<p><b>${esc(k)}</b><br>${v.map(esc).join("<br>")}</p>`).join("")}</details></div>`;
 }
@@ -831,8 +841,9 @@ function imRenderLeads() {
         ${L.website ? `<div><b>Website</b> <a href="${esc(L.website)}" target="_blank" rel="noopener noreferrer">${esc(L.website.replace(/^https?:\/\//, ""))}</a></div>` : ""}
       </div>
       ${L.org_contacts && ((L.org_contacts.people || []).length || (L.org_contacts.phones || []).length > 1) ?
-        `<p class="status" style="margin:6px 0 0">${(L.org_contacts.people || []).slice(0, 4).map((p) => esc(p.name + " (" + p.role + ")" +
-          (p.email ? " " + p.email : p.email_guess ? " — guessed: " + p.email_guess.email + " (" + p.email_guess.confidence + ")" : ""))).join(" · ")}` +
+        `<p class="status" style="margin:6px 0 0">${(L.org_contacts.people || []).slice(0, 5).map((p) => esc(p.name + " (" + p.role + ")" +
+          (p.email ? " " + p.email : p.email_guess ? " — guessed: " + p.email_guess.email + " (" + p.email_guess.confidence + ")" : "")) +
+          (p.linkedin ? ` <a href="${esc(p.linkedin)}" target="_blank" rel="noopener noreferrer">LinkedIn ↗</a>` : "")).join(" · ")}` +
         `${(L.org_contacts.phones || []).length ? " · Phones: " + esc(L.org_contacts.phones.join(", ")) : ""}` +
         `${(L.org_contacts.whatsapp || []).length ? " · WhatsApp: " + esc(L.org_contacts.whatsapp.join(", ")) : ""}</p>` : ""}
       ${L.gov_match ? `<p class="status" style="margin:6px 0 0">🏛️ ${L.gov_match.status === "matched" ? "Government record" : "Possible government record (check)"}:
@@ -857,15 +868,19 @@ function imRenderLeads() {
 // on the same pages. Progress goes to the main run log / wave table; records to "This run"; leads to the cards.
 async function runCombined(intent, totals, rounds, mode) {
   const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
-  if (!sources.length) throw new Error("Tick at least one source.");
+  const auto = $("autoSources").checked;
+  if (!sources.length && !auto) throw new Error("Tick at least one source.");
   const months = Number($("maxAge").value);
   const numQueries = Math.max(4, Math.min(60, num("numWaves") * num("qpw")));
   const roundNo = rounds.round + 1;
   logEv("info", roundNo > 1 ? `Round ${roundNo}: understanding the command again, avoiding ${rounds.queries.length} queries already used…`
                             : "Understanding the command and planning searches…");
   const u = await api("/api/im/understand", { command: intent, sources, max_age_days: months ? Math.round(months * 30.5) : null,
-    num_queries: numQueries, exclude_queries: rounds.queries });
+    num_queries: numQueries, exclude_queries: rounds.queries, auto_sources: auto });
   const spec = u.spec;
+  if (auto) logEv("plan", "AI source plan: " + (spec.source_plan || []).filter((c) => c.weight >= 50).slice(0, 6)
+    .map((c) => `${SOURCE_LABEL[c.source] || c.source} ${c.weight} (${c.reason})`).join(" · ") +
+    ((spec.places || []).length ? ` · ${spec.places.length} places: ${spec.places.slice(0, 12).join(", ")}${spec.places.length > 12 ? "…" : ""}` : ""));
   im.runId = u.run_id; im.leads.clear(); imRenderLeads(); imRenderSpec(spec); $("imSpec").dataset.spec = JSON.stringify(spec);
   (u.warnings || []).forEach((w) => logEv("warning", w));
   saveRounds(intent, { round: roundNo, queries: rounds.queries.concat(spec.queries.map((q) => q.query)) });
@@ -913,7 +928,9 @@ async function runCombined(intent, totals, rounds, mode) {
     let fresh = urls;
     try { fresh = settings.reprocess ? urls : (await api("/api/dedup", { urls })).fresh; } catch (_) {}
     stats.duplicates = urls.length - fresh.length;
-    fresh = fresh.slice(0, maxUrls); stats.fresh = fresh.length; renderStats();
+    // Maps listings arrive complete (no page to read), so they are not limited like crawled pages
+    fresh = fresh.slice(0, src === "maps" ? Math.max(maxUrls, 400) : src === "directories" ? Math.max(maxUrls, 60) : maxUrls);
+    stats.fresh = fresh.length; renderStats();
     logEv("dedup", `${urls.length} URLs found → ${stats.duplicates} already read before → ${fresh.length} to read`, name);
     for (let b = 0; b < fresh.length && !state.stop; b += batch) {
       const items = fresh.slice(b, b + batch).map((x) => hits.get(x));

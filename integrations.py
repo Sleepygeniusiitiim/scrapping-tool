@@ -43,6 +43,7 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
     "hunter": ("HUNTER_API_KEY", "Hunter.io (email finder by name + company domain; also verifies)", "enrich"),
     "zerobounce": ("ZEROBOUNCE_API_KEY", "ZeroBounce (email verification)", "verify"),
     "neverbounce": ("NEVERBOUNCE_API_KEY", "NeverBounce (email verification)", "verify"),
+    "google_places": ("GOOGLE_PLACES_API_KEY", "Google Places API key (Maps listings)", "source"),
     "youtube": ("YOUTUBE_API_KEY", "YouTube Data API key", "source"),
     "reddit_client_id": ("REDDIT_CLIENT_ID", "Reddit API app client id", "source"),
     "reddit_client_secret": ("REDDIT_CLIENT_SECRET", "Reddit API app secret", "source"),

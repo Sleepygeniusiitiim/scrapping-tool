@@ -170,6 +170,29 @@ gave leads or have several posts / comments — with the current intent and sett
 hash has not changed are skipped without any AI cost; changed pages are scored again, so new comments
 become new leads while existing people are merged, not duplicated.
 
+## AI source planner, Google Maps listings and business directories
+
+With **🤖 Let the AI choose the best sources** ticked (default), the understanding step also ranks every source
+for the command (`intent_miner/planner.py`, shown under "Best sources for this command") and runs the top ones:
+
+* businesses / institutes / owners ("truck driving schools in North India") → **Google Maps listings** (name,
+  phone, website, address of every place), **business directories** (JustDial, IndiaMART, Sulekha, OLX), the
+  businesses' own websites, LinkedIn for owners / directors;
+* individuals showing intent (job seekers) → comment sections (Facebook, LinkedIn, YouTube, blogs), forums,
+  Reddit, Quora.
+
+Regions are expanded into cities ("North India" → ~40 cities in Delhi, Punjab, Haryana, UP, Uttarakhand, HP,
+J&K, Rajasthan) and Maps / directories are searched city by city.
+
+**Google Maps** needs one of: a Serper key, a SerpApi key (both already used for Google search) or
+`GOOGLE_PLACES_API_KEY`. Without one, the same searches go to web search instead. **Directories** are read
+through your unblocker keys; JustDial / IndiaMART usually hide phone numbers behind a login, so the business
+names found there are looked up on Maps for their phone.
+
+For every business lead: Maps lookup (when it came without a phone) → its own website (phones, emails,
+WhatsApp, people named with their role) → **decision makers** from search-indexed LinkedIn profiles
+("Name - Owner - Business") → government-list match.
+
 ## Analysing specific posts (paste links)
 
 🧠 panel → **🔗 Analyse specific posts / pages**: paste Instagram / Facebook / YouTube / Reddit / blog / forum links and

@@ -522,6 +522,7 @@ class IMUnderstandIn(BaseModel):
     max_age_days: Optional[int] = Field(None, ge=1, le=3650)
     num_queries: int = Field(16, ge=4, le=60)
     exclude_queries: List[str] = Field(default_factory=list, max_length=500)
+    auto_sources: bool = False
 
 
 class IMDiscoverIn(BaseModel):
@@ -574,7 +575,7 @@ async def im_understand_ep(body: IMUnderstandIn, gemini=Depends(_gemini)):
     _db()
     try:
         spec = await im_understand(gemini, body.command, body.sources, body.max_age_days, body.num_queries,
-                                   body.exclude_queries)
+                                   body.exclude_queries, body.auto_sources)
     except GeminiError as exc:
         raise HTTPException(502, f"Understanding the command failed: {exc}")
     run_id = await run_in_threadpool(_im_db, im_store.create_run, body.command, spec.model_dump())

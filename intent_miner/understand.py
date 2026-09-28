@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
+from . import planner
 from .models import INTENT_TYPES, QuerySpec, SourcedQuery, concrete_places
 
 SYSTEM = f"""You turn a recruiter's / sales person's natural-language command into a structured search plan
@@ -54,14 +55,30 @@ Return JSON with:
   "courses", "owner", "director", "founder"); queries target business directories and listings
   (justdial.com, indiamart.com, sulekha.com, tradeindia.com, yellow pages, Google-indexed business sites,
   "contact us" pages, LinkedIn company / founder posts) in the places named.
-"""
+- source_plan: rank EVERY source id of the catalog below by how likely it gives what the user wants for THIS
+  command (weight 0-100, one-line reason naming what it yields, e.g. "phone numbers of each driving school").
+  Businesses in named places → Google Maps listings and directories first; individuals showing intent →
+  comment sections (Facebook / LinkedIn / YouTube / blogs) and forums first.
+- places: when the command names a region ("North India", "Punjab", "Gulf"), list its main cities / districts
+  (up to 25) to search one by one; for named cities, those cities.
+  Query sources may also be "maps" (plain "<business type> in <city>", no site:) and "directories"
+  (site:justdial.com / site:indiamart.com / site:sulekha.com / site:olx.in + business type + city).
+
+SOURCE CATALOG
+""" + planner.catalog_text()
 
 
 def prompt(command: str, sources: List[str], max_age_days: Optional[int], num_queries: int = 16,
-           exclude: Optional[List[str]] = None) -> str:
-    lines = [f"Command: {command.strip()}", "",
-             f"Sources the user enabled: {', '.join(sources) or 'all'} — only generate queries for these.",
-             f"Generate about {num_queries} queries in total, spread across those sources."]
+           exclude: Optional[List[str]] = None, auto: bool = False) -> str:
+    lines = [f"Command: {command.strip()}", ""]
+    if auto:
+        lines += ["The user lets you choose the sources: rank them in source_plan and generate queries for the "
+                  "best ones (weight 50+).",
+                  f"Generate about {num_queries} queries in total, most of them for the top-ranked sources."]
+    else:
+        lines += [f"Sources the user enabled: {', '.join(sources) or 'all'} — only generate queries for these "
+                  "(still rank all sources in source_plan).",
+                  f"Generate about {num_queries} queries in total, spread across those sources."]
     if max_age_days:
         lines.append(f"The user wants discussions from the last {max_age_days} days.")
     if exclude:
@@ -72,8 +89,9 @@ def prompt(command: str, sources: List[str], max_age_days: Optional[int], num_qu
 
 
 async def understand(ai, command: str, sources: List[str], max_age_days: Optional[int], num_queries: int = 16,
-                     exclude: Optional[List[str]] = None) -> QuerySpec:
-    spec = await ai.generate_structured(prompt(command, sources, max_age_days, num_queries, exclude), QuerySpec,
+                     exclude: Optional[List[str]] = None, auto_sources: bool = False) -> QuerySpec:
+    spec = await ai.generate_structured(prompt(command, sources, max_age_days, num_queries, exclude, auto_sources),
+                                        QuerySpec,
                                         system_instruction=SYSTEM, temperature=0.4, thinking_budget=512,
                                         max_retries=3)
     if max_age_days:
@@ -83,12 +101,11 @@ async def understand(ai, command: str, sources: List[str], max_age_days: Optiona
     spec.destination, spec.origin = concrete_places(spec.destination), concrete_places(spec.origin)
     if vague:
         spec.high_intent_terms = list(dict.fromkeys(spec.high_intent_terms + ["abroad", "overseas", "foreign"]))
-    allowed = set(sources or [])
+    allowed = set() if auto_sources else set(sources or [])
     seen, queries = set(), []
     for q in spec.queries:
         src = q.source.strip().lower()
-        src = src if src in ("search", "reddit", "quora", "forums", "linkedin", "facebook", "youtube", "blogs") \
-            else "search"
+        src = src if src in planner.CATALOG else "search"
         if allowed and src not in allowed:
             continue
         text = re.sub(r"\s+", " ", q.query).strip()
@@ -96,6 +113,8 @@ async def understand(ai, command: str, sources: List[str], max_age_days: Optiona
             seen.add(text.lower())
             queries.append(SourcedQuery(source=src, query=text))
     done = {q.strip().lower() for q in exclude or []}
-    spec.queries = [q for q in queries if q.query.lower() not in done][:max(num_queries, 4) + 4]
+    spec.queries = [q for q in queries if q.query.lower() not in done]
+    spec = planner.finalize(spec, command, auto_sources, sources, num_queries)
+    spec.queries = [q for q in spec.queries if q.query.lower() not in done]
     spec.subreddits = [re.sub(r"^/?r/", "", s).strip("/ ") for s in spec.subreddits][:8]
     return spec

@@ -87,6 +87,9 @@ class BaseProvider(ABC):
         ...
 
 
+DIRECTORY_HOSTS = ("justdial.com", "indiamart.com", "sulekha.com", "tradeindia.com", "exportersindia.com",
+                   "yellowpages.in", "olx.in", "quikr.com", "asklaila.com", "grotal.com", "yelu.in", "infoisinfo.co.in",
+                   "joonsquare.com", "magicpin.in", "urbanpro.com")
 BLOG_HOSTS = ("medium.com", "blogspot.com", "blogger.com", "wordpress.com", "substack.com", "tumblr.com",
               "hashnode.dev", "hashnode.com", "dev.to", "wixsite.com", "weebly.com", "ghost.io", "livejournal.com",
               "quora.com/spaces")
@@ -106,6 +109,11 @@ def source_of(url: str) -> str:
         return "facebook"
     if host.endswith("instagram.com"):
         return "instagram"
+    if (host.startswith(("maps.google.", "www.google.", "google.")) and path.startswith("/maps")) or \
+            host.startswith("maps.google."):
+        return "maps"
+    if any(host == d or host.endswith("." + d) for d in DIRECTORY_HOSTS):
+        return "directories"
     if host.endswith("youtube.com") or host == "youtu.be":
         return "youtube"
     if any(host == b or host.endswith("." + b) for b in BLOG_HOSTS):
@@ -119,6 +127,6 @@ def source_of(url: str) -> str:
 
 # Configurable reliability signal of each source type, used in ranking (not a judgement of the people).
 SOURCE_QUALITY = {
-    "forums": 85, "reddit": 80, "quora": 70, "linkedin": 75, "facebook": 65, "rss": 70, "youtube": 75, "blogs": 65, "instagram": 65,
+    "forums": 85, "reddit": 80, "quora": 70, "linkedin": 75, "facebook": 65, "rss": 70, "youtube": 75, "blogs": 65, "instagram": 65, "maps": 90, "directories": 75,
     "portal": 75, "blog": 55, "web": 35, "snippet": 25,
 }

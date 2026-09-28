@@ -18,7 +18,8 @@ INTENT_TYPES = (
     "investment", "travel", "education", "immigration", "relocation", "complaint", "comparison",
     "price_inquiry", "informational", "irrelevant",
 )
-SOURCES = ("search", "reddit", "quora", "forums", "rss", "linkedin", "facebook", "youtube", "blogs")
+SOURCES = ("search", "reddit", "quora", "forums", "rss", "linkedin", "facebook", "youtube", "blogs", "maps",
+           "directories")
 
 
 _VAGUE_PLACE = re.compile(r"abroad|overseas|international|unspecified|any ?where|any country|worldwide|global|"
@@ -51,6 +52,12 @@ class SourcedQuery(BaseModel):
     query: str
 
 
+class SourceChoice(BaseModel):
+    source: str = Field(..., description="One of the source ids in the catalog")
+    weight: int = Field(50, ge=0, le=100, description="How good this source is for THIS command (0-100)")
+    reason: str = Field("", description="One short sentence: why / what it gives (e.g. phone numbers)")
+
+
 class QuerySpec(BaseModel):
     summary: str = Field("", description="One sentence restating what is being looked for")
     target: str = Field("people", description="people (individuals showing intent) | organizations (businesses, "
@@ -67,9 +74,13 @@ class QuerySpec(BaseModel):
     max_age_days: Optional[int] = Field(None, description="How recent the discussions must be")
     subreddits: List[str] = Field(default_factory=list, description="Relevant subreddit names, no r/")
     queries: List[SourcedQuery] = Field(default_factory=list)
+    source_plan: List[SourceChoice] = Field(default_factory=list,
+                                            description="Sources ranked by how likely they give the wanted contacts")
+    places: List[str] = Field(default_factory=list, description="Concrete cities / districts to search, when the "
+                                                                "command names a region (e.g. North India)")
 
     @field_validator("professions", "origin", "destination", "high_intent_terms", "negative_terms",
-                     "languages", "subreddits", mode="before")
+                     "languages", "subreddits", "places", mode="before")
     @classmethod
     def _lists(cls, v):
         return _clean(v)
