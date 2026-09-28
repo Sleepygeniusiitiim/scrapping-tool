@@ -136,6 +136,9 @@ class WebProvider(BaseProvider):
             return doc
         comments = social_comments(markdown.split("## Page text", 1)[-1])
         if sum(1 for c in comments if c.kind == "comment") >= 2:
+            from profile_visit import profile_url_for
+            for c in comments:                  # their own profile page (visited later, before any lookup)
+                c.author_url = c.author_url or profile_url_for(url, c.author, None)
             doc.units += comments
             return doc
         # No structured thread: split the page text into blocks; each block keeps the nearest stated name.

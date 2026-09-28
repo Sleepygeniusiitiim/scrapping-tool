@@ -423,43 +423,79 @@ MAX_ENRICH_PER_BATCH = 10
 
 
 def _identifiable(r: CandidateRecord) -> bool:
-    """Lead databases find people by LinkedIn profile, or by a real full name (then a LinkedIn search).
-    Handles like 'shrikantsingh640' or 'soulpsychic_tarot' cannot be looked up."""
-    if r.profile_url and "linkedin.com/in/" in r.profile_url:
-        return True
-    words = re.findall(r"[A-Za-z]{2,}", r.name or "")
-    return len(words) >= 2 and not re.search(r"[_\d@]", r.name or "")
+    """Lead databases need to know exactly who the person is: their LinkedIn profile."""
+    return bool(r.profile_url and "linkedin.com/in/" in r.profile_url)
 
 
-async def _enrich_records(records: List[CandidateRecord], keys: dict, require_both: bool) -> tuple[int, List[str]]:
-    """Look up missing phone / email in the lead databases for every interested lead. With require_both,
-    a looked-up contact is kept only when the lead then has BOTH a phone number and an email.
-    Returns (leads filled, log notes) — the first note always says what happened."""
+async def _visit_profiles(records: List[CandidateRecord], respect_robots: bool) -> dict:
+    """Open each interested commenter's own public profile (Instagram, X, forum profile, …) to get their real
+    name, a LinkedIn link from their bio, and any phone / email they published there."""
+    import profile_visit
+    targets = {r.profile_url: r for r in records
+               if r.profile_url and "linkedin.com/in/" not in r.profile_url and "reddit.com/user/" not in r.profile_url}
+    if not targets:
+        return {"visited": 0}
+    found = await profile_visit.visit(list(targets), respect_robots=respect_robots)
+    stats = {"visited": len(targets), "named": 0, "linkedin": 0, "contacts": 0, "walled": 0}
+    for url, r in targets.items():
+        p = found.get(url) or {}
+        if p.get("status") != "ok":
+            stats["walled"] += 1
+            continue
+        if p.get("name") and (not r.name or re.search(r"[_\d.]", r.name) or len(r.name.split()) < 2):
+            r.name = p["name"]
+            stats["named"] += 1
+        if p.get("linkedin"):
+            r.profile_url = p["linkedin"]
+            stats["linkedin"] += 1
+        email = next(iter(p.get("emails") or []), None)
+        phone = next(iter(p.get("phones") or []), None)
+        if (email and not r.email) or (phone and not r.phone):
+            r.email, r.phone = r.email or clean_email(email), r.phone or clean_phone(phone)
+            r.contact_source = r.contact_source or "profile_page"
+            stats["contacts"] += 1
+    return stats
+
+
+async def _enrich_records(records: List[CandidateRecord], keys: dict, require_both: bool,
+                          respect_robots: bool = True) -> tuple[int, List[str]]:
+    """For every interested lead missing a phone / email: open their own profile first (real name, LinkedIn
+    link, published contact), then look the LinkedIn-identified ones up in the lead databases. With
+    require_both, a looked-up contact is kept only when the lead then has BOTH a phone and an email.
+    Returns (leads filled, log notes) — the first notes say what happened."""
     wanting = [r for r in records if r.shows_interest and not (r.phone and r.email)]
     if not wanting:
         return 0, []
+    notes_out: List[str] = []
+    pv = await _visit_profiles(wanting[:MAX_ENRICH_PER_BATCH * 2], respect_robots)
+    if pv.get("visited"):
+        notes_out.append(f"Profiles: opened {pv['visited']} commenters' own profiles → {pv['named']} real names, "
+                         f"{pv['linkedin']} LinkedIn links, {pv['contacts']} published contacts"
+                         + (f" ({pv['walled']} behind a login wall / blocked)" if pv["walled"] else ""))
+    wanting = [r for r in wanting if not (r.phone and r.email)]
+    if not wanting:
+        return 0, notes_out
     if not integrations.summary(keys)["enrich"]:
-        return 0, [f"Lead databases: {len(wanting)} interested leads are missing a phone / email, but no Apollo / "
-                   "Lusha / ContactOut / RocketReach key is set."]
+        return 0, notes_out + [f"Lead databases: {len(wanting)} interested leads still miss a phone / email, but no "
+                               "Apollo / Lusha / ContactOut / RocketReach key is set."]
     todo = [r for r in wanting if _identifiable(r)][:MAX_ENRICH_PER_BATCH]
-    no_identity = len([r for r in wanting if not _identifiable(r)])
+    no_identity = len(wanting) - len([r for r in wanting if _identifiable(r)])
     if not todo:
-        return 0, [f"Lead databases: {len(wanting)} interested leads missing contacts, but none has a LinkedIn "
-                   "profile or a real full name (only handles like 'user123'), so they cannot be looked up."]
+        return 0, notes_out + [f"Lead databases: {len(wanting)} interested leads miss contacts, but none has a "
+                               "LinkedIn profile (their own profile page did not link one), so they were not looked "
+                               "up — no credits spent."]
     stopped: set = set()
     sem = asyncio.Semaphore(3)
 
     async def one(r: CandidateRecord):
         async with sem:
             return await integrations.enrich_person(
-                keys, {"name": r.name, "linkedin_url": r.profile_url if "linkedin.com/in/" in (r.profile_url or "") else "",
-                       "hints": " ".join(x for x in (r.current_role, r.current_location) if x)}, None, stopped)
+                keys, {"name": r.name, "linkedin_url": r.profile_url}, None, stopped)
 
     results = await asyncio.gather(*(one(r) for r in todo))
     done, partial, notes = 0, 0, set()
     for r, f in zip(todo, results):
         notes.update(f["errors"][:2])
-        r.profile_url = r.profile_url or f.get("profile_url")
         email, phone = r.email or f["email"], r.phone or f["phone"]
         if (f["email"] or f["phone"]) and (not require_both or (email and phone)):
             r.email, r.phone = clean_email(email), clean_phone(phone)
@@ -467,12 +503,12 @@ async def _enrich_records(records: List[CandidateRecord], keys: dict, require_bo
             done += 1
         elif f["email"] or f["phone"]:
             partial += 1
-    summary = (f"Lead databases: {len(wanting)} interested leads missing contacts → looked up {len(todo)}"
-               + (f" ({no_identity} skipped: no LinkedIn profile / full name)" if no_identity else "")
+    summary = (f"Lead databases: {len(wanting)} interested leads missing contacts → looked up {len(todo)} by "
+               f"LinkedIn profile" + (f" ({no_identity} without a LinkedIn profile skipped)" if no_identity else "")
                + f" → filled {done}"
                + (f" ({partial} found only a phone or only an email — not kept because 'both phone & email' is ticked)"
                   if partial else ""))
-    return done, [summary] + [f"Lead database: {n}" for n in list(notes)[:3]]
+    return done, notes_out + [summary] + [f"Lead database: {n}" for n in list(notes)[:3]]
 
 
 def _hit_date(hit: dict) -> Optional[str]:
@@ -561,7 +597,7 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
 
     enriched, enrich_notes = 0, []
     if enrich and records:
-        enriched, enrich_notes = await _enrich_records(records, keys or {}, require_both)
+        enriched, enrich_notes = await _enrich_records(records, keys or {}, require_both, respect_robots)
         warnings.extend(enrich_notes)
 
     if records:

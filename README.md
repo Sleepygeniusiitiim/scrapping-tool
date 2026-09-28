@@ -148,13 +148,20 @@ name (Mobile No. / Phone → phone, Key Skills → skills, Last Active / Applied
 people applied to my job" to mark them interested. The tool does not log in to portals with your
 password — automated logins break their terms and get recruiter accounts blocked.
 
-## Why a lead-database lookup finds nothing
+## How contacts are found for interested commenters
 
-Apollo, ContactOut, Lusha and RocketReach look people up by LinkedIn profile link (or name + current
-company). Leads from forums and classifieds have neither, so the tool first searches Google (SerpApi /
-Serper / Programmable Search) for `site:linkedin.com/in "Full Name" role place` and uses a result whose
-title starts with that name. The **Test lead databases** box (API keys section) runs one real lookup in
-each service and shows its reply — a 403 usually means the plan has no API access.
+1. **Their own words** — a phone / email the person wrote in their comment or post.
+2. **Their own profile** — for every interested lead still missing a contact, the tool opens the
+   commenter's public profile page (Instagram / X / TikTok handle, forum or LinkedIn author link from the
+   page) and reads their real name, a LinkedIn link in the bio, and any phone / email published there
+   (`profile_visit.py`; robots.txt setting respected, no logins — walled profiles are skipped).
+3. **Lead databases** — only leads with a LinkedIn profile are looked up in ContactOut / Lusha /
+   RocketReach / Apollo, so the lookup is about the right person. No Google name-guessing in runs
+   (it often matched the wrong person). Leads without a LinkedIn profile are skipped, costing no credits.
+
+The run log says per batch how many profiles were opened, what they gave, how many leads were looked up
+and filled, and why the rest were not. The **Test the lead databases** box runs one lookup per service
+and shows its own reply (a 403 usually means the plan has no API access).
 
 ## Following the intent exactly (any role, any country)
 

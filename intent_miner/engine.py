@@ -328,13 +328,21 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     # ---- Lead databases (Apollo / Lusha / ContactOut / RocketReach) for interested leads -------------
     if settings.get("enrich") and candidates:
         import pipeline
-        n, notes = await pipeline._enrich_records(candidates, keys, settings.get("require_both", True))
+        n, notes = await pipeline._enrich_records(candidates, keys, settings.get("require_both", True),
+                                                  settings.get("respect_robots", True))
         stats["enriched"] = n
         warnings.extend(notes)
         for c in candidates:                    # contacts found for Intent Miner leads go back onto the lead
             L = cand_lead.get(c.source_url)
-            if L is not None and c.contact_source and c.contact_source.startswith("enriched"):
+            if L is None:
+                continue
+            if c.contact_source and c.contact_source.startswith(("enriched", "profile_page")):
                 L["email"], L["phone"], L["status"] = L["email"] or c.email, L["phone"] or c.phone, "ENRICHED"
+            if c.name and c.name != L.get("display_name") and len((c.name or "").split()) >= 2:
+                L["why"] = L.get("why", []) + [f"✓ Real name from their profile: {c.name}"]
+                L["display_name"] = c.name
+            if c.profile_url and "linkedin.com/in/" in c.profile_url:
+                L["profile_url"] = c.profile_url
 
     saved = await asyncio.to_thread(store.upsert_leads, run_id, leads) if leads else []
     await asyncio.to_thread(store.save_events, run_id, events)

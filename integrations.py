@@ -336,7 +336,10 @@ async def enrich_person(keys: Dict[str, str], person: dict, providers: Optional[
     stopped = stopped if stopped is not None else set()
     found = {"email": None, "phone": None, "provider": None, "tried": [], "errors": [], "profile_url": None}
     if not person.get("linkedin_url") and not person.get("company"):
-        url = await asyncio.to_thread(find_linkedin_url, keys, person.get("name") or "", person.get("hints") or "")
+        # Guessing a LinkedIn profile from a Google name search often finds the wrong person, so it is only
+        # done when explicitly allowed; normally the person's own profile page supplies the link.
+        url = await asyncio.to_thread(find_linkedin_url, keys, person.get("name") or "", person.get("hints") or "") \
+            if person.get("allow_name_search") else None
         if not url:
             found["errors"].append("no LinkedIn profile or company to look up")
             return found
