@@ -497,7 +497,7 @@ def fetch_all_candidates() -> List[dict]:
 # Assisted outreach
 # ---------------------------------------------------------------------------
 _OUTREACH_FIELDS = {"outreach_status", "outreach_message", "outreach_sent_at", "reply_text", "replied_at",
-                    "email", "phone", "contact_source", "contact_shared_at"}
+                    "email", "phone", "contact_source", "contact_shared_at", "profile_url"}
 
 
 def get_candidates(ids: List[str]) -> List[dict]:

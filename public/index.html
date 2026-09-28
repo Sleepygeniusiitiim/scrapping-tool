@@ -119,6 +119,17 @@
         Keys stay in this browser and are sent only to your own server; Vercel env vars work too. Account
         passwords are not supported — automated logins break these services' terms and get accounts banned.</p>
       <div id="intFields"></div>
+      <h3 style="font-size:14px;margin:14px 0 6px">Test the lead databases</h3>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 6px">One real lookup in each service that has a key
+        (uses one credit each) — shows exactly what each service replies. These services need a LinkedIn profile
+        link, or a name plus current company.</p>
+      <div class="grid">
+        <div><label for="tLi">LinkedIn profile link</label><input id="tLi" placeholder="https://www.linkedin.com/in/…"></div>
+        <div><label for="tName">or full name</label><input id="tName"></div>
+        <div><label for="tCo">+ current company</label><input id="tCo"></div>
+        <div style="align-self:flex-end"><button id="tBtn">🔎 Test lookup</button></div>
+      </div>
+      <pre class="log" id="tOut" style="display:none;white-space:pre-wrap"></pre>
       <p style="color:var(--muted);font-size:13px;margin-top:10px">Keys are saved as you type. Click
         “Test connections” at the top to see which services are active.</p>
     </details>
@@ -182,6 +193,24 @@
     <div class="row" style="margin-bottom:10px"><button id="loadDb">🔄 Load / refresh from Neon DB</button>
       <button id="enrichBtn" title="For saved leads who said they are interested and are within “Only leads active in the last…”, look up missing phone numbers / emails in Apollo, Lusha, ContactOut and RocketReach (uses their credits)">📇 Find missing contacts for interested leads</button>
       <span class="status" id="dbStatus"></span></div>
+    <details class="panel" style="margin-bottom:12px" id="importBox">
+      <summary>📥 Import candidates from Naukri / foundit / WorkIndia / Indeed / Apna (employer-account export)</summary>
+      <p style="color:var(--muted);font-size:13px">In your employer account, download the applicants or database
+        search results as Excel / CSV (Naukri Resdex / RMS: select candidates → Download / Export to Excel;
+        foundit, Indeed, Apna, WorkIndia: applicants → Download / Export). Then upload the file here — names, phone
+        numbers, emails, roles, skills and locations are saved with the other leads. The tool never logs in to
+        these portals with your password: automated logins break their terms and get recruiter accounts blocked.</p>
+      <div class="grid">
+        <div><label for="impPortal">Portal</label><select id="impPortal">
+          <option value="naukri">Naukri</option><option value="foundit">foundit</option><option value="workindia">WorkIndia</option>
+          <option value="indeed">Indeed</option><option value="apna">Apna</option><option value="naukrigulf">Naukrigulf</option>
+          <option value="other">Other portal / ATS</option></select></div>
+        <div><label for="impFile">Export file (.xlsx, .xls or .csv, up to 4 MB)</label><input id="impFile" type="file" accept=".xlsx,.xls,.csv,.txt,.html"></div>
+        <div style="align-self:flex-end"><label title="Tick when the file lists people who applied to your job — they are marked as interested"><input id="impApplied" type="checkbox" checked>These people applied to my job</label></div>
+        <div style="align-self:flex-end"><button id="impBtn">📥 Import</button></div>
+      </div>
+      <p class="status" id="impOut"></p>
+    </details>
     <div id="dbView"></div>
   </section>
   <section id="tab-outreach" class="hidden">
@@ -531,21 +560,54 @@ $("enrichBtn").onclick = async () => {
     const todo = all.filter((c) => (!c.phone || !c.email) && (!onlyKeen || c.shows_interest) &&
       (!cutoff || !c.activity_date || Date.parse(c.activity_date) >= cutoff));
     if (!todo.length) { $("dbStatus").textContent = "No interested, recent candidates are missing a phone or email."; return; }
-    let filled = 0, done = 0; const errors = new Set();
+    let filled = 0, done = 0; const errors = new Set(); const reasons = {};
     for (let i = 0; i < todo.length; i += 10) {
       const chunk = todo.slice(i, i + 10);
       $("dbStatus").textContent = `Looking up ${done + 1}–${done + chunk.length} of ${todo.length}… (${filled} filled so far)`;
       const r = await api("/api/enrich", { candidate_ids: chunk.map((c) => c.id), only_interested: onlyKeen,
         max_age_months: months, require_both: $("requireBoth").checked });
-      for (const x of r.results) { if (x.provider) filled++; (x.errors || []).forEach((e) => errors.add(e)); }
+      for (const x of r.results) {
+        if (x.provider) filled++;
+        const why = x.skipped || (x.provider ? "" : (x.errors || [])[0] || "not found in any lead database");
+        if (why) { const k = why.replace(/\(.*$/, "").slice(0, 90); reasons[k] = (reasons[k] || 0) + 1; }
+        (x.errors || []).forEach((e) => errors.add(e));
+      }
       done += chunk.length;
       if (r.stopped && r.stopped.length >= r.providers.length) { errors.add("All lead databases out of credits or rejected their keys."); break; }
     }
     $("dbStatus").textContent = `Lead databases filled contacts for ${filled} of ${done} candidates.` +
-      (errors.size ? " Notes: " + [...errors].slice(0, 3).join(" | ") : "");
+      (Object.keys(reasons).length ? " Why the others weren't filled: " +
+        Object.entries(reasons).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n}× ${k}`).join(" · ") : "");
     $("loadDb").onclick();
   } catch (e) { $("dbStatus").textContent = e.message; }
   finally { btn.disabled = false; }
+};
+
+$("tBtn").onclick = async () => {
+  const out = $("tOut"); out.style.display = "block"; out.textContent = "Looking up…";
+  try {
+    const r = await api("/api/enrich/test", { linkedin_url: $("tLi").value.trim(), name: $("tName").value.trim(),
+                                               company: $("tCo").value.trim() });
+    out.textContent = r.results.map((x) => `${x.provider}: ` + (x.error ? "❌ " + x.error :
+      `HTTP ${x.status} · emails: ${x.emails.join(", ") || "none"} · phones: ${x.phones.join(", ") || "none"}` +
+      (x.emails.length || x.phones.length ? "" : `\n   reply: ${x.reply || "(empty)"}`))).join("\n");
+  } catch (e) { out.textContent = "❌ " + e.message; }
+};
+
+$("impBtn").onclick = async () => {
+  const f = $("impFile").files[0], out = $("impOut");
+  if (!f) { out.textContent = "Choose the exported file first."; return; }
+  if (f.size > 4 * 1024 * 1024) { out.textContent = "The file is over 4 MB — export fewer candidates per file."; return; }
+  out.textContent = "Importing…";
+  const b64 = await new Promise((ok, bad) => { const rd = new FileReader();
+    rd.onload = () => ok(String(rd.result)); rd.onerror = bad; rd.readAsDataURL(f); });
+  try {
+    const r = await api("/api/import", { portal: $("impPortal").value, applied: $("impApplied").checked,
+                                         filename: f.name, data_b64: b64 });
+    out.textContent = `Saved ${r.saved} candidates (${r.with_phone} with phone, ${r.with_email} with email) from ` +
+      `${r.rows} rows. Columns used: ` + Object.entries(r.columns).map(([k, v]) => `${k} ← “${v}”`).join(", ");
+    $("loadDb").onclick();
+  } catch (e) { out.textContent = "❌ " + e.message; }
 };
 
 $("testBtn").onclick = async () => {

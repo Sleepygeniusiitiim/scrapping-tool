@@ -435,12 +435,14 @@ async def _enrich_records(records: List[CandidateRecord], keys: dict, require_bo
     async def one(r: CandidateRecord):
         async with sem:
             return await integrations.enrich_person(
-                keys, {"name": r.name, "linkedin_url": r.profile_url or ""}, None, stopped)
+                keys, {"name": r.name, "linkedin_url": r.profile_url or "",
+                       "hints": " ".join(x for x in (r.current_role, r.current_location) if x)}, None, stopped)
 
     results = await asyncio.gather(*(one(r) for r in todo))
     done, notes = 0, set()
     for r, f in zip(todo, results):
         notes.update(f["errors"][:2])
+        r.profile_url = r.profile_url or f.get("profile_url")
         email, phone = r.email or f["email"], r.phone or f["phone"]
         if (f["email"] or f["phone"]) and (not require_both or (email and phone)):
             r.email, r.phone = clean_email(email), clean_phone(phone)

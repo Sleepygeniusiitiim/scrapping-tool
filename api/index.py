@@ -41,6 +41,7 @@ from openrouter_client import PROVIDERS, OpenRouter  # noqa: E402
 from ai_chain import FALLBACK_ORDER, AIChain  # noqa: E402
 import integrations  # noqa: E402
 import dates  # noqa: E402
+import portal_import  # noqa: E402
 import outreach  # noqa: E402
 from schema import CandidateRecord, clean_email, clean_phone  # noqa: E402
 
@@ -91,7 +92,7 @@ class VercelPathNormalizedMiddleware:
                     scope["path"] = "/api/" + clean
             elif current_path in ("/api/index", "/api/index.py", "/index", "/index.py"):
                 scope["path"] = "/api/health"
-            elif current_path in ("/health", "/plan", "/search", "/dedup", "/process", "/candidates", "/enrich"):
+            elif current_path in ("/health", "/plan", "/search", "/dedup", "/process", "/candidates", "/enrich", "/import"):
                 scope["path"] = "/api" + current_path
 
         await self.app(scope, receive, send)
@@ -418,27 +419,89 @@ async def enrich(body: EnrichIn, keys: dict = Depends(_keys)):
             li = m.group() if m else ""
         async with sem:
             found = await integrations.enrich_person(
-                keys, {"name": c.get("name"), "linkedin_url": li}, providers, stopped)
+                keys, {"name": c.get("name"), "linkedin_url": li,
+                       "hints": " ".join(x for x in (c.get("current_role"), c.get("current_location")) if x)},
+                providers, stopped)
         fields = {}
         if found["email"] and not c.get("email"):
             fields["email"] = clean_email(found["email"])
         if found["phone"] and not c.get("phone"):
             fields["phone"] = clean_phone(found["phone"])
+        partial = False
         if body.require_both and not ((c.get("email") or fields.get("email")) and (c.get("phone") or fields.get("phone"))):
+            partial = bool(fields)
             fields = {}                    # only keep leads that end up with both a phone number and an email
         out = {"id": c["id"], "name": c.get("name"), "tried": found["tried"], "errors": found["errors"][:3]}
-        if fields:
+        if partial:
+            out["errors"].append("found only a phone or only an email — not saved ('both phone & email' is ticked)")
+        if found.get("profile_url") and not c.get("profile_url"):
+            fields["profile_url"] = found["profile_url"]       # saved even without contacts: next lookup is cheaper
+        if fields.get("email") or fields.get("phone"):
             fields["contact_source"] = f"enriched:{found['provider']}"
             fields["contact_shared_at"] = "now()"
+        if fields:
             try:
                 row = await run_in_threadpool(db.update_candidate, c["id"], fields)
-                out.update({"email": row.get("email"), "phone": row.get("phone"), "provider": found["provider"]})
+                if fields.get("email") or fields.get("phone"):
+                    out.update({"email": row.get("email"), "phone": row.get("phone"), "provider": found["provider"]})
             except db.SupabaseError as exc:
                 out["errors"].append(str(exc)[:160])
         return out
 
     results = await asyncio.gather(*(one(c) for c in cands))
     return {"results": results, "providers": providers, "stopped": sorted(stopped)}
+
+
+class ImportIn(BaseModel):
+    portal: str = Field("other", pattern="^(naukri|foundit|workindia|indeed|apna|naukrigulf|other)$")
+    applied: bool = True
+    filename: str = Field("", max_length=300)
+    data_b64: str = Field(..., min_length=4, max_length=6_000_000)
+
+
+@router.post("/import")
+def import_export(body: ImportIn):
+    """Candidates from an Excel / CSV file downloaded from a job-portal employer account."""
+    import base64
+    _db()
+    try:
+        data = base64.b64decode(body.data_b64.split(",")[-1])
+    except ValueError:
+        raise HTTPException(400, "The file could not be read.")
+    try:
+        records, info = portal_import.parse_export(body.filename, data, body.portal, body.applied)
+    except Exception as exc:
+        raise HTTPException(400, f"Could not read this file ({type(exc).__name__}: {str(exc)[:160]}). "
+                                 "Save it as .xlsx or .csv and try again.")
+    if not records:
+        raise HTTPException(400, "No candidates found in the file. Columns recognised: "
+                                 f"{info.get('columns') or 'none'} — the file needs a name column and a "
+                                 "phone or email column.")
+    try:
+        saved = db.save_candidates(records)
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+    return {"saved": saved, **info,
+            "with_phone": sum(1 for r in records if r.phone), "with_email": sum(1 for r in records if r.email)}
+
+
+class EnrichTestIn(BaseModel):
+    linkedin_url: str = ""
+    name: str = ""
+    company: str = ""
+
+
+@router.post("/enrich/test")
+async def enrich_test(body: EnrichTestIn, keys: dict = Depends(_keys)):
+    """One real lookup per lead database, with each service's own reply — to see why lookups fail."""
+    person = {"linkedin_url": body.linkedin_url.strip(), "name": body.name.strip(), "company": body.company.strip()}
+    names = [p for p in integrations.ENRICH_ORDER if keys.get(p)]
+    if not names:
+        raise HTTPException(400, "No lead-database key is set (page or Vercel env vars).")
+    results = await asyncio.gather(*(integrations.enrich_one(p, keys, person) for p in names))
+    return {"results": [{"provider": integrations.SERVICES[p][1], "status": r.get("status"),
+                         "emails": r.get("emails", []), "phones": r.get("phones", []),
+                         "error": r.get("error"), "reply": r.get("raw", "")} for p, r in zip(names, results)]}
 
 
 # ---------------------------------------------------------------------------

@@ -78,6 +78,23 @@ In the **“🔑 Lead databases & search API keys”** section of the home page 
   (its phone reveal needs a webhook).
 - Only API keys are supported, not account passwords: automated logins break these services' terms.
 
+## Importing from job-portal employer accounts
+
+Naukri (Resdex / RMS), foundit, WorkIndia, Indeed, Apna and Naukrigulf let employers download applicants
+or database search results as Excel / CSV. Upload that file under **All saved candidates → 📥 Import**
+(`portal_import.py`; .xlsx, .xls, .csv or HTML-table "Excel" files up to 4 MB). Columns are matched by
+name (Mobile No. / Phone → phone, Key Skills → skills, Last Active / Applied On → date, …). Tick "These
+people applied to my job" to mark them interested. The tool does not log in to portals with your
+password — automated logins break their terms and get recruiter accounts blocked.
+
+## Why a lead-database lookup finds nothing
+
+Apollo, ContactOut, Lusha and RocketReach look people up by LinkedIn profile link (or name + current
+company). Leads from forums and classifieds have neither, so the tool first searches Google (SerpApi /
+Serper / Programmable Search) for `site:linkedin.com/in "Full Name" role place` and uses a result whose
+title starts with that name. The **Test lead databases** box (API keys section) runs one real lookup in
+each service and shows its reply — a 403 usually means the plan has no API access.
+
 ## Following the intent exactly (any role, any country)
 
 The plan call also returns `role_keywords` (titles / synonyms in English and the local language, e.g.

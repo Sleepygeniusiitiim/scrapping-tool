@@ -249,42 +249,78 @@ async def enrich_one(name: str, keys: Dict[str, str], person: dict) -> dict:
                 r = await c.get("https://api.rocketreach.co/api/v2/person/lookup", params=params,
                                 headers={"Api-Key": keys["rocketreach"]})
             elif name == "apollo":
-                body = {"reveal_personal_emails": True}
+                q = {"reveal_personal_emails": "true"}
                 if li:
-                    body["linkedin_url"] = li
+                    q["linkedin_url"] = li
                 elif full and company:
-                    body.update({"name": full, "organization_name": company})
+                    q.update({"name": full, "organization_name": company})
                 else:
                     return {"error": "Apollo needs a LinkedIn URL, or name + company"}
-                r = await c.post("https://api.apollo.io/api/v1/people/match", json=body,
-                                 headers={"X-Api-Key": keys["apollo"], "Content-Type": "application/json"})
+                # Apollo reads match parameters from the query string.
+                r = await c.post("https://api.apollo.io/api/v1/people/match", params=q, json={},
+                                 headers={"x-api-key": keys["apollo"], "Content-Type": "application/json",
+                                          "Cache-Control": "no-cache"})
             else:
                 return {"error": f"unknown provider {name}"}
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
     label = SERVICES[name][1]
-    if r.status_code in (401, 403):
-        return {"error": f"{label} rejected the API key ({r.status_code})"}
-    if r.status_code == 402 or r.status_code == 429:
-        return {"error": f"{label} out of credits / rate limited ({r.status_code})", "stop": True}
+    why = re.sub(r"\s+", " ", r.text or "")[:200]
+    if r.status_code == 401:
+        return {"error": f"{label} rejected the API key (401): {why}", "stop": True, "status": 401}
+    if r.status_code == 403:
+        # Usually: the plan has no API access, or this endpoint needs a higher plan / master key.
+        return {"error": f"{label} refused the request (403 — plan without API access?): {why}",
+                "stop": True, "status": 403}
+    if r.status_code in (402, 429):
+        return {"error": f"{label} out of credits / rate limited ({r.status_code}): {why}", "stop": True,
+                "status": r.status_code}
     if r.status_code == 404:
-        return {"emails": [], "phones": []}
+        return {"emails": [], "phones": [], "status": 404, "raw": why}
     if r.status_code >= 400:
-        return {"error": f"{label} HTTP {r.status_code}: {r.text[:120]}"}
+        return {"error": f"{label} HTTP {r.status_code}: {why}", "status": r.status_code}
     try:
         data = r.json()
     except ValueError:
         return {"error": f"{label} returned non-JSON"}
     emails, phones = [], []
     _collect(data, emails, phones)
-    return {"emails": _personal_first(emails), "phones": list(dict.fromkeys(phones))}
+    return {"emails": _personal_first(emails), "phones": list(dict.fromkeys(phones)), "status": r.status_code,
+            "raw": why}
+
+
+def find_linkedin_url(keys: Dict[str, str], name: str, hints: str = "") -> Optional[str]:
+    """A lead with only a name: look for their LinkedIn profile with a Google search API
+    ("Name" role place site:linkedin.com/in) and accept a result only if its title starts with the name."""
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z.'-]+", name or "") if len(w) > 1]
+    if len(words) < 2:
+        return None                                  # a single word / handle matches too many people
+    apis = [a for a in search_available(keys) if a != "scrapedo"]
+    if not apis:
+        return None
+    query = f'site:linkedin.com/in "{" ".join(words[:3])}" {hints}'.strip()
+    hits, _, _ = web_search(apis[0], keys, query, 5, "wt-wt")
+    want = " ".join(w.lower() for w in words[:2])
+    for h in hits:
+        title = re.sub(r"[^a-z ]+", " ", (h.get("title") or "").lower())
+        if re.match(r"https?://([a-z]{2,3}\.)?linkedin\.com/in/", h["url"]) and \
+                " ".join(title.split()[:2]) == want:
+            return h["url"].split("?")[0]
+    return None
 
 
 async def enrich_person(keys: Dict[str, str], person: dict, providers: Optional[List[str]] = None,
                         stopped: Optional[set] = None) -> dict:
     """Try providers in order until both phone and email are found."""
     stopped = stopped if stopped is not None else set()
-    found = {"email": None, "phone": None, "provider": None, "tried": [], "errors": []}
+    found = {"email": None, "phone": None, "provider": None, "tried": [], "errors": [], "profile_url": None}
+    if not person.get("linkedin_url") and not person.get("company"):
+        url = await asyncio.to_thread(find_linkedin_url, keys, person.get("name") or "", person.get("hints") or "")
+        if not url:
+            found["errors"].append("no LinkedIn profile or company to look up")
+            return found
+        person = {**person, "linkedin_url": url}
+        found["profile_url"] = url
     for p in providers or ENRICH_ORDER:
         if not keys.get(p) or p in stopped:
             continue
@@ -294,7 +330,7 @@ async def enrich_person(keys: Dict[str, str], person: dict, providers: Optional[
         found["tried"].append(p)
         if res.get("error"):
             found["errors"].append(f"{p}: {res['error']}")
-            if res.get("stop") or "rejected the API key" in res["error"]:
+            if res.get("stop"):
                 stopped.add(p)
             continue
         if not found["email"] and res["emails"]:
