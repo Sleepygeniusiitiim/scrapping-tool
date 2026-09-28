@@ -266,13 +266,76 @@ def html_comments(soup: BeautifulSoup) -> List[str]:
     return lines
 
 
+def decode_cfemail(hexstr: str) -> str:
+    """Cloudflare "email protection": the address XOR-encoded with its first byte."""
+    try:
+        key = int(hexstr[:2], 16)
+        out = "".join(chr(int(hexstr[i:i + 2], 16) ^ key) for i in range(2, len(hexstr) - 1, 2))
+    except ValueError:
+        return ""
+    return out if EMAIL_RE.fullmatch(out) else ""
+
+
+_WA_LINK = re.compile(r"(?:wa\.me/|whatsapp\.com/send/?\?phone=|api\.whatsapp\.com/send/?\?phone=)\+?(\d{8,15})", re.I)
+
+
+def reveal_contacts(soup: BeautifulSoup) -> None:
+    """Make addresses hidden in markup visible where they are: Cloudflare-protected emails, and mailto: / tel: /
+    WhatsApp links whose text is only "Email us" / "Call now" / an icon. Kept in place, so a contact stays next
+    to the person or business it belongs to."""
+    for el in soup.select("[data-cfemail]"):
+        e = decode_cfemail(el.get("data-cfemail", ""))
+        if e:
+            el.replace_with(e)
+    for a in soup.find_all("a", href=True):
+        h = a["href"].strip()
+        low = h.lower()
+        add = ""
+        if "/cdn-cgi/l/email-protection#" in low:
+            add = decode_cfemail(h.split("#", 1)[1])
+        elif low.startswith("mailto:"):
+            add = h[7:].split("?")[0].strip()
+        elif low.startswith("tel:"):
+            add = "Phone " + h[4:].strip()
+        elif (m := _WA_LINK.search(h)):
+            add = "WhatsApp +" + m.group(1)
+        if not add:
+            continue
+        txt = re.sub(r"\s", "", a.get_text(" ", strip=True)).lower()
+        core = re.sub(r"\D", "", add) if not "@" in add else add.lower()
+        if core and core not in re.sub(r"\s", "", txt) and core not in re.sub(r"\D", "", txt):
+            a.append(f" ({add})")
+
+
+def site_contacts(soup: BeautifulSoup) -> str:
+    """Contacts in the header / footer (removed from the page text): the site owner's own, not commenters'."""
+    parts = []
+    for el in soup.find_all(["footer", "header"]) + soup.select('[class*="footer"], [id*="footer"], [class*="topbar"]'):
+        parts.append(el.get_text(" ", strip=True))
+    text = " ".join(parts)[:6000]
+    if not text:
+        return ""
+    emails = list(dict.fromkeys(m.group().lower() for m in EMAIL_RE.finditer(text)))[:4]
+    phones = []
+    for m in PHONE_RE.finditer(text):
+        d = re.sub(r"\D", "", m.group())
+        if 9 <= len(d) <= 15 and len(set(d)) >= 4 and m.group().strip() not in phones:
+            phones.append(m.group().strip())
+    out = [f"Email: {e}" for e in emails] + [f"Phone: {p}" for p in phones[:4]]
+    return " | ".join(out)
+
+
 def html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
+    reveal_contacts(soup)
     thread = structured_thread(soup)
-    blog_comments = html_comments(BeautifulSoup(html, "html.parser"))
+    cmt_soup = BeautifulSoup(html, "html.parser")
+    reveal_contacts(cmt_soup)
+    blog_comments = html_comments(cmt_soup)
     if blog_comments:
         thread = "\n".join(x for x in [thread] + blog_comments if x)
     published = page_date(soup)
+    own = site_contacts(soup)
     for tag in soup(_DROP_TAGS):
         tag.decompose()
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
@@ -287,6 +350,8 @@ def html_to_text(html: str) -> str:
         parts.append("## Post and comments (structured, with authors)\n" + thread)
     if contacts:
         parts.append("## Contact details found on the page\n" + contacts)
+    if own:
+        parts.append("## Website's own contact details (header / footer — the site owner, not commenters)\n" + own)
     parts.append("## Page text\n" + text)
     return "\n\n".join(p for p in parts if p).strip()[:MAX_TEXT_CHARS]
 

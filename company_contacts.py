@@ -84,8 +84,10 @@ def find_website(keys: Dict[str, str], name: str, city: str = "") -> Optional[st
 
 
 def _extract(url: str, html: str) -> dict:
+    from fetcher import reveal_contacts
     soup = BeautifulSoup(html, "html.parser")
     hrefs = [a.get("href", "") for a in soup.find_all("a")]
+    reveal_contacts(soup)                       # Cloudflare-protected emails, "Call now" / "Email us" links
     for t in soup(["script", "style", "noscript"]):
         if t.name == "script" and t.get("type") == "application/ld+json":
             continue
@@ -160,7 +162,20 @@ async def _mx_ok(domain: str) -> Optional[bool]:
         return None
 
 
-async def crawl(website: str, respect_robots: bool = True, max_pages: int = 6) -> dict:
+_CONTACT_PATHS = ("contact-us", "contact", "contactus", "about-us", "about")
+
+
+async def _reader_text(keys: Optional[Dict[str, str]], url: str) -> str:
+    """Page text through the Jina reader (renders JavaScript sites that show nothing to a plain request)."""
+    try:
+        status, _, _, body, err = await integrations.unblock_fetch("jina", keys or {}, url)
+    except Exception:
+        return ""
+    return body if not err and status and status < 400 else ""
+
+
+async def crawl(website: str, respect_robots: bool = True, max_pages: int = 6,
+                keys: Optional[Dict[str, str]] = None) -> dict:
     """Public contacts an organization publishes on its own site."""
     host = urlparse(website).netloc
     client = primp.AsyncClient(impersonate="chrome", follow_redirects=True, max_redirects=5, timeout=12)
@@ -188,8 +203,26 @@ async def crawl(website: str, respect_robots: bool = True, max_pages: int = 6) -
             out[k] |= x[k]
         out["people"] += x["people"]
         if out["pages"] == 1:                    # queue the contact / about / team pages linked from home
-            queue += [l.split("#")[0] for l in x["links"]
+            linked = [l.split("#")[0] for l in x["links"]
                       if urlparse(l).netloc == host and _PAGE_HINT.search(urlparse(l).path)][:max_pages * 2]
+            queue += linked
+            if not any(re.search(r"contact", urlparse(l).path, re.I) for l in linked):
+                # menus built by JavaScript: try the usual contact page addresses directly
+                base = f"{urlparse(str(r.url)).scheme}://{urlparse(str(r.url)).netloc}"
+                queue += [f"{base}/{p}" for p in _CONTACT_PATHS[:3]] + [f"{base}/{p}/" for p in _CONTACT_PATHS[:1]]
+    if not (out["emails"] or out["phones"] or out["whatsapp"]) and out["status"] != "robots":
+        # nothing in the HTML (JavaScript-rendered site, or the request was refused): read it rendered
+        base = website.rstrip("/")
+        for url in (website, base + "/contact-us", base + "/contact"):
+            text = await _reader_text(keys, url)
+            if text:
+                out["pages"] += 1
+                out["emails"] |= set(rule_extractor.emails_in(text))
+                out["phones"] |= set(rule_extractor.phones_in(text))
+                out["whatsapp"] |= {m.group(1) for m in re.finditer(r"wa\.me/\+?(\d{8,15})", text)}
+            if out["emails"] and out["phones"]:
+                break
+        out["via_reader"] = True
     site_domain = host.removeprefix("www.")
     emails = sorted(out["emails"], key=lambda e: (not e.endswith(site_domain), e))[:10]
     checks = await asyncio.gather(*(_mx_ok(e.split("@")[1]) for e in emails))
@@ -230,8 +263,14 @@ async def company_profile(keys: Dict[str, str], company: str, respect_robots: bo
         site = await asyncio.to_thread(find_website, keys, company, "")
     if not site:
         return None
-    res = await crawl(site, respect_robots, max_pages=5)
+    res = await crawl(site, respect_robots, max_pages=5, keys=keys)
     site_domain = urlparse(site).netloc.lower().removeprefix("www.")
+    if not res.get("all_emails") or not res.get("email_format"):
+        # theHarvester-style: addresses at this domain that search engines have indexed anywhere on the web
+        harvested = await harvest_domain_emails(keys, site_domain)
+        if harvested:
+            res["all_emails"] = sorted(set(res.get("all_emails", [])) | set(harvested))
+            res["email_format"] = None
     domain = email_domain(res.get("all_emails", []), site_domain)
     pattern = res.get("email_format") or (email_patterns.infer(res.get("all_emails", []), domain, res.get("people", []))
                                           if domain else None)
@@ -267,7 +306,7 @@ async def for_organization(keys: Dict[str, str], name: str, city: str, page_url:
         site = await asyncio.to_thread(find_website, keys, name, city)
     if not site:
         return None
-    return await crawl(site, respect_robots)
+    return await crawl(site, respect_robots, keys=keys)
 
 
 _DM_ROLE = re.compile(r"\b(owner|co-?founder|founder|managing director|director|proprietor|partner|principal|"
@@ -316,3 +355,53 @@ async def decision_makers(keys: Dict[str, str], org_name: str, city: str = "") -
         if len(out) == 3:
             break
     return out
+
+
+
+def _harvest_sync(keys: Dict[str, str], domain: str) -> List[str]:
+    query = f'"@{domain}"'
+    hits = []
+    apis = [a for a in integrations.search_available(keys) if a != "scrapedo"]
+    try:
+        if apis:
+            hits, _, _ = integrations.web_search(apis[0], keys, query, 20, "in-en")
+        else:
+            from search_module import search_query
+            hits = [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in search_query(query, max_results=20).hits]
+    except Exception:
+        return []
+    found = set()
+    for h in hits:
+        for e in rule_extractor.emails_in(f"{h.get('title', '')} {h.get('snippet', '')}"):
+            if e.endswith("@" + domain):
+                found.add(e)
+    return sorted(found)
+
+
+async def harvest_domain_emails(keys: Dict[str, str], domain: str) -> List[str]:
+    """Addresses at a company's domain that appear anywhere search engines index (directories, PDFs, posts,
+    other sites) — more evidence for the company's email format and sometimes the person's own address."""
+    if not domain or domain.startswith(FREE_MAIL):
+        return []
+    return await asyncio.to_thread(_harvest_sync, keys, domain)
+
+
+ROLE_ADDRESSES = ("info", "contact", "enquiry", "admissions", "office", "hello", "support", "sales")
+
+
+async def probe_role_addresses(keys: Dict[str, str], domain: str) -> Optional[dict]:
+    """A business with a website but no published email: test the usual shared inboxes (info@, contact@ …)
+    with the zero-send SMTP check. Only a mailbox the server confirms is returned (never on catch-all
+    domains, where every address "exists")."""
+    import email_verify
+    if not domain or domain.startswith(FREE_MAIL):
+        return None
+    cands = [f"{r}@{domain}" for r in ROLE_ADDRESSES]
+    res = await email_verify.verify_many(cands, keys)
+    for e in cands:
+        v = res.get(e) or {}
+        if v.get("status") == "valid":
+            return {"email": e, **v}
+    if any((res.get(e) or {}).get("status") == "catch_all" for e in cands):
+        return {"email": None, "status": "catch_all"}
+    return None

@@ -170,6 +170,27 @@ gave leads or have several posts / comments — with the current intent and sett
 hash has not changed are skipped without any AI cost; changed pages are scored again, so new comments
 become new leads while existing people are merged, not duplicated.
 
+## Getting the most contacts out of every page
+
+Ideas taken from open-source tools (theHarvester, Photon, Reacher / check-if-email-exists, email-verifier):
+
+* **Hidden contacts are revealed where they are:** Cloudflare-protected emails (`data-cfemail`, `/cdn-cgi/l/email-
+  protection`) are decoded; `mailto:` / `tel:` / WhatsApp (`wa.me`, `api.whatsapp.com`) links behind "Email us" /
+  "Call now" buttons get their address written next to the link text; header / footer contacts (dropped from the
+  page text) are kept in a separate section marked as the website owner's — used for business leads only, never
+  given to commenters.
+* **Business websites:** contact / about pages are tried directly when the menu is built by JavaScript; a site
+  that shows nothing to a plain request is read rendered (Jina reader); addresses at the company's domain that
+  search engines indexed anywhere ("@domain", the theHarvester approach) add evidence for the email format; a
+  business with a website but no published email gets info@ / contact@ / enquiry@ / admissions@ … tested with the
+  zero-send SMTP check (kept only when the mail server confirms it and the domain is not catch-all).
+* **Link-in-bio pages** (Linktree, bio.link, beacons, taplink …) and WhatsApp links on commenters' profiles are
+  followed for their email / WhatsApp / LinkedIn.
+* **Results:** a WhatsApp chat link for every mobile number, a contact filter (has phone / email / both / none),
+  searches run 3 at a time, and a **run summary** after every run: contacts found (phone / email / both /
+  verified) and concrete fixes for the next run (missing keys, robots.txt skips, blocked pages, time window,
+  dropped partial lookups, rules-only reading).
+
 ## AI source planner, Google Maps listings and business directories
 
 With **🤖 Let the AI choose the best sources** ticked (default), the understanding step also ranks every source

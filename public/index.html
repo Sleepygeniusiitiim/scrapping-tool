@@ -228,6 +228,7 @@
     <h2>Progress</h2>
     <details id="planBox" class="hidden"><summary>🧭 Search plan</summary><pre class="log" id="planText"></pre></details>
     <div class="table-wrap" style="margin:12px 0"><table id="statsTable"></table></div>
+    <div id="doctor"></div>
     <pre class="log" id="log"></pre>
   </div>
 
@@ -384,7 +385,7 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const COLS = ["activity_date", "shows_interest", "name", "phone", "email", "email_status", "email_guess", "current_role", "skills", "current_location",
+const COLS = ["activity_date", "shows_interest", "name", "phone", "whatsapp", "email", "email_status", "email_guess", "current_role", "skills", "current_location",
               "target_countries", "platform", "evidence_snippet", "source_url"];
 const LIST_COLS = ["skills", "target_countries"];
 const EDITABLE = ["name", "phone", "email", "current_role", "skills", "current_location", "target_countries",
@@ -513,6 +514,18 @@ function renderStats() {
 // ---------- results tables ----------
 function asList(v) { return Array.isArray(v) ? v : (v == null || v === "" ? [] : [String(v)]); }
 
+// wa.me link for a mobile number (10-digit Indian numbers get +91)
+function waLink(phone) {
+  let d = String(phone || "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("0")) d = d.slice(1);
+  if (d.length === 10 && /^[6-9]/.test(d)) d = "91" + d;
+  return d.length >= 11 && d.length <= 15 ? "https://wa.me/" + d : "";
+}
+function contactOk(r, want) {
+  const ph = !!r.phone, em = !!r.email;
+  return !want || (want === "has phone or email" ? ph || em : want === "has phone" ? ph : want === "has email" ? em :
+    want === "has both" ? ph && em : !ph && !em);
+}
 function buildView(container, getRecords, key) {
   container.replaceChildren();
   const records = getRecords();
@@ -538,6 +551,7 @@ function buildView(container, getRecords, key) {
   const roleWrap = document.createElement("div"); const roleL = document.createElement("label"); roleL.textContent = "Role contains";
   const roleIn = document.createElement("input"); roleWrap.append(roleL, roleIn); f.appendChild(roleWrap);
   const selPlatform = mkSelect("Platform", platforms);
+  const selContact = mkSelect("Contact", ["has phone or email", "has phone", "has email", "has both", "no contact"]);
 
   const info = document.createElement("p"); info.className = "status";
   const actions = document.createElement("div"); actions.className = "row"; actions.style.margin = "10px 0";
@@ -561,7 +575,7 @@ function buildView(container, getRecords, key) {
       (!c || asList(r.target_countries).some((x) => x.toLowerCase() === c)) &&
       (!s || asList(r.skills).some((x) => x.toLowerCase() === s)) &&
       (!role || (r.current_role || "").toLowerCase().includes(role)) &&
-      (!p || r.platform === p));
+      (!p || r.platform === p) && contactOk(r, selContact.value));
   }
 
   function render() {
@@ -581,6 +595,12 @@ function buildView(container, getRecords, key) {
           a.textContent = r.source_url; td.appendChild(a); continue;
         }
         if (col === "shows_interest") { td.textContent = r[col] ? "✓ interested" : ""; continue; }
+        if (col === "whatsapp") {
+          const wa = waLink(r.phone);
+          if (wa) { const a = document.createElement("a"); a.href = wa; a.target = "_blank"; a.rel = "noopener noreferrer";
+            a.textContent = "💬 chat"; td.appendChild(a); }
+          continue;
+        }
         td.textContent = LIST_COLS.includes(col) ? asList(r[col]).join("; ") : (r[col] ?? "");
         if (col === "evidence_snippet") td.className = "evidence";
         if (EDITABLE.includes(col)) {
@@ -596,14 +616,14 @@ function buildView(container, getRecords, key) {
       }
     }
   }
-  [selCountry, selSkill, selPlatform].forEach((el) => el.addEventListener("change", render));
+  [selCountry, selSkill, selPlatform, selContact].forEach((el) => el.addEventListener("change", render));
   roleIn.addEventListener("input", render);
 
   btnCsv.onclick = () => {
     const esc = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const cols = [...COLS, "discovered_at"];
     const lines = [cols.join(",")].concat(shown.map((r) =>
-      cols.map((c) => esc(LIST_COLS.includes(c) ? asList(r[c]).join("; ") : r[c])).join(",")));
+      cols.map((c) => esc(c === "whatsapp" ? waLink(r.phone) : LIST_COLS.includes(c) ? asList(r[c]).join("; ") : r[c])).join(",")));
     download("﻿" + lines.join("\n"), "text/csv", "csv");
   };
   btnJson.onclick = () => download(JSON.stringify(shown, null, 2), "application/json", "json");
@@ -837,7 +857,7 @@ function imRenderLeads() {
         <div><b>Location</b> ${esc(L.origin || "—")}</div><div><b>Destination</b> ${esc(L.destination || "—")}</div>
         <div><b>Timeline</b> ${esc(L.timeline || "—")}</div><div><b>Last activity</b> ${esc(L.last_activity || "unknown")}</div>
         <div><b>Confidence</b> ${Math.round((L.confidence || 0) * 100)}%</div>
-        <div><b>Contact</b> ${esc([L.phone, L.email].filter(Boolean).join(" · ") || "—")}</div>
+        <div><b>Contact</b> ${esc([L.phone, L.email].filter(Boolean).join(" · ") || "—")}${waLink(L.phone) ? ` <a href="${waLink(L.phone)}" target="_blank" rel="noopener noreferrer">💬</a>` : ""}</div>
         ${L.website ? `<div><b>Website</b> <a href="${esc(L.website)}" target="_blank" rel="noopener noreferrer">${esc(L.website.replace(/^https?:\/\//, ""))}</a></div>` : ""}
       </div>
       ${L.org_contacts && ((L.org_contacts.people || []).length || (L.org_contacts.phones || []).length > 1) ?
@@ -866,6 +886,54 @@ function imRenderLeads() {
 }
 // One run, both engines: Intent Miner understanding + sources + intent scoring, and the classic page reader
 // on the same pages. Progress goes to the main run log / wave table; records to "This run"; leads to the cards.
+// Run `fn` over `items` with at most `n` at a time.
+async function pool(items, n, fn) {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) await fn(items[i++]);
+  }));
+}
+function contactSummary() {
+  const recs = state.runRecords || [], leads = [...im.leads.values()];
+  const withPhone = recs.filter((r) => r.phone).length, withEmail = recs.filter((r) => r.email).length;
+  return { records: recs.length, withPhone, withEmail, both: recs.filter((r) => r.phone && r.email).length,
+    verified: recs.filter((r) => String(r.email_status || "").startsWith("✓")).length,
+    guessed: recs.filter((r) => r.email_guess).length, leads: leads.length,
+    orgs: leads.filter((l) => (l.lead_key || "").startsWith("org:")).length,
+    owners: leads.filter((l) => ((l.org_contacts || {}).people || []).length).length };
+}
+// After a run: what was found, and what would get more — computed from the run's own numbers and log.
+async function runDoctor(spec) {
+  const box = $("doctor"); if (!box) return;
+  const c = contactSummary(), log = state.logLines.join("\n"), tips = [];
+  const ws = Object.values(state.waveStats || {});
+  const sum = (k) => ws.reduce((a, w) => a + (w[k] || 0), 0);
+  let ready = null;
+  try { ready = await api("/api/readiness"); } catch (_) {}
+  const I = (ready && ready.integrations) || {};
+  const orgs = spec && spec.target === "organizations";
+  if (ready && !(I.search || []).length) tips.push("No Google search API key: DuckDuckGo alone finds far fewer pages. Add a <b>Serper</b> key (2,500 free searches) under 🔑 keys.");
+  if (ready && orgs && !(ready.maps || []).length) tips.push("Businesses: add a <b>Serper or SerpApi</b> key — Google Maps listings give a phone number for almost every business.");
+  const robots = (log.match(/robots\.txt/g) || []).length;
+  if (robots >= 3 && $("robots").checked) tips.push(`${robots} pages were skipped because their robots.txt forbids crawlers. Untick <b>Respect robots.txt</b> to read them (your decision — those sites ask crawlers not to).`);
+  if (sum("blocked") >= 3 && ready && (I.unblock || []).filter((u) => u !== "jina").length === 0) tips.push(`${sum("blocked")} pages refused the server (login walls / bot checks). An unblocker key (<b>ScraperAPI</b> or <b>ZenRows</b>, free trials) reads most of them.`);
+  if (/Reddit refused \(403\)/.test(log) && ready && !ready.reddit_api) tips.push("Reddit refused the server: add a Reddit API app (client id + secret) — see README.");
+  if (!orgs && c.records && c.records - c.withPhone - c.withEmail > 0 && !$("useLeadDb").checked) tips.push(`${c.records - Math.max(c.withPhone, c.withEmail)} leads have no contact: tick <b>Look up contacts of interested leads in lead databases</b>.`);
+  if ($("useLeadDb").checked && ready && !(I.enrich || []).length) tips.push("Lead-database lookups are on but no Apollo / Lusha / ContactOut / RocketReach / Hunter key is set.");
+  if ($("useLeadDb").checked && $("requireBoth").checked && /only a phone or only an email/.test(log)) tips.push("Some lookups found only a phone or only an email and were dropped: untick <b>both phone &amp; email</b> to keep them.");
+  if ((c.withEmail || c.guessed) && ready && !ready.smtp_remote && !(ready.mailbox_check || []).length) tips.push("Emails are checked by DNS only (Vercel blocks the SMTP port): set <code>SMTP_VERIFY_URL</code> or a Hunter / ZeroBounce / NeverBounce key to confirm mailboxes.");
+  if ($("extraction").value === "rules") tips.push("Page reading is “rules only”: choose <b>hybrid</b> for the AI to judge the shortlisted posts (more accurate leads, a few AI calls per batch).");
+  if (/too old/.test(log) && Number($("maxAge").value)) tips.push("Many posts were older than the time window: widen <b>Only leads active in the last</b> to get more.");
+  if (!ws.length) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="im-card"><h4>📋 Run summary</h4>
+    <p><b>${c.records}</b> contacts saved · <b>${c.withPhone}</b> with phone · <b>${c.withEmail}</b> with email · ${c.both} with both` +
+    `${c.verified ? ` · ${c.verified} emails verified` : ""}${c.guessed ? ` · ${c.guessed} work-email guesses` : ""}` +
+    `${c.orgs ? ` · ${c.orgs} businesses${c.owners ? ` (${c.owners} with owners / people named)` : ""}` : ""}</p>` +
+    `<p class="status">Pages: ${sum("found")} found → ${sum("duplicates")} read before → ${sum("crawled")} read, ${sum("blocked")} blocked, ${sum("failed")} failed</p>` +
+    (tips.length ? `<p><b>To get more contacts next time:</b></p><ul class="im-why">${tips.map((t) => `<li>${t}</li>`).join("")}</ul>` :
+      `<p class="status">Nothing obvious to improve — use “Next round” for new searches, or 🔁 re-check pages later for new comments.</p>`) + `</div>`;
+}
+
 async function runCombined(intent, totals, rounds, mode) {
   const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
   const auto = $("autoSources").checked;
@@ -910,18 +978,21 @@ async function runCombined(intent, totals, rounds, mode) {
     renderStats();
     logEv("wave_start", `Source: ${name} — ${queries.length} searches`, name);
     const hits = new Map();
-    for (const q of queries) {
-      if (state.stop) break;
+    let fatal = null;
+    // searches run 3 at a time (Maps / directories are one search per city, so this saves minutes)
+    await pool(queries, 3, async (q) => {
+      if (state.stop || fatal) return;
       try {
         const r = await api("/api/im/discover", { spec, source: src, query: q, settings });
         let added = 0;
         for (const h of r.hits) if (!hits.has(h.url) && !seen.has(h.url)) { hits.set(h.url, h); added++; }
         logEv("query", `${r.hits.length} results (+${added} new) ← ${q}` + (r.error ? `  ⚠️ ${r.error.slice(0, 120)}` : ""), name);
       } catch (e) {
-        if (e.status === 401 || e.status === 503) throw e;
-        logEv("warning", `Search failed (${e.message.slice(0, 120)}): ${q}`, name);
+        if (e.status === 401 || e.status === 503) fatal = e;
+        else logEv("warning", `Search failed (${e.message.slice(0, 120)}): ${q}`, name);
       }
-    }
+    });
+    if (fatal) throw fatal;
     stats.found = hits.size;
     const urls = [...hits.keys()];
     urls.forEach((x) => seen.add(x));
@@ -1006,7 +1077,7 @@ async function imReadPages(label, intent, getItems, extra) {
     }
     logEv("done", `${label} complete: ${items.length} pages, ${unchanged} unchanged, ${leads} leads.`);
   } catch (e) { logEv("error", e.message); }
-  finally { setRunning(false); renderRun(); }
+  finally { setRunning(false); renderRun(); runDoctor(JSON.parse($("imSpec").dataset.spec || "null")); }
 }
 // Re-read pages from earlier runs: new comments on old posts become new leads; unchanged pages are skipped.
 $("recheckBtn").onclick = () => imReadPages("Re-check", $("intent").value.trim(), async (sources) => {
@@ -1240,12 +1311,17 @@ async function startRun(nextRound) {
   const rounds = nextRound ? loadRounds(intent) : { round: 0, queries: [] };
   try {
     const mode = $("searchMode").value;
+    $("doctor").innerHTML = "";
     if (mode === "classic") await runPipeline(intent, totals, rounds);
     else await runCombined(intent, totals, rounds, mode);
     logEv("done", `${state.stop ? "Stopped by user." : "All waves complete."} ${totals.records} candidates saved from ${totals.crawled} scraped pages.`);
   } catch (e) {
     logEv("error", e.message);
-  } finally { setRunning(false); renderRun(); }
+  } finally {
+    setRunning(false); renderRun();
+    let spec = null; try { spec = JSON.parse($("imSpec").dataset.spec || "null"); } catch (_) {}
+    runDoctor(spec);
+  }
 }
 
 async function runPipeline(intent, totals, rounds) {

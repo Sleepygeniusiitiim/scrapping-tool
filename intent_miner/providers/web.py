@@ -128,6 +128,9 @@ class WebProvider(BaseProvider):
         page_date = (_PAGE_DATE.search(markdown) or [None, None])[1] or hit.get("date") or \
             dates.from_linkedin_url(url)
         doc = RawDocument(url=url, source=source, title=title.strip(), date=page_date, via=via)
+        own = re.search(r"## Website's own contact details[^\n]*\n(.+)", markdown)
+        if own:
+            doc.metadata["site_contacts"] = own.group(1).strip()[:600]
         for kind, author, link, when, body in _THREAD.findall(markdown):
             author = None if author.strip().lower() == "unknown" else author.strip()
             doc.units.append(Unit({"POST": "post", "ORG": "organization"}.get(kind, "comment"), author, body,

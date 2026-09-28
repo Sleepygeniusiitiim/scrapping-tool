@@ -26,6 +26,10 @@ from fetcher import _Robots
 _LINKEDIN = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[A-Za-z0-9\-_%]+/?", re.IGNORECASE)
 _IG_NAME = re.compile(r"from (.+?) \(@[\w.]+\)")
 _TITLE_NAME = re.compile(r"^\s*([^|•\-–(@]{3,60}?)\s*(?:\(@[\w.]+\)|[-–|•])")
+_BIO_LINK = re.compile(r"https?://(?:www\.)?(?:linktr\.ee|beacons\.ai|bio\.link|linkin\.bio|taplink\.(?:cc|at)|"
+                       r"lnk\.bio|msha\.ke|campsite\.bio|solo\.to|carrd\.co|[a-z0-9-]+\.carrd\.co|linkbio\.co|"
+                       r"hoo\.be|stan\.store|allmylinks\.com|about\.me)/[^\s\"'<>)]*", re.IGNORECASE)
+_WA_NUM = re.compile(r"(?:wa\.me/|whatsapp\.com/send/?\?phone=)\+?(\d{8,15})", re.IGNORECASE)
 _WALL = re.compile(r"log ?in|sign ?in|sign up|join now|create an account", re.IGNORECASE)
 
 
@@ -84,9 +88,24 @@ def parse_profile(url: str, html: str) -> dict:
     if "linkedin.com/in/" in url:
         linkedin = url
     walled = not name and not linkedin and bool(_WALL.search(title + " " + desc[:200]))
+    bio_links = list(dict.fromkeys(m.group(0).rstrip("/.,") for m in _BIO_LINK.finditer(f"{links} {desc}")))[:2]
+    phones = rule_extractor.phones_in(desc) + ["+" + m.group(1) for m in _WA_NUM.finditer(f"{links} {desc}")]
     return {"url": url, "name": name, "linkedin": linkedin, "bio": desc[:300],
-            "emails": rule_extractor.emails_in(desc), "phones": rule_extractor.phones_in(desc),
-            "status": "walled" if walled else "ok"}
+            "emails": rule_extractor.emails_in(desc), "phones": list(dict.fromkeys(phones)),
+            "bio_links": bio_links, "status": "walled" if walled else "ok"}
+
+
+def parse_link_page(html: str) -> dict:
+    """A link-in-bio page (Linktree, bio.link …): the contacts people put there — email, WhatsApp, phone,
+    LinkedIn — which Instagram / TikTok bios rarely show directly."""
+    from fetcher import reveal_contacts
+    soup = BeautifulSoup(html, "html.parser")
+    hrefs = " ".join(a.get("href", "") for a in soup.find_all("a"))
+    reveal_contacts(soup)
+    text = soup.get_text(" ", strip=True)[:20000]
+    phones = rule_extractor.phones_in(text) + ["+" + m.group(1) for m in _WA_NUM.finditer(hrefs)]
+    linkedin = next((m.group(0) for m in _LINKEDIN.finditer(hrefs) if "linkedin.com/in/" in m.group(0)), None)
+    return {"emails": rule_extractor.emails_in(text), "phones": list(dict.fromkeys(phones)), "linkedin": linkedin}
 
 
 async def visit(urls: List[str], respect_robots: bool = True, timeout_s: int = 12) -> Dict[str, dict]:
@@ -114,4 +133,26 @@ async def visit(urls: List[str], respect_robots: bool = True, timeout_s: int = 1
             return parse_profile(str(r.url), r.text)
 
     results = await asyncio.gather(*(one(u) for u in urls))
+
+    async def follow(res: dict) -> None:
+        """Open the profile's link-in-bio page when the profile itself showed no contact."""
+        if res.get("status") != "ok" or res.get("emails") or res.get("phones") or not res.get("bio_links"):
+            return
+        link = res["bio_links"][0]
+        async with sem:
+            if robots and not await robots.allowed(link):
+                return
+            try:
+                r = await asyncio.wait_for(client.get(link), timeout=timeout_s + 3)
+            except Exception:
+                return
+        if r.status_code >= 400:
+            return
+        x = parse_link_page(r.text)
+        res["emails"], res["phones"] = x["emails"], x["phones"]
+        res["linkedin"] = res.get("linkedin") or x["linkedin"]
+        if x["emails"] or x["phones"]:
+            res["via_bio_link"] = link
+
+    await asyncio.gather(*(follow(r) for r in results))
     return {r["url"]: r for r in results} | {u: r for u, r in zip(urls, results)}

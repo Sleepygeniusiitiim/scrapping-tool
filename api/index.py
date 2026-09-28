@@ -298,6 +298,20 @@ async def health(
     return out
 
 
+@router.get("/readiness")
+def readiness(x_integrations: Optional[str] = Header(default=None)):
+    """What this deployment can do (no AI call): used by the run summary to suggest fixes."""
+    from intent_miner.providers import maps
+    keys = _keys(x_integrations)
+    summ = integrations.summary(keys)
+    return {"integrations": summ, "maps": maps.available(keys),
+            "mailbox_check": summ.get("verify") or [],
+            "smtp_remote": bool(os.getenv("SMTP_VERIFY_URL")),
+            "reddit_api": bool(keys.get("reddit_client_id") and keys.get("reddit_client_secret")),
+            "youtube_api": bool(keys.get("youtube") or os.getenv("YOUTUBE_API_KEY")),
+            "meta": bool(os.getenv("META_PAGE_TOKEN"))}
+
+
 @router.post("/plan")
 async def plan(
     body: PlanIn,

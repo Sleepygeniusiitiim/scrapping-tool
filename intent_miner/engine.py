@@ -204,6 +204,11 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         if h and h in known and not settings.get("reprocess"):
             stats["unchanged"] += 1           # same content already classified in an earlier run
             continue
+        if orgs and d.metadata.get("site_contacts") and d.source not in ("directories", "maps") \
+                and not any(u.kind == "organization" for u in d.units) and _site_name(d):
+            # a business's own page: its header / footer contacts belong to the business itself
+            d.units.append(Unit("organization", _site_name(d), f"{d.title}. {d.metadata['site_contacts']}", d.url,
+                                d.date))
         kept: List[Unit] = []
         for i, u in enumerate(d.units):
             if any(processing.near_duplicate(u.text, k.text) for k in kept):
@@ -421,6 +426,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
 MAX_COMPANY_CRAWLS_PER_BATCH = 6
 MAX_MAPS_LOOKUPS_PER_BATCH = 6
 MAX_OWNER_SEARCHES_PER_BATCH = 4
+MAX_ROLE_PROBES_PER_BATCH = 4
 _gov_count = {"n": None, "at": 0.0}
 
 
@@ -502,6 +508,18 @@ async def _company_contacts(leads: List[dict], candidates: List[CandidateRecord]
         if good:
             why.append(f"✓ {len(good)} published email(s); domain accepts mail")
         L["why"] = L.get("why", []) + why
+
+    # 2b. website but no published email: test info@ / contact@ / enquiry@ … with the zero-send SMTP check
+    from urllib.parse import urlparse
+    probe = [L for L in named if L.get("website") and not L.get("email")][:MAX_ROLE_PROBES_PER_BATCH]
+    if probe:
+        res = await asyncio.gather(*(company_contacts.probe_role_addresses(
+            keys, (urlparse(L["website"]).hostname or "").removeprefix("www.")) for L in probe), return_exceptions=True)
+        for L, v in zip(probe, res):
+            if isinstance(v, dict) and v.get("email"):
+                L["email"] = v["email"]
+                L["why"] = L.get("why", []) + [f"✓ {v['email']}: mailbox confirmed by the mail server (SMTP), "
+                                               "not published on the site"]
 
     # 3. decision makers on LinkedIn (owner / director / founder …) for leads whose site named nobody senior
     senior = re.compile(r"owner|founder|director|proprietor|partner|principal|chairman|ceo|md\b", re.I)
