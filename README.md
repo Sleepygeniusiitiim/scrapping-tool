@@ -148,6 +148,20 @@ name (Mobile No. / Phone → phone, Key Skills → skills, Last Active / Applied
 people applied to my job" to mark them interested. The tool does not log in to portals with your
 password — automated logins break their terms and get recruiter accounts blocked.
 
+## Company contacts from their own website (organization leads)
+
+How tools like Hunter / Apollo get *business* contacts, done on the public web only
+(`company_contacts.py`, runs automatically for organization leads, up to 5 per batch):
+find the organization's own site (the lead's page, or a search result whose domain / title matches the
+name — directories are skipped), read home + contact / about / team / admissions / careers pages, and
+collect published emails (text + mailto), phones (text + tel), WhatsApp (wa.me), LinkedIn / Facebook /
+Instagram pages and named people with roles (schema.org founder / employee, "Principal: …",
+"…, Managing Director"). Each email's domain is checked for MX records ("domain accepts mail" — not proof
+that the mailbox exists). Not done: guessing emails from name patterns, SMTP probing, logged-in scraping.
+
+What cannot be copied from those tools: their personal mobile numbers mostly come from contributor
+networks (users' address books uploaded via their extensions / apps) and purchased data.
+
 ## Auto-reply on your own Instagram / Facebook posts (Outreach tab)
 
 Someone comments "interested" on a post from your official Instagram Business account or Facebook

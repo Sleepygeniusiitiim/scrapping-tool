@@ -748,7 +748,12 @@ function imRenderLeads() {
         <div><b>Timeline</b> ${esc(L.timeline || "—")}</div><div><b>Last activity</b> ${esc(L.last_activity || "unknown")}</div>
         <div><b>Confidence</b> ${Math.round((L.confidence || 0) * 100)}%</div>
         <div><b>Contact</b> ${esc([L.phone, L.email].filter(Boolean).join(" · ") || "—")}</div>
+        ${L.website ? `<div><b>Website</b> <a href="${esc(L.website)}" target="_blank" rel="noopener noreferrer">${esc(L.website.replace(/^https?:\/\//, ""))}</a></div>` : ""}
       </div>
+      ${L.org_contacts && ((L.org_contacts.people || []).length || (L.org_contacts.phones || []).length > 1) ?
+        `<p class="status" style="margin:6px 0 0">${(L.org_contacts.people || []).slice(0, 4).map((p) => esc(p.name + " (" + p.role + ")")).join(" · ")}` +
+        `${(L.org_contacts.phones || []).length ? " · Phones: " + esc(L.org_contacts.phones.join(", ")) : ""}` +
+        `${(L.org_contacts.whatsapp || []).length ? " · WhatsApp: " + esc(L.org_contacts.whatsapp.join(", ")) : ""}</p>` : ""}
       ${(L.evidence || []).slice(0, 2).map((q) => `<div class="im-quote">“${esc(q)}”</div>`).join("")}
       <details><summary>Why this lead?</summary><ul class="im-why">${(L.why || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
         ${(L.possible_matches || []).length ? `<p class="status">Possible same person elsewhere (needs verification): ${(L.possible_matches).map((m) => esc(m.name + " on " + m.platform)).join(", ")}</p>` : ""}</details>

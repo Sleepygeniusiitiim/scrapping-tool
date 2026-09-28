@@ -325,6 +325,10 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             if L is not None:
                 L["email"], L["phone"] = L["email"] or c.email, L["phone"] or c.phone
 
+    # ---- Organizations: public contacts from their own website (the Hunter / Apollo crawl approach) ----
+    if orgs and leads and settings.get("company_contacts", True):
+        await _company_contacts(leads, candidates, cand_lead, keys, settings, stats, warnings)
+
     # ---- Lead databases (Apollo / Lusha / ContactOut / RocketReach) for interested leads -------------
     if settings.get("enrich") and candidates:
         import pipeline
@@ -369,6 +373,52 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     return {"stats": stats, "leads": saved, "warnings": warnings, "health": health,
             "records": [c.model_dump() for c in candidates],
             "failed": [{"url": d.url, "status": d.status, "error": d.error} for d in docs if d.status != "ok"]}
+
+
+MAX_COMPANY_CRAWLS_PER_BATCH = 5
+
+
+async def _company_contacts(leads: List[dict], candidates: List[CandidateRecord], cand_lead: Dict[str, dict],
+                            keys: Dict[str, str], settings: dict, stats: dict, warnings: List[str]) -> None:
+    """For organization leads: find their own site and collect the contacts it publishes."""
+    import company_contacts
+    from schema import clean_email, clean_phone
+    todo = [L for L in leads if L.get("display_name")][:MAX_COMPANY_CRAWLS_PER_BATCH]
+    page_of = {L["lead_key"]: (L.get("sources") or [{}])[0].get("url", "") for L in todo}
+    results = await asyncio.gather(*(company_contacts.for_organization(
+        keys, L["display_name"], L.get("origin") or "", page_of[L["lead_key"]], settings.get("respect_robots", True))
+        for L in todo), return_exceptions=True)
+    cand_of = {id(L): c for c, L in ((c, cand_lead.get(c.source_url)) for c in candidates) if L is not None}
+    found = sites = 0
+    for L, res in zip(todo, results):
+        if isinstance(res, Exception) or not res:
+            continue
+        sites += 1
+        L["website"] = res["website"]
+        good = [e["email"] for e in res["emails"] if e["domain_accepts_mail"] is not False]
+        before = (L.get("email"), L.get("phone"))
+        L["email"] = L.get("email") or (clean_email(good[0]) if good else None)
+        L["phone"] = L.get("phone") or (clean_phone(res["phones"][0]) if res["phones"] else
+                                        clean_phone(res["whatsapp"][0]) if res["whatsapp"] else None)
+        L["org_contacts"] = {k: res[k] for k in ("emails", "phones", "whatsapp", "social", "people")}
+        why = [f"✓ Website: {res['website']} ({res['pages']} pages read)"]
+        if res["people"]:
+            why.append("✓ People named on the site: " +
+                       ", ".join(f"{p['name']} ({p['role']})" for p in res["people"][:3]))
+        if good:
+            why.append(f"✓ {len(good)} published email(s); domain accepts mail")
+        L["why"] = L.get("why", []) + why
+        if (L.get("email"), L.get("phone")) != before:
+            found += 1
+            c = cand_of.get(id(L))
+            if c is not None:
+                c.email, c.phone = c.email or L["email"], c.phone or L["phone"]
+                c.contact_source = c.contact_source or "company_website"
+    stats["company_sites"] = sites
+    stats["company_contacts"] = found
+    if todo:
+        warnings.append(f"Company websites: {len(todo)} organizations → {sites} own sites read → "
+                        f"{found} got a new phone / email")
 
 
 def _person_keys(c: CandidateRecord) -> set:
