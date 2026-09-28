@@ -491,9 +491,12 @@ async def _search_bios(records: List[CandidateRecord], keys: dict, notes: List[s
 
 async def _guess_work_emails(records: List[CandidateRecord], companies: Dict[int, str], keys: dict,
                              respect_robots: bool, notes: List[str]) -> None:
-    """For leads whose employer is known: learn the employer's email format from its website, apply it."""
+    """LAST RESORT, only for leads who are working (employer known) and for whom no phone number and no email
+    was found anywhere else (comment, own profile, bio, lead databases): learn the employer's email format
+    from its website and apply it to their name."""
     import company_contacts
-    todo = [r for r in records if id(r) in companies and not r.email_guess][:MAX_EMAIL_GUESSES]
+    todo = [r for r in records if id(r) in companies and not r.email_guess and not r.phone and not r.email
+            ][:MAX_EMAIL_GUESSES]
     if not todo:
         return
     res = await asyncio.gather(*(company_contacts.guess_for_person(keys, r.name or "", companies[id(r)],
@@ -504,8 +507,8 @@ async def _guess_work_emails(records: List[CandidateRecord], companies: Dict[int
         if isinstance(g, dict) and g.get("email"):
             r.email_guess = f"{g['email']} (guessed, {g['confidence']} confidence, format {g['format']})"
             n += 1
-    notes.append(f"Work-email guesses: {len(todo)} leads with a known employer → {n} guessed from the employer's "
-                 "published email format (unverified — marked 'guessed')")
+    notes.append(f"Work-email guesses (last resort — employed, no phone / email found anywhere): {len(todo)} leads → "
+                 f"{n} guessed from the employer's published email format (unverified — marked 'guessed')")
 
 
 async def _enrich_records(records: List[CandidateRecord], keys: dict, require_both: bool,
@@ -537,7 +540,7 @@ async def _enrich_records(records: List[CandidateRecord], keys: dict, require_bo
     todo = [r for r in wanting if _identifiable(r)][:MAX_ENRICH_PER_BATCH]
     no_identity = len(wanting) - len([r for r in wanting if _identifiable(r)])
     if not todo:
-        await _guess_work_emails([r for r in wanting if not r.email], companies, keys, respect_robots, notes_out)
+        await _guess_work_emails(wanting, companies, keys, respect_robots, notes_out)
         return 0, notes_out + [f"Lead databases: {len(wanting)} interested leads miss contacts, but none has a "
                                "LinkedIn profile (their own profile page did not link one), so they were not looked "
                                "up — no credits spent."]
@@ -560,13 +563,14 @@ async def _enrich_records(records: List[CandidateRecord], keys: dict, require_bo
             done += 1
         elif f["email"] or f["phone"]:
             partial += 1
-    await _guess_work_emails([r for r in wanting if not r.email], companies, keys, respect_robots, notes_out)
     summary = (f"Lead databases: {len(wanting)} interested leads missing contacts → looked up {len(todo)} by "
                f"LinkedIn profile" + (f" ({no_identity} without a LinkedIn profile skipped)" if no_identity else "")
                + f" → filled {done}"
                + (f" ({partial} found only a phone or only an email — not kept because 'both phone & email' is ticked)"
                   if partial else ""))
-    return done, notes_out + [summary] + [f"Lead database: {n}" for n in list(notes)[:3]]
+    guess_notes: List[str] = []
+    await _guess_work_emails(wanting, companies, keys, respect_robots, guess_notes)   # last step, after lookups
+    return done, notes_out + [summary] + [f"Lead database: {n}" for n in list(notes)[:3]] + guess_notes
 
 
 def _hit_date(hit: dict) -> Optional[str]:

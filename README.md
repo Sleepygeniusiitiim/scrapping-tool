@@ -170,7 +170,9 @@ For every interested lead still missing a contact (after their comment and their
   (instagram.com/<handle>/, x.com/<handle>, facebook.com/<handle>, linkedin.com/in/<slug>) is used —
   pages that only mention the handle are ignored — for their name, the phone / email in their bio
   (`contact_source = profile_bio`) and, for LinkedIn, their current employer and job title.
-- **Work-email guess** (`email_patterns.py`): for a lead whose employer is known, the employer's website
+- **Work-email guess** (`email_patterns.py`) — the LAST option, only for a lead who is working (employer
+  known) and for whom no phone number and no email was found anywhere (comment, own profile, bio, lead
+  databases): the employer's website
   is crawled, its email format is learned from the addresses it publishes (a named person next to their
   address, e.g. Harpreet Kaur ↔ harpreet.kaur@…, or the shape of published addresses), and applied to the
   lead's name. Stored separately in `email_guess` as "x@company.com (guessed, <confidence>, format …)",
