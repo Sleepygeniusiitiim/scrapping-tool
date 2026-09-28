@@ -44,6 +44,8 @@ class SourcedQuery(BaseModel):
 
 class QuerySpec(BaseModel):
     summary: str = Field("", description="One sentence restating what is being looked for")
+    target: str = Field("people", description="people (individuals showing intent) | organizations (businesses, "
+                                              "institutes, schools, agencies, their owners / contacts)")
     intent_type: str = Field("job_search", description="One of the intent types")
     industry: str = ""
     professions: List[str] = Field(default_factory=list, description="Job titles / products / services + synonyms")
@@ -68,6 +70,12 @@ class QuerySpec(BaseModel):
     def _intent(cls, v):
         v = str(v or "").strip().lower().replace(" ", "_")
         return v if v in INTENT_TYPES else "job_search"
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def _target(cls, v):
+        v = str(v or "").strip().lower()
+        return "organizations" if v.startswith(("org", "business", "compan", "b2b")) else "people"
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +124,9 @@ class UnitIntent(BaseModel):
     destination: Optional[str] = None
     timeline: Optional[str] = Field(None, description="e.g. 'within 12 months', 'next year', 'immediately'")
     budget: Optional[str] = None
+    organization: Optional[str] = Field(None, description="Organization name, when the unit describes one")
+    org_type: Optional[str] = Field(None, description="e.g. driving school, training institute, agency")
+    city: Optional[str] = None
     confidence: float = Field(0.0, ge=0, le=1)
     evidence: List[str] = Field(default_factory=list, description="Verbatim quotes from the unit")
 

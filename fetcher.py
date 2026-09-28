@@ -116,6 +116,36 @@ def _author_name(obj: dict) -> str:
     return str(a or "").strip()
 
 
+_ORG_TYPES = re.compile(r"Organization|Business|School|College|Institute|Corporation|Company|Store|Service|"
+                        r"Agency|Center|Centre|Academy|DrivingSchool|Place", re.IGNORECASE)
+
+
+def _org_line(obj: dict) -> str:
+    """schema.org Organization / LocalBusiness → 'ORG by Name <url>: description | Phone: … | Email: … | Address: …'."""
+    kind = obj.get("@type")
+    kind = " ".join(kind) if isinstance(kind, list) else str(kind or "")
+    name = obj.get("name")
+    if not kind or not _ORG_TYPES.search(kind) or not isinstance(name, str) or not name.strip():
+        return ""
+    if kind in ("WebSite", "WebPage", "SiteNavigationElement", "BreadcrumbList"):
+        return ""
+    addr = obj.get("address")
+    if isinstance(addr, dict):
+        addr = ", ".join(str(addr.get(k)) for k in ("streetAddress", "addressLocality", "addressRegion", "postalCode",
+                                                   "addressCountry") if isinstance(addr.get(k), str) and addr.get(k))
+    tel, mail = obj.get("telephone"), obj.get("email")
+    tel = ", ".join(tel) if isinstance(tel, list) else tel
+    parts = [re.sub(r"\s+", " ", str(obj.get("description") or kind)).strip()[:600]]
+    if isinstance(tel, str) and tel.strip():
+        parts.append(f"Phone: {tel.strip()}")
+    if isinstance(mail, str) and mail.strip():
+        parts.append(f"Email: {mail.strip().removeprefix('mailto:')}")
+    if isinstance(addr, str) and addr.strip():
+        parts.append(f"Address: {addr.strip()}")
+    url = obj.get("url") if isinstance(obj.get("url"), str) and str(obj.get("url")).startswith("http") else ""
+    return f"ORG by {name.strip()}{f' <{url}>' if url else ''}: " + " | ".join(parts)
+
+
 def structured_thread(soup: BeautifulSoup) -> str:
     """Posts, answers and comments from schema.org JSON-LD, one line per author."""
     lines, seen = [], set()
@@ -125,6 +155,11 @@ def structured_thread(soup: BeautifulSoup) -> str:
         except (TypeError, ValueError):
             continue
         for obj in _walk(data):
+            org = _org_line(obj)
+            if org and org not in seen:
+                seen.add(org)
+                lines.append(org)
+                continue
             body = obj.get("articleBody") or obj.get("text")
             if not isinstance(body, str) or not body.strip():
                 continue

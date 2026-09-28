@@ -699,6 +699,7 @@ function imRenderSpec(spec) {
   (spec.queries || []).forEach((q) => { (bySrc[q.source] = bySrc[q.source] || []).push(q.query); });
   $("imSpec").innerHTML = `<div class="im-card"><h4>Understanding</h4><div class="im-meta">
     <div><b>Request</b> ${esc(spec.summary)}</div><div><b>Intent</b> ${esc(spec.intent_type)}</div>
+    <div><b>Looking for</b> ${spec.target === "organizations" ? "organizations / businesses (B2B)" : "people showing intent"}</div>
     <div><b>Industry</b> ${esc(spec.industry || "—")}</div>
     <div><b>Timeline</b> ${spec.timeline_months ? "≤ " + spec.timeline_months + " months" : "—"}</div>
     <div><b>Time window</b> ${spec.max_age_days ? "last " + spec.max_age_days + " days" : "any"}</div></div>
@@ -719,7 +720,8 @@ function imRenderLeads() {
     const card = document.createElement("div"); card.className = "im-card";
     const src = (L.sources || []);
     card.innerHTML = `<h4><span class="im-tier ${esc(L.tier)}">${esc(L.tier)} · ${L.lead_score}</span>
-      ${esc(L.display_name || "(anonymous post)")} <span class="status" style="margin:0">${esc(L.platform || "")}</span></h4>
+      ${esc(L.display_name || "(anonymous post)")} <span class="status" style="margin:0">${esc(L.platform || "")}` +
+      `${(L.lead_key || "").startsWith("org:") ? " · organization" : ""}</span></h4>
       <div class="im-meta">
         <div><b>Intent</b> ${esc((L.intent_type || "").replace(/_/g, " "))} · ${L.intent_score}</div>
         <div><b>Profession</b> ${esc(L.profession || "—")}</div>

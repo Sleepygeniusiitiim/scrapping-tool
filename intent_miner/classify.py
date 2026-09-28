@@ -25,6 +25,24 @@ Contact details are replaced by tags like [PHONE_1]; ignore them.
 """
 
 
+ORG_SYSTEM = """You qualify BUSINESS / ORGANIZATION leads for a B2B sales tool from ONE web page.
+For each numbered unit (a listing entry, a profile, a page section or a post) decide whether it describes
+an ORGANIZATION (business, institute, school, training centre, agency, company — or its owner / director
+speaking for it) that matches the request: its type of business / services and its location.
+
+Return {"units": [...]} with one object per unit you were given:
+- unit: its number. relevant: true only if the unit is about a real organization matching the request.
+  News, job ads for drivers, government notices, blog advice and directories' own boilerplate are false.
+- organization: the organization's name as written. org_type: what kind of organization it is.
+- city: its city / area if stated. intent_type: "vendor_search" for a matching business, "partnership"
+  if they invite partners / franchise / tie-ups, otherwise "irrelevant".
+- intent_strength 0–100: how well it matches the request. explicit_need: true if the unit shows the
+  organization is actively operating / enrolling / seeking partners (admissions open, call now, enquire).
+- confidence 0–1. evidence: 1–3 VERBATIM quotes proving the match. Never paraphrase.
+Contact details are replaced by tags like [PHONE_1]; ignore them.
+"""
+
+
 def build_prompt(spec: QuerySpec, doc_title: str, units: List[Tuple[int, str, str, str]]) -> str:
     lines = [f"Request: {spec.summary or ', '.join(spec.professions)}",
              f"Intent wanted: {spec.intent_type}; role/product: {', '.join(spec.professions[:8])}; "
@@ -49,7 +67,8 @@ async def classify(ai, spec: QuerySpec, doc_title: str, units: List[Tuple[int, s
     if not units:
         return {}
     res: DocumentIntent = await ai.generate_structured(
-        build_prompt(spec, doc_title, units), DocumentIntent, system_instruction=SYSTEM, temperature=0.1,
+        build_prompt(spec, doc_title, units), DocumentIntent,
+        system_instruction=ORG_SYSTEM if spec.target == "organizations" else SYSTEM, temperature=0.1,
         max_retries=2)
     texts = {i: t for i, _, _, t in units}
     out: Dict[int, UnitIntent] = {}

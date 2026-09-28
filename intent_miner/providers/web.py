@@ -26,7 +26,7 @@ from fetcher import fetch_batch
 from ..models import QuerySpec, RawDocument, Unit
 from .base import BaseProvider, Capability, ProviderConfig, source_of
 
-_THREAD = re.compile(r"^(POST|COMMENT) by (.+?)(?: <(https?://[^>\s]+)>)?(?: \[(\d{4}-\d{2}-\d{2})\])?: (.*)$",
+_THREAD = re.compile(r"^(POST|COMMENT|ORG) by (.+?)(?: <(https?://[^>\s]+)>)?(?: \[(\d{4}-\d{2}-\d{2})\])?: (.*)$",
                      re.MULTILINE)
 _PAGE_DATE = re.compile(r"^Page date: (\d{4}-\d{2}-\d{2})$", re.MULTILINE)
 _QUORA_AUTHOR = re.compile(r"/(?:answer|profile)/([A-Za-z][A-Za-z0-9-]+?)(?:-\d+)?(?:/|$)")
@@ -130,8 +130,8 @@ class WebProvider(BaseProvider):
         doc = RawDocument(url=url, source=source, title=title.strip(), date=page_date, via=via)
         for kind, author, link, when, body in _THREAD.findall(markdown):
             author = None if author.strip().lower() == "unknown" else author.strip()
-            doc.units.append(Unit("post" if kind == "POST" else "comment", author, body, link or None,
-                                  when or page_date))
+            doc.units.append(Unit({"POST": "post", "ORG": "organization"}.get(kind, "comment"), author, body,
+                                  link or None, when or page_date))
         if doc.units:
             return doc
         # No structured thread: split the page text into blocks; each block keeps the nearest stated name.

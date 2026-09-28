@@ -21,6 +21,8 @@ import rule_extractor
 from .models import QuerySpec, Unit, UnitIntent
 
 WEIGHTS = {"keyword": 0.25, "semantic": 0.20, "explicit": 0.20, "timeline": 0.15, "location": 0.10, "llm": 0.10}
+# Organization leads: no personal "need" or timeline — match of business type, location and a reachable contact.
+ORG_WEIGHTS = {"keyword": 0.35, "semantic": 0.15, "explicit": 0.20, "location": 0.20, "llm": 0.10}
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _TIMELINE = [
     (re.compile(r"\b(?:immediate(?:ly)?|asap|urgent(?:ly)?|right now|this month|within (?:a|one|1|2|two|3|three) "
@@ -91,6 +93,27 @@ class Scorer:
         total = sum(sorted(self.vocab.values(), reverse=True)[:12])
         return int(min(100, 100 * covered / max(total * 0.5, 1)))
 
+    def org_keyword(self, text: str) -> tuple[int, List[str]]:
+        """Organization leads: business type / services named + business signals (contact, address, courses)."""
+        hits, score = [], 0
+        prof = self.prof.findall(text) if self.prof else []
+        if prof:
+            score += 60
+            hits.append(f"{prof[0]} identified")
+        elif self.prof_words and self.prof_words.search(text):
+            score += 35
+            hits.append("related business words")
+        signals = self.intent.findall(text) if self.intent else []
+        if signals:
+            score += 25
+            hits.append("business signals: " + ", ".join(dict.fromkeys(x.lower() for x in signals[:3])))
+        if self.negative and self.negative.search(text):
+            score -= 30
+        return max(0, min(100, score + (15 if prof and signals else 0))), hits
+
+    def org_contact(self, text: str) -> int:
+        return 100 if (rule_extractor.phones_in(text) or rule_extractor.emails_in(text)) else 30
+
     def explicit(self, unit: Unit) -> int:
         t = unit.text
         if rule_extractor._HIRING.search(t) and not rule_extractor.shows_interest(t):
@@ -126,8 +149,9 @@ def freshness(date_iso: Optional[str]) -> int:
     return 100 if age <= 7 else 85 if age <= 30 else 65 if age <= 90 else 40 if age <= 180 else 20
 
 
-def combine(parts: Dict[str, float]) -> int:
-    return int(round(sum(parts.get(k, 0) * w for k, w in WEIGHTS.items())))
+def combine(parts: Dict[str, float], organizations: bool = False) -> int:
+    weights = ORG_WEIGHTS if organizations else WEIGHTS
+    return int(round(sum((parts.get(k) or 0) * w for k, w in weights.items())))
 
 
 def lead_score(intent_score: int, fresh: int, quality: int) -> int:

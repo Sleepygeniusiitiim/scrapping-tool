@@ -13,6 +13,10 @@ posts, search-indexed pages).
 
 Return JSON with:
 - summary: one sentence restating the request.
+- target: "organizations" when the user wants businesses / institutes / schools / training centres /
+  agencies / companies or their owners, directors or contact persons (B2B leads: find WHO they are and
+  their public business contact details); "people" when the user wants individuals who show a need or
+  interest (job seekers, buyers, students, …).
 - intent_type: one of {", ".join(INTENT_TYPES)}.
 - industry, professions (job titles / products / services plus real-world synonyms, local-language forms
   and qualifications, e.g. nursing → "staff nurse", "GNM", "BSc Nursing", "Pflegefachkraft").
@@ -31,6 +35,12 @@ Return JSON with:
     * "forums": inurl:forum / inurl:thread / known forums for this field …
     * "linkedin": site:linkedin.com/posts …   * "facebook": site:facebook.com …
   At most one quoted phrase per query; use the professions, places and intent terms; vary them.
+  For target "organizations": professions = the kinds of organization and their services (e.g. "driving
+  school", "HMV driver training institute", "commercial vehicle training centre"); high_intent_terms =
+  words that mark a real business page ("contact us", "call", "address", "admission", "enquiry", "fees",
+  "courses", "owner", "director", "founder"); queries target business directories and listings
+  (justdial.com, indiamart.com, sulekha.com, tradeindia.com, yellow pages, Google-indexed business sites,
+  "contact us" pages, LinkedIn company / founder posts) in the places named.
 """
 
 

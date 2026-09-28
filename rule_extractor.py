@@ -66,6 +66,9 @@ def mentions_any(text: str, places: List[str]) -> bool:
         pl = place.strip()
         if not pl:
             continue
+        if pl.lower() in ("india", "north india", "south india") and (_INDIA_RE.search(text or "") or
+                                                                     _FROM_INDIA.search(text or "")):
+            return True                                # an Indian city / state counts as India
         rx = _TARGET_RE.get(pl) or next((r for k, r in _TARGET_RE.items() if k.lower() == pl.lower()), None)
         if rx is not None and rx.search(text or ""):
             return True

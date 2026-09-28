@@ -97,7 +97,8 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
     n = max(1, min(max_results, 100))
     tbs = {"tbs": f"qdr:m{max_age_months}"} if max_age_months else {}
     try:
-        with httpx.Client(timeout=25) as c:
+        # Short timeout: a slow search API must not hold up the run (DuckDuckGo results are used anyway).
+        with httpx.Client(timeout=httpx.Timeout(12.0, connect=6.0)) as c:
             if name == "serper":
                 r = c.post("https://google.serper.dev/search", headers={"X-API-KEY": keys["serper"]},
                            json={"q": query, "gl": gl, "hl": "en", "num": n, **tbs})

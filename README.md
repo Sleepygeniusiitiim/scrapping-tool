@@ -88,6 +88,15 @@ In the **“🔑 Lead databases & search API keys”** section of the home page 
 - **Intent Miner only** — the same run without the classic page reader.
 - **Classic waves only** — the original wave pipeline, unchanged.
 
+**People or organizations.** The understanding step decides whether the command asks for *people* who
+show intent (job seekers, buyers, students…) or *organizations* (businesses, institutes, training
+centres, agencies and their owners — B2B leads). For organizations the searches target business
+directories and "contact us" pages; schema.org Organization / LocalBusiness data is read; each listing
+entry or business page becomes a lead named after the organization, scored on business type (35%),
+location (20%), a public business phone / email (20%), semantic match (15%) and AI confidence (10%).
+"Only interested" and the time window do not apply to organizations, and the classic page reader (which
+looks for individual candidates) is skipped for them — use Combined or Intent Miner only for B2B searches.
+
 Combined and Intent-Miner runs use the existing settings: sources, "Only leads active in the last…",
 "Only leads who say they're interested", Page reading (rules = no AI classification, hybrid / AI = AI on
 the shortlist), lead-database lookups, robots.txt, search backend, region, results per query, fresh URLs

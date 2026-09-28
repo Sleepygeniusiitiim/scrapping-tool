@@ -156,6 +156,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
 
     shortlist: List[tuple] = []          # (doc, unit_index, unit, parts, why)
     scorer = scoring.Scorer(spec)
+    orgs = spec.target == "organizations"      # B2B: businesses / institutes, not individuals with a need
     for d in docs:
         lang = processing.language(d.text)
         h = hashes.get(d.url)
@@ -173,15 +174,21 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
                 continue
             kept.append(u)
             stats["units"] += 1
-            if dates.older_than(u.date or d.date, max(1, round((spec.max_age_days or 0) / 30))
-                                if spec.max_age_days else 0):
+            if not orgs and dates.older_than(u.date or d.date, max(1, round((spec.max_age_days or 0) / 30))
+                                             if spec.max_age_days else 0):
                 stats["too_old"] += 1
                 continue
-            context = f"{d.title}\n{u.text}" if u.kind in ("post", "snippet", "answer") else u.text
-            kw, kw_why = scorer.keyword(context)
-            explicit = scorer.explicit(u)
-            if kw < STAGE1_MIN and explicit < 100:
-                continue
+            context = f"{d.title}\n{u.text}" if u.kind in ("post", "snippet", "answer", "organization") else u.text
+            if orgs:
+                kw, kw_why = scorer.org_keyword(context)
+                explicit = scorer.org_contact(u.text)
+                if kw < STAGE1_MIN:
+                    continue
+            else:
+                kw, kw_why = scorer.keyword(context)
+                explicit = scorer.explicit(u)
+                if kw < STAGE1_MIN and explicit < 100:
+                    continue
             stats["stage1"] += 1
             tl, tl_label = scorer.timeline(u.text)
             loc, loc_why = scorer.location(f"{d.title} {u.text}" if u.kind != "comment" else
@@ -200,7 +207,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
                 s[3]["semantic"] = scoring.semantic_from_cosine(scoring.cosine(vecs[0], v))
     passed = [s for s in shortlist if s[3]["semantic"] >= STAGE2_MIN or s[3]["keyword"] >= 55]
     stats["stage2"] = len(passed)
-    passed.sort(key=lambda s: scoring.combine(s[3]), reverse=True)
+    passed.sort(key=lambda s: scoring.combine(s[3], orgs), reverse=True)
     passed = passed[:MAX_LLM_UNITS_PER_BATCH]
 
     # ---- Stage 3: LLM on the shortlist only, contacts redacted -------------------------------------
@@ -235,22 +242,24 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     for d, i, u, parts, why, lang in passed:
         r = llm.get((d.url, i))
         if r is not None:
-            if not r.relevant or r.intent_type in ("recruitment", "irrelevant"):
+            if not r.relevant or r.intent_type == "irrelevant" or (not orgs and r.intent_type == "recruitment"):
                 events.append(_event(d, i, u, parts, r, lang, None))
                 continue
             parts["llm"] = r.confidence * 100
             if r.explicit_need:
                 parts["explicit"] = 100
             parts["keyword"] = max(parts["keyword"], min(100, r.intent_strength))
-        intent_score = scoring.combine(parts)
+        intent_score = scoring.combine(parts, orgs)
         fresh = scoring.freshness(u.date or d.date)
+        if orgs:
+            fresh = max(fresh, 60)             # a business listing does not go stale like a post
         quality = SOURCE_QUALITY["snippet"] if d.via == "snippet" else SOURCE_QUALITY.get(d.source, 35)
         score = scoring.lead_score(intent_score, fresh, quality)
         t = scoring.tier(score)
         stats["relevant"] += 1
         interested = (r is not None and r.explicit_need) or parts["explicit"] >= 100 or \
             rule_extractor.shows_interest(u.text)
-        if settings.get("only_interested") and not interested:
+        if settings.get("only_interested") and not interested and not orgs:
             stats["not_interested"] = stats.get("not_interested", 0) + 1
             events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
             continue
@@ -259,19 +268,25 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             continue
         stats[t.lower()] += 1
         evidence = (r.evidence if r and r.evidence else [rule_extractor._evidence(u.text, rule_extractor._INTEREST)])
-        why_list = _why(why, parts, r, fresh, u.date or d.date, d)
+        why_list = _why(why, parts, r, fresh, u.date or d.date, d, orgs)
         emails, phones = rule_extractor.emails_in(u.text), rule_extractor.phones_in(u.text)
-        own_contact = not (rule_extractor._HIRING.search(u.text) and not rule_extractor.shows_interest(u.text))
+        own_contact = orgs or not (rule_extractor._HIRING.search(u.text) and not rule_extractor.shows_interest(u.text))
         author = u.author if u.author and u.kind != "snippet" or d.source == "quora" else None
-        key = (f"{d.source}:{author.lower()}" if author else
+        if orgs:
+            author = (r.organization if r and r.organization else None) or \
+                (u.author if u.kind == "organization" else None) or _site_name(d)
+        key = (_org_key(author, d.url) if orgs and author else
+               f"{d.source}:{author.lower()}" if author else
                f"contact:{(emails or phones or [''])[0]}" if (emails or phones) and own_contact else f"url:{d.url}#{i}")
         lead = {
             "lead_key": key, "display_name": author,
             "platform": d.source, "profile_url": u.author_url,
             "email": emails[0] if emails and own_contact else None,
             "phone": phones[0] if phones and own_contact else None,
-            "profession": (r.profession if r else None) or (spec.professions[0] if spec.professions else None),
-            "origin": (r.origin if r else None), "destination": (r.destination if r else None),
+            "profession": (((r.org_type or r.profession) if orgs else r.profession) if r else None)
+                          or (spec.professions[0] if spec.professions else None),
+            "origin": ((r.city or r.origin) if orgs else r.origin) if r else None,
+            "destination": (r.destination if r else None),
             "timeline": (r.timeline if r else None), "intent_type": (r.intent_type if r else spec.intent_type),
             "intent_score": intent_score, "lead_score": score, "tier": t,
             "confidence": round((r.confidence if r else 0.5), 2), "freshness": fresh, "source_quality": quality,
@@ -289,7 +304,10 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
 
     # ---- Classic per-page extraction on the same pages (the original pipeline's reader) ----------------
     classic_records: List[CandidateRecord] = []
-    if settings.get("classic", True):
+    if settings.get("classic", True) and orgs:
+        warnings.append("Organization search: the classic page reader looks for individual candidates, so it "
+                        "was skipped for this command.")
+    if settings.get("classic", True) and not orgs:
         classic_records, classic_ai = await _classic(ai, spec, docs, hits_by_url(items), settings, stats, warnings)
         stats["llm_calls"] += classic_ai
         before = len(candidates)
@@ -372,6 +390,21 @@ def _merge_classic(im_cands: List[CandidateRecord], classic: List[CandidateRecor
     return out
 
 
+def _site_name(d: RawDocument) -> Optional[str]:
+    """Organization name from a page title: 'ABC Driving School - Ludhiana | Justdial' → 'ABC Driving School'."""
+    head = re.split(r"\s[-–|:]\s|\s\|", d.title or "")[0].strip()
+    return head[:120] or None
+
+
+def _org_key(name: str, url: str) -> str:
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").removeprefix("www.")
+    directory = any(x in host for x in ("justdial", "indiamart", "sulekha", "tradeindia", "yellowpages", "linkedin",
+                                         "facebook", "google", "quora", "reddit"))
+    norm = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+    return f"org:{norm}" if directory else f"org:{norm}|{host}"
+
+
 def hits_by_url(items: List[dict]) -> Dict[str, dict]:
     return {canonicalize_url(i["url"]) or i["url"]: i for i in items}
 
@@ -439,12 +472,24 @@ def _event(d, i, u, parts, r, lang, key) -> dict:
             "lead_key": key}
 
 
-def _why(why: List[str], parts: dict, r, fresh: int, date: Optional[str], d: RawDocument) -> List[str]:
+def _why(why: List[str], parts: dict, r, fresh: int, date: Optional[str], d: RawDocument,
+         orgs: bool = False) -> List[str]:
     out = list(dict.fromkeys(why))
-    if r is not None:
+    if orgs:
+        if r is not None and r.organization:
+            out.insert(0, f"Organization: {r.organization}" + (f" ({r.org_type})" if r.org_type else ""))
+        if parts.get("explicit", 0) >= 100:
+            out.append("Public business phone / email on the page")
+        if r is not None and r.explicit_need:
+            out.append("Actively operating / enrolling / open to partners")
+        if r is not None and r.city:
+            out.append(f"Located in {r.city}")
+        out.append(f"AI confidence {int(r.confidence * 100)}%" if r is not None
+                   else "Scored by rules only (no AI classification)")
+    elif r is not None:
         if r.explicit_need:
             out.insert(0, f"Explicitly states their own need ({r.intent_type.replace('_', ' ')})")
-        if r.profession:
+        if r.profession and not orgs:
             out.append(f"{r.profession} identified")
         if r.origin:
             out.append(f"Origin: {r.origin}")
@@ -474,4 +519,4 @@ def _candidate(lead: dict, d: RawDocument, i: int, u: Unit) -> CandidateRecord:
         email=lead.get("email"), phone=lead.get("phone"),
         source_url=f"{d.url}#im-{slug}" if i else d.url, platform=d.source,
         profile_url=u.author_url, activity_date=lead.get("last_activity"),
-        shows_interest=True, contact_source="posted_on_page" if (lead.get("email") or lead.get("phone")) else None)
+        shows_interest=None if lead["lead_key"].startswith("org:") else True, contact_source="posted_on_page" if (lead.get("email") or lead.get("phone")) else None)
