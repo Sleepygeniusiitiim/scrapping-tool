@@ -23,6 +23,7 @@ from . import processing, scoring, store
 from .classify import classify
 from .models import QuerySpec, RawDocument, Unit
 from .providers.base import SOURCE_QUALITY, source_of
+from .providers.instagram import InstagramProvider, post_code
 from .providers.reddit import RedditProvider
 from .providers.youtube import YouTubeProvider
 from .providers.web import QuoraProvider, RssProvider, SearchProvider, WebProvider, snippet_doc
@@ -42,6 +43,7 @@ def providers(keys: Dict[str, str], settings: dict) -> Dict[str, object]:
         "quora": QuoraProvider(keys),
         "web": WebProvider(keys, settings.get("respect_robots", True), settings.get("timeout", 15)),
         "rss": RssProvider(keys, settings.get("feeds", [])),
+        "instagram": InstagramProvider(keys, settings.get("respect_robots", True)),
     }
 
 
@@ -105,9 +107,12 @@ def _doc_from_json(j: dict) -> RawDocument:
 # Processing (one batch of discovered items)
 # ---------------------------------------------------------------------------
 async def fetch_docs(items: List[dict], provs: Dict[str, object]) -> List[RawDocument]:
-    reddit, web, quora, youtube = [], [], [], []
+    reddit, web, quora, youtube, insta = [], [], [], [], []
     for it in items:
         src = it.get("source") or source_of(it["url"])
+        if post_code(it["url"]) and not it.get("doc"):
+            insta.append(it)
+            continue
         (reddit if src == "reddit" else quora if src == "quora" else youtube if src == "youtube" else web).append(it)
     docs: List[RawDocument] = []
     for it in items:
@@ -120,13 +125,16 @@ async def fetch_docs(items: List[dict], provs: Dict[str, object]) -> List[RawDoc
         tasks.append(_reddit_doc(provs["reddit"], provs["web"], it, hit))
     tasks += [provs["quora"].fetch(it["url"], it) for it in quora]
     tasks += [provs["youtube"].fetch(it["url"], it) for it in youtube]
+    tasks += [provs["instagram"].fetch(it["url"], it) for it in insta]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    fetched = [it for it in reddit] + [it for it in quora] + [it for it in youtube]
+    fetched = [it for it in reddit] + [it for it in quora] + [it for it in youtube] + [it for it in insta]
     for it, r in zip(fetched, results):
         if isinstance(r, Exception):           # one broken page never fails the whole batch
             d = snippet_doc(it["url"], it.get("source") or source_of(it["url"]), it)
             d.status, d.error = "failed", f"{type(r).__name__}: {str(r)[:120]}"
             docs.append(d)
+        elif it in insta and r.status != "ok" and "robots" not in (r.error or "") and not r.units:
+            web.append(it)                     # embed page refused → normal reader with the unblockers
         else:
             docs.append(r)
     if web:
@@ -366,6 +374,10 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             if c.profile_url and "linkedin.com/in/" in c.profile_url:
                 L["profile_url"] = c.profile_url
 
+    # ---- Government directories (imported lists): link each lead to its official record --------------
+    if leads and settings.get("gov_match", True):
+        await _gov_match(ai, leads, candidates, cand_lead, settings, stats, warnings)
+
     saved = await asyncio.to_thread(store.upsert_leads, run_id, leads) if leads else []
     await asyncio.to_thread(store.save_events, run_id, events)
     if candidates:
@@ -394,6 +406,33 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
 
 
 MAX_COMPANY_CRAWLS_PER_BATCH = 5
+_gov_count = {"n": None, "at": 0.0}
+
+
+async def _gov_match(ai, leads: List[dict], candidates: List[CandidateRecord], cand_lead: Dict[str, dict],
+                     settings: dict, stats: dict, warnings: List[str]) -> None:
+    import time
+    import gov_registry
+    if _gov_count["n"] is None or time.time() - _gov_count["at"] > 300:
+        _gov_count.update(n=await asyncio.to_thread(gov_registry.count), at=time.time())
+    if not _gov_count["n"]:
+        return
+    try:
+        st = await gov_registry.match_leads(leads, ai, settings.get("use_llm", True))
+    except Exception as exc:
+        warnings.append(f"Government-directory matching failed: {type(exc).__name__}: {str(exc)[:120]}")
+        return
+    stats["gov_matched"], stats["gov_contacts"] = st["matched"], st["contacts"]
+    stats["llm_calls"] += st["ai"]
+    for c in candidates:
+        L = cand_lead.get(c.source_url)
+        if L is not None and (L.get("gov_match") or {}).get("status") == "matched":
+            if (not c.phone and L.get("phone")) or (not c.email and L.get("email")):
+                c.contact_source = c.contact_source or f"government_list:{L['gov_match']['dataset']}"[:80]
+            c.phone, c.email = c.phone or L.get("phone"), c.email or L.get("email")
+    warnings.append(f"Government lists: {st['checked']} leads checked → {st['matched']} matched to an official "
+                    f"record ({st['ai']} confirmed by AI), {st['possible']} possible, {st['contacts']} got a new "
+                    "phone / email")
 
 
 async def _company_contacts(leads: List[dict], candidates: List[CandidateRecord], cand_lead: Dict[str, dict],

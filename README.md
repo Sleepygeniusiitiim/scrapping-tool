@@ -170,6 +170,42 @@ gave leads or have several posts / comments — with the current intent and sett
 hash has not changed are skipped without any AI cost; changed pages are scored again, so new comments
 become new leads while existing people are merged, not duplicated.
 
+## Analysing specific posts (paste links)
+
+🧠 panel → **🔗 Analyse specific posts / pages**: paste Instagram / Facebook / YouTube / Reddit / blog / forum links and
+they are read directly (no searching), with the time window ignored. Every commenter showing interest becomes a lead;
+the post's own caption (usually the recruiter's) does not.
+
+Instagram posts are read through Instagram's public **embed page** (`/p/<code>/embed/captioned/`), which is served
+without login and carries the caption and, for many posts, the first comments. It is not the full list — Instagram
+only gives all comments through the Meta API, and only for posts on your own account (auto-reply below). Instagram's
+robots.txt does not allow crawlers, so untick "Respect robots.txt" to use it. If the embed page is refused, the normal
+reader with your unblocker keys is tried.
+
+## Government lists (India) — matching leads to official records
+
+🧠 panel → **🏛️ Government lists**: import public lists published by government bodies (CSV / Excel, or straight
+from **data.gov.in** with the resource id and a free API key: `DATA_GOV_IN_KEY`). Useful lists: MCA company / LLP
+master data, state transport lists of motor-driving schools, NCVT / Skill India ITI and training-partner lists, Indian
+Nursing Council institutions, Udyam lists, professional registers. Columns are recognised by their names.
+
+Every lead of a new run (and saved leads, with **Match saved leads now**) is matched to these records
+(`gov_registry.py`):
+
+1. **blocking** — only records sharing a distinctive name word, or the same phone / email / website;
+2. **features** — fuzzy name similarity (spelling variants, initials, Pvt / Ltd / Institute noise; "Sharma Driving
+   School" ≠ "Verma Driving School"), place (city / district / pincode / state), type (driving school, nursing …),
+   identifiers (registration no. / CIN in the lead's text, same phone / email / domain);
+3. **AI check** — borderline candidates go to the AI with both records side by side; it picks one or none;
+4. **decision** — organisations match at 80+; a person needs a near-exact name, a second signal and the AI's
+   confirmation (or an identifier). Weaker candidates are shown as "possible" and are never applied.
+
+A match adds the record's registered phone / email / website / address to the lead (`contact_source:
+government_list:<list>`) and a "✓ Government record" line to "Why this lead?".
+
+Electoral rolls, Aadhaar, e-Shram / UAN and similar ID lists are refused at import: they are not public, the law
+restricts their use, and leaked copies are illegal to use for outreach.
+
 ## YouTube comments and blog comments
 
 - **YouTube** (source "YouTube comments"): the official YouTube Data API v3 (`YOUTUBE_API_KEY`, or the Google

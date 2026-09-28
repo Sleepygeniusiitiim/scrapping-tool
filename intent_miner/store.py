@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS im_leads (
 );
 ALTER TABLE im_leads ADD COLUMN IF NOT EXISTS website TEXT;
 ALTER TABLE im_leads ADD COLUMN IF NOT EXISTS org_contacts JSONB;
+ALTER TABLE im_leads ADD COLUMN IF NOT EXISTS gov_match JSONB;
 CREATE TABLE IF NOT EXISTS im_lead_sources (
     lead_key TEXT NOT NULL, url TEXT NOT NULL, source TEXT, unit_kind TEXT, activity_date DATE,
     score INT, evidence TEXT, seen_at TIMESTAMPTZ DEFAULT NOW(),
@@ -231,11 +232,11 @@ def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
             INSERT INTO im_leads (lead_key, display_name, platform, profile_url, email, phone, profession, origin,
                                   destination, timeline, intent_type, intent_score, lead_score, tier, confidence,
                                   freshness, source_quality, evidence, why, possible_matches, status, last_activity,
-                                  run_id, website, org_contacts)
+                                  run_id, website, org_contacts, gov_match)
             VALUES (%(key)s, %(display_name)s, %(platform)s, %(profile_url)s, %(email)s, %(phone)s, %(profession)s,
                     %(origin)s, %(destination)s, %(timeline)s, %(intent_type)s, %(intent_score)s, %(lead_score)s,
                     %(tier)s, %(confidence)s, %(freshness)s, %(source_quality)s, %(evidence)s, %(why)s,
-                    %(possible)s, %(status)s, %(last_activity)s, %(run)s, %(website)s, %(org_contacts)s)
+                    %(possible)s, %(status)s, %(last_activity)s, %(run)s, %(website)s, %(org_contacts)s, %(gov_match)s)
             ON CONFLICT (lead_key) DO UPDATE SET
                 display_name = COALESCE(im_leads.display_name, EXCLUDED.display_name),
                 profile_url = COALESCE(im_leads.profile_url, EXCLUDED.profile_url),
@@ -258,11 +259,13 @@ def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
                 last_activity = GREATEST(im_leads.last_activity, EXCLUDED.last_activity),
                 last_seen = NOW(), run_id = EXCLUDED.run_id,
                 website = COALESCE(EXCLUDED.website, im_leads.website),
-                org_contacts = COALESCE(EXCLUDED.org_contacts, im_leads.org_contacts)
+                org_contacts = COALESCE(EXCLUDED.org_contacts, im_leads.org_contacts),
+                gov_match = COALESCE(EXCLUDED.gov_match, im_leads.gov_match)
             RETURNING *""", {**L, "key": key, "evidence": json.dumps(L.get("evidence", [])),
                              "why": json.dumps(L.get("why", [])), "possible": json.dumps(possible),
                              "website": L.get("website"),
                              "org_contacts": json.dumps(L["org_contacts"]) if L.get("org_contacts") else None,
+                             "gov_match": json.dumps(L["gov_match"], default=str) if L.get("gov_match") else None,
                              "run": run_id or None}, "one", "Saving lead")
         for s in L.get("sources", []):
             _q("""INSERT INTO im_lead_sources (lead_key, url, source, unit_kind, activity_date, score, evidence)

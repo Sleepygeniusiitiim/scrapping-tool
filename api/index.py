@@ -44,6 +44,7 @@ import integrations  # noqa: E402
 import dates  # noqa: E402
 import portal_import  # noqa: E402
 import meta_autoreply  # noqa: E402
+import gov_registry  # noqa: E402
 from intent_miner import engine as im_engine, export as im_export, store as im_store  # noqa: E402
 from intent_miner.models import QuerySpec  # noqa: E402
 from intent_miner.understand import understand as im_understand  # noqa: E402
@@ -669,6 +670,114 @@ def im_failed_ep():
 def im_health_ep():
     _db()
     return {"providers": _im_db(im_store.provider_health), "runs": _im_db(im_store.list_runs, 10)}
+
+
+# ---------------------------------------------------------------------------
+# Government directories (public lists) and matching leads to them
+# ---------------------------------------------------------------------------
+class GovImportIn(BaseModel):
+    dataset: str = Field(..., min_length=2, max_length=120)
+    kind: str = Field("org", pattern="^(org|person)$")
+    filename: str = Field("", max_length=300)
+    data_b64: str = Field(..., min_length=4, max_length=6_000_000)
+    source_url: str = Field("", max_length=500)
+    replace: bool = False
+
+
+class GovDatagovIn(BaseModel):
+    resource_id: str = Field(..., pattern=r"^[A-Za-z0-9-]{8,64}$")
+    dataset: str = Field("", max_length=120)
+    kind: str = Field("org", pattern="^(org|person)$")
+    max_records: int = Field(5000, ge=100, le=50000)
+    replace: bool = False
+
+
+class GovMatchIn(BaseModel):
+    lead_ids: List[str] = Field(default_factory=list, max_length=500)
+    only_unmatched: bool = True
+    limit: int = Field(40, ge=1, le=200)
+    use_ai: bool = True
+    after: str = Field("", max_length=64)
+
+
+@router.post("/gov/import")
+def gov_import(body: GovImportIn):
+    import base64
+    _db()
+    try:
+        data = base64.b64decode(body.data_b64.split(",")[-1])
+    except ValueError:
+        raise HTTPException(400, "The file could not be read.")
+    try:
+        info = gov_registry.import_file(body.dataset.strip(), body.kind, body.filename, data, body.source_url,
+                                        body.replace)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, f"Could not read this file ({type(exc).__name__}: {str(exc)[:160]}).")
+    if not info.get("saved"):
+        raise HTTPException(400, "No records found. The file needs a name column (e.g. \"Name of the Institute\", "
+                                 f"\"Company Name\"). Columns recognised: {info.get('columns') or 'none'}")
+    return info
+
+
+@router.post("/gov/datagov")
+async def gov_datagov(body: GovDatagovIn, keys: dict = Depends(_keys)):
+    _db()
+    key = keys.get("datagov") or ""
+    if not key:
+        raise HTTPException(400, "Add your data.gov.in API key (🔑 keys → data.gov.in) first — it is free after "
+                                 "signing up at data.gov.in.")
+    try:
+        return await gov_registry.import_datagov(key, body.resource_id, body.dataset.strip(), body.kind,
+                                                 body.max_records, body.replace)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.get("/gov/datasets")
+def gov_datasets():
+    _db()
+    return {"datasets": _im_db(gov_registry.datasets)}
+
+
+@router.post("/gov/delete")
+def gov_delete(body: dict):
+    _db()
+    name = str(body.get("dataset") or "").strip()
+    if not name:
+        raise HTTPException(400, "dataset is required")
+    return {"deleted": _im_db(gov_registry.delete_dataset, name)}
+
+
+@router.post("/gov/match")
+async def gov_match(body: GovMatchIn, request: Request):
+    """Match saved leads to the imported government records (rules + AI check; rules only without an AI key)."""
+    _db()
+    h = request.headers
+    try:
+        gemini = _gemini(*(h.get(k) for k in ("x-gemini-key", "x-gemini-model", "x-gemini-mode", "x-openrouter-key",
+                                              "x-openrouter-model", "x-llm-provider", "x-llm-key", "x-llm-model",
+                                              "x-llm-keys", "x-llm-models"))) if body.use_ai else None
+    except HTTPException:
+        gemini = None
+    leads = await run_in_threadpool(_im_db, gov_registry.leads_to_match, body.lead_ids, body.only_unmatched,
+                                    body.limit, body.after)
+    if not leads:
+        return {"stats": {"checked": 0}, "leads": [], "last_id": "", "more": False}
+    last_id = str(leads[-1]["id"])
+    stats = await gov_registry.match_leads(leads, gemini, gemini is not None, max_ai=min(len(leads), 25))
+    changed = [L for L in leads if L.get("gov_match")]
+    for L in changed:
+        await run_in_threadpool(_im_db, gov_registry.save_lead_match, L)
+    return {"stats": stats, "leads": [db._serialize_row(dict(L)) for L in changed], "last_id": last_id,
+            "more": len(leads) == body.limit, "warnings": getattr(gemini, "notices", [])}
 
 
 # ---------------------------------------------------------------------------

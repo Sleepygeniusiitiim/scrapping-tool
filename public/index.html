@@ -240,6 +240,38 @@
       <label><input id="recheckProductive" type="checkbox" checked>only pages that gave leads or have comments</label>
       <label>max <input id="recheckMax" type="number" min="5" max="300" value="60" style="width:80px"> pages</label>
     </div>
+    <details style="margin-top:8px"><summary>🔗 Analyse specific posts / pages (paste links)</summary>
+      <p class="status">Paste Instagram / Facebook / YouTube / Reddit / blog / forum links, one per line. Each page is read
+        directly (no searching) and every commenter showing interest becomes a lead. Instagram: the public embed page shows
+        the caption and usually only the first few comments without login, and it needs “Respect robots.txt” unticked. All
+        comments of <b>your own</b> posts come through the 🤖 auto-reply (Meta API).</p>
+      <textarea id="linksBox" rows="3" placeholder="https://www.instagram.com/p/DdVoGp5g1Za/&#10;https://www.youtube.com/watch?v=…"></textarea>
+      <div class="row" style="margin-top:6px"><button id="linksBtn">🔗 Read these links</button>
+        <span class="status">Uses the discovery intent above (or “people interested in this post” if empty).</span></div>
+    </details>
+    <details style="margin-top:8px"><summary>🏛️ Government lists — match leads to official records</summary>
+      <p class="status">Import public lists published by government bodies, then every lead (from new runs, or with the
+        button below) is matched to its official record: the AI compares name (spelling variants, Pvt/Ltd, initials),
+        place, type and any registration no. A confirmed match adds the record's registered phone / email / website /
+        address to the lead; weaker ones are shown as “possible” for you to check. Good sources: MCA company / LLP master
+        data, state transport lists of motor-driving schools, NCVT / Skill India ITI & training-partner lists, Indian
+        Nursing Council institutions, Udyam lists, any data.gov.in dataset. Voter rolls, Aadhaar, e-Shram and similar ID
+        lists are refused (not public; illegal to use for outreach).</p>
+      <div class="grid">
+        <div><label for="govName">List name</label><input id="govName" placeholder="Punjab motor driving schools 2025"></div>
+        <div><label for="govKind">Contains</label><select id="govKind"><option value="org">Organisations (institutes, schools, companies)</option>
+          <option value="person">People (professional register, e.g. nursing council)</option></select></div>
+      </div>
+      <div class="row" style="margin-top:6px"><input id="govFile" type="file" accept=".csv,.xlsx,.xls,.html,.htm">
+        <label><input id="govReplace" type="checkbox">replace this list if it exists</label>
+        <button id="govImportBtn">⬆️ Import file</button></div>
+      <div class="row" style="margin-top:6px"><input id="govResource" placeholder="data.gov.in resource id (from the dataset's API tab)" style="flex:1">
+        <button id="govApiBtn">⬇️ Import from data.gov.in</button></div>
+      <div class="row" style="margin-top:6px"><button id="govMatchBtn">🔎 Match saved leads now</button>
+        <label><input id="govOnlyNew" type="checkbox" checked>only leads not matched before</label>
+        <button id="govListBtn">📚 Imported lists</button></div>
+      <div id="govOut" class="status"></div>
+    </details>
     <div id="imSpec" class="im-spec"></div>
     <div id="imExtra"></div>
     <div class="row" style="margin-top:10px" id="imExport" hidden>
@@ -615,6 +647,7 @@ const INTEGRATIONS = [
   ["youtube", "YouTube Data API key", "console.cloud.google.com → enable YouTube Data API v3 → Credentials → API key", "YouTube (comments on job videos)"],
   ["reddit_client_id", "Reddit app client id", "reddit.com/prefs/apps → create app (script) → id under the name", "Reddit API (Intent Miner)"],
   ["reddit_client_secret", "Reddit app secret", "reddit.com/prefs/apps → secret", "Reddit API (Intent Miner)"],
+  ["datagov", "data.gov.in API key", "data.gov.in → sign up / log in → My Account → API key (free)", "Government datasets (India)"],
   ["salesforce_instance_url", "Salesforce instance URL", "https://yourcompany.my.salesforce.com", "Salesforce (Intent Miner export)"],
   ["salesforce_token", "Salesforce access token", "OAuth access token of a user allowed to create Leads", "Salesforce (Intent Miner export)"],
 ];
@@ -710,7 +743,7 @@ $("impBtn").onclick = async () => {
 const im = { stop: false, runId: "", leads: new Map() };
 function imLog(msg) { logEv("info", msg); }
 const SOURCE_LABEL = { search: "Search engines", reddit: "Reddit", quora: "Quora", forums: "Forums & websites",
-  linkedin: "LinkedIn", facebook: "Facebook", rss: "RSS feeds", youtube: "YouTube", blogs: "Blogs" };
+  linkedin: "LinkedIn", facebook: "Facebook", rss: "RSS feeds", youtube: "YouTube", blogs: "Blogs", instagram: "Instagram" };
 function imSettings(main, intent, planQueries) {
   const m = main || {};
   return { backend: $("backend").value, region: $("region").value, max_results: num("maxRes") || 20,
@@ -765,6 +798,10 @@ function imRenderLeads() {
           (p.email ? " " + p.email : p.email_guess ? " — guessed: " + p.email_guess.email + " (" + p.email_guess.confidence + ")" : ""))).join(" · ")}` +
         `${(L.org_contacts.phones || []).length ? " · Phones: " + esc(L.org_contacts.phones.join(", ")) : ""}` +
         `${(L.org_contacts.whatsapp || []).length ? " · WhatsApp: " + esc(L.org_contacts.whatsapp.join(", ")) : ""}</p>` : ""}
+      ${L.gov_match ? `<p class="status" style="margin:6px 0 0">🏛️ ${L.gov_match.status === "matched" ? "Government record" : "Possible government record (check)"}:
+        <b>${esc(L.gov_match.name)}</b> — ${esc(L.gov_match.dataset)}${L.gov_match.reg_no ? " · reg " + esc(L.gov_match.reg_no) : ""}
+        ${esc([L.gov_match.address, L.gov_match.district || L.gov_match.city, L.gov_match.state].filter(Boolean).join(", "))}
+        ${esc([L.gov_match.phone, L.gov_match.email].filter(Boolean).join(" · "))} <i>(${esc((L.gov_match.signals || []).join(", "))}${L.gov_match.reason ? "; " + esc(L.gov_match.reason) : ""})</i></p>` : ""}
       ${(L.evidence || []).slice(0, 2).map((q) => `<div class="im-quote">“${esc(q)}”</div>`).join("")}
       <details><summary>Why this lead?</summary><ul class="im-why">${(L.why || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
         ${(L.possible_matches || []).length ? `<p class="status">Possible same person elsewhere (needs verification): ${(L.possible_matches).map((m) => esc(m.name + " on " + m.platform)).join(", ")}</p>` : ""}</details>
@@ -868,32 +905,34 @@ async function runCombined(intent, totals, rounds, mode) {
     logEv("wave_end", `${name} done — ${stats.records} candidates.`, name);
   }
 }
-// Re-read pages from earlier runs: new comments on old posts become new leads; unchanged pages are skipped.
-$("recheckBtn").onclick = async () => {
+// Understanding for a direct read (re-check / pasted links): the last one on screen, or a quick new one.
+async function imSpecFor(intent, sources) {
+  let spec = null;
+  try { spec = JSON.parse($("imSpec").dataset.spec || "null"); } catch (_) {}
+  if (spec) return spec;
+  logEv("info", "Understanding the command…");
+  const months = Number($("maxAge").value);
+  const u = await api("/api/im/understand", { command: intent, sources, max_age_days: months ? Math.round(months * 30.5) : null,
+    num_queries: 4 });
+  im.runId = u.run_id; imRenderSpec(u.spec); $("imSpec").dataset.spec = JSON.stringify(u.spec);
+  return u.spec;
+}
+// Read a fixed list of pages with both engines (no searching): re-check and pasted links.
+async function imReadPages(label, intent, getItems, extra) {
   if (state.running) { alert("A run is already in progress."); return; }
-  const intent = $("intent").value.trim();
   if (!intent) { alert("Enter the discovery intent first (it decides who counts as a lead)."); return; }
   const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
   Object.assign(state, { stop: false, runRecords: [], waveStats: {}, logLines: [] });
   $("progress").classList.remove("hidden"); renderStats(); renderRun(); setRunning(true);
   try {
-    let spec = null;
-    try { spec = JSON.parse($("imSpec").dataset.spec || "null"); } catch (_) {}
-    if (!spec) {
-      logEv("info", "Understanding the command…");
-      const months = Number($("maxAge").value);
-      const u = await api("/api/im/understand", { command: intent, sources, max_age_days: months ? Math.round(months * 30.5) : null,
-        num_queries: 4 });
-      spec = u.spec; im.runId = u.run_id; imRenderSpec(spec); $("imSpec").dataset.spec = JSON.stringify(spec);
-    }
-    const r = await api(`/api/im/recheck?sources=${encodeURIComponent(sources.join(","))}&hours=${$("recheckAge").value}` +
-      `&only_productive=${$("recheckProductive").checked}&limit=${Number($("recheckMax").value) || 60}`);
-    const items = r.items;
-    logEv("dedup", `Re-check: ${items.length} pages read before are due for a re-read (oldest first).`);
+    const spec0 = await imSpecFor(intent, sources);
+    // pasted links: the user chose these posts, so their older comments count too
+    const spec = extra && extra.any_age ? { ...spec0, max_age_days: null } : spec0;
+    const items = await getItems(sources);
     if (!items.length) return;
     const settings = { ...imSettings({ mode: $("searchMode").value === "intent" ? "intent" : "combined" }, intent,
-      spec.queries.map((q) => q.query)), wave_tag: "recheck" };
-    const stats = state.waveStats["Re-check"] = { wave: "Re-check", found: items.length, duplicates: 0, fresh: items.length,
+      spec.queries.map((q) => q.query)), wave_tag: label, ...(extra || {}) };
+    const stats = state.waveStats[label] = { wave: label, found: items.length, duplicates: 0, fresh: items.length,
       crawled: 0, blocked: 0, failed: 0, records: 0, dropped: 0 };
     let unchanged = 0, leads = 0;
     for (let b = 0; b < items.length && !state.stop; b += 5) {
@@ -905,14 +944,85 @@ $("recheckBtn").onclick = async () => {
         unchanged += st.unchanged || 0; leads += st.leads || 0;
         res.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads(); addRunRecords(res.records || []);
         renderStats(); renderRun();
-        logEv("crawl", `Re-check batch ${b / 5 + 1}: ${st.fetched} re-read, ${st.unchanged || 0} unchanged (skipped), ` +
-          `${st.units} posts/comments → ${st.leads} leads · ${st.records} candidates saved`, "Re-check");
-        (res.warnings || []).forEach((w) => logEv("warning", w, "Re-check"));
-      } catch (e) { logEv("warning", `Re-check batch ${b / 5 + 1} failed: ${e.message.slice(0, 200)}`, "Re-check"); }
+        logEv("crawl", `${label} batch ${b / 5 + 1}: ${st.fetched} read, ${st.unchanged || 0} unchanged (skipped), ` +
+          `${st.units} posts/comments → ${st.leads} leads · ${st.records} candidates saved`, label);
+        (res.failed || []).forEach((f) => logEv("warning", `${f.url.slice(0, 80)} — ${f.status}: ${(f.error || "").slice(0, 200)}`, label));
+        (res.warnings || []).forEach((w) => logEv("warning", w, label));
+      } catch (e) { logEv("warning", `${label} batch ${b / 5 + 1} failed: ${e.message.slice(0, 200)}`, label); }
     }
-    logEv("done", `Re-check complete: ${items.length} old pages, ${unchanged} unchanged, ${leads} leads from new or updated content.`);
+    logEv("done", `${label} complete: ${items.length} pages, ${unchanged} unchanged, ${leads} leads.`);
   } catch (e) { logEv("error", e.message); }
   finally { setRunning(false); renderRun(); }
+}
+// Re-read pages from earlier runs: new comments on old posts become new leads; unchanged pages are skipped.
+$("recheckBtn").onclick = () => imReadPages("Re-check", $("intent").value.trim(), async (sources) => {
+  const r = await api(`/api/im/recheck?sources=${encodeURIComponent(sources.join(","))}&hours=${$("recheckAge").value}` +
+    `&only_productive=${$("recheckProductive").checked}&limit=${Number($("recheckMax").value) || 60}`);
+  logEv("dedup", `Re-check: ${r.items.length} pages read before are due for a re-read (oldest first).`);
+  return r.items;
+});
+// Pasted post / page links: read exactly these (Instagram posts via the public embed page).
+$("linksBtn").onclick = () => imReadPages("Pasted links", $("intent").value.trim() ||
+  "People who comment that they are interested in the job / opportunity in this post", async () => {
+  const urls = [...new Set($("linksBox").value.split(/[\s,]+/).map((x) => x.trim()).filter((x) => /^https?:\/\//i.test(x)))];
+  if (!urls.length) { alert("Paste at least one link (https://…)."); return []; }
+  logEv("info", `Reading ${urls.length} pasted link(s)…`);
+  return urls.slice(0, 100).map((url) => ({ url, title: "", snippet: "" }));
+}, { reprocess: true, any_age: true });
+
+// ---------- Government lists ----------
+async function govList() {
+  const r = await api("/api/gov/datasets");
+  $("govOut").innerHTML = r.datasets.length ? r.datasets.map((d) => `<div>${esc(d.dataset)} — ${d.records} ${d.kind === "person" ? "people" : "organisations"}` +
+    ` (${d.with_phone} with phone, ${d.with_email} with email) <button data-del="${esc(d.dataset)}" style="padding:2px 8px">🗑</button></div>`).join("")
+    : "No government lists imported yet.";
+  $("govOut").querySelectorAll("button[data-del]").forEach((b) => b.onclick = async () => {
+    if (!confirm(`Delete the list “${b.dataset.del}”?`)) return;
+    await api("/api/gov/delete", { dataset: b.dataset.del }); govList();
+  });
+}
+$("govListBtn").onclick = () => govList().catch((e) => { $("govOut").textContent = "❌ " + e.message; });
+function govDone(r) {
+  $("govOut").textContent = `Imported ${r.saved} records from ${r.rows} rows${r.skipped ? ` (${r.skipped} skipped)` : ""}. Columns used: ` +
+    Object.entries(r.columns || {}).map(([k, v]) => `${k} ← “${v}”`).join(", ");
+}
+$("govImportBtn").onclick = async () => {
+  const f = $("govFile").files[0], name = $("govName").value.trim();
+  if (!name) { $("govOut").textContent = "Give the list a name first."; return; }
+  if (!f) { $("govOut").textContent = "Choose the file first."; return; }
+  if (f.size > 4 * 1024 * 1024) { $("govOut").textContent = "The file is over 4 MB — split it into parts (same list name, replace unticked)."; return; }
+  $("govOut").textContent = "Importing…";
+  const b64 = await new Promise((ok, bad) => { const rd = new FileReader();
+    rd.onload = () => ok(String(rd.result)); rd.onerror = bad; rd.readAsDataURL(f); });
+  try {
+    govDone(await api("/api/gov/import", { dataset: name, kind: $("govKind").value, filename: f.name, data_b64: b64,
+      replace: $("govReplace").checked }));
+  } catch (e) { $("govOut").textContent = "❌ " + e.message; }
+};
+$("govApiBtn").onclick = async () => {
+  const id = $("govResource").value.trim();
+  if (!id) { $("govOut").textContent = "Paste the data.gov.in resource id."; return; }
+  $("govOut").textContent = "Downloading from data.gov.in…";
+  try {
+    govDone(await api("/api/gov/datagov", { resource_id: id, dataset: $("govName").value.trim(), kind: $("govKind").value,
+      replace: $("govReplace").checked }));
+  } catch (e) { $("govOut").textContent = "❌ " + e.message; }
+};
+$("govMatchBtn").onclick = async () => {
+  $("govOut").textContent = "Matching leads with the government lists…";
+  const total = { checked: 0, matched: 0, possible: 0, contacts: 0, ai: 0 };
+  let after = "";
+  try {
+    for (let round = 0; round < 25; round++) {             // 40 leads per call, up to 1,000
+      const r = await api("/api/gov/match", { only_unmatched: $("govOnlyNew").checked, limit: 40, after });
+      Object.keys(total).forEach((k) => total[k] += r.stats[k] || 0);
+      (r.leads || []).forEach((L) => im.leads.set(L.id, L)); imRenderLeads();
+      $("govOut").textContent = `Checked ${total.checked} leads → ${total.matched} matched (${total.ai} confirmed by AI), ` +
+        `${total.possible} possible, ${total.contacts} got a new phone / email.`;
+      if (!r.more) break;
+      after = r.last_id;
+    }
+  } catch (e) { $("govOut").textContent = "❌ " + e.message; }
 };
 
 $("imLoad").onclick = async () => {

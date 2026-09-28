@@ -37,6 +37,8 @@ _HIRING = re.compile(
     r"(?:cv|resume)|apply now|apply (?:at|to|via)|free recruitment|salary|accommodation|recruit(?:ment|ing|er)|"
     r"hr (?:team|manager|executive)|job (?:code|id|opening)|openings?|immediate joiners?|"
     r"we are looking for|we're looking for|join our team|position(?:s)? available|now hiring|"
+    r"(?:\w+ )?(?:needed|required|wanted) (?:for|in|at)|comment (?:\")?interested|dm (?:us |me )?for (?:details|more)|"
+    r"interested candidates|limited seats|"
     r"wir suchen|gesucht|stellenangebot|stellenanzeige|bewerbung|bewerben sie|jetzt bewerben|"
     r"nous recrutons|on recrute|estamos contratando|se busca)\b", re.IGNORECASE)
 _INTEREST = re.compile(

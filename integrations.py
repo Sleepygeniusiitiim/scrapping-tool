@@ -43,6 +43,7 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
     "youtube": ("YOUTUBE_API_KEY", "YouTube Data API key", "source"),
     "reddit_client_id": ("REDDIT_CLIENT_ID", "Reddit API app client id", "source"),
     "reddit_client_secret": ("REDDIT_CLIENT_SECRET", "Reddit API app secret", "source"),
+    "datagov": ("DATA_GOV_IN_KEY", "data.gov.in API key (government datasets)", "source"),
     "salesforce_instance_url": ("SALESFORCE_INSTANCE_URL", "Salesforce instance URL", "crm"),
     "salesforce_token": ("SALESFORCE_ACCESS_TOKEN", "Salesforce access token", "crm"),
 }
