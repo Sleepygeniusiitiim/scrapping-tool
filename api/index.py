@@ -350,7 +350,15 @@ def readiness(x_integrations: Optional[str] = Header(default=None)):
     from intent_miner.providers import maps
     keys = _keys(x_integrations)
     summ = integrations.summary(keys)
-    return {"integrations": summ, "maps": maps.available(keys),
+    try:
+        db.init_supabase()
+        database = "ok"
+    except Exception as exc:
+        database = str(getattr(exc, "detail", exc))[:300]
+    configured = [n for n in integrations.SEARCH_ORDER
+                  if (keys.get("google_cse_key") and keys.get("google_cse_cx") if n == "google_cse" else keys.get(n))]
+    return {"database": database, "search_configured": configured, "exhausted": integrations.exhausted(),
+            "integrations": summ, "maps": maps.available(keys),
             "mailbox_check": summ.get("verify") or [],
             "smtp_remote": bool(os.getenv("SMTP_VERIFY_URL")),
             "reddit_api": bool(keys.get("reddit_client_id") and keys.get("reddit_client_secret")),

@@ -67,9 +67,29 @@ def resolve_keys(page_keys: Optional[dict]) -> Dict[str, str]:
     return out
 
 
+_EXHAUSTED: Dict[str, float] = {}         # service → time until which it is skipped (out of credits / bad key)
+EXHAUSTED_FOR_S = 1800
+
+
+def mark_exhausted(name: str, reason: str = "") -> None:
+    import time
+    _EXHAUSTED[name] = time.time() + EXHAUSTED_FOR_S
+
+
+def exhausted() -> List[str]:
+    import time
+    now = time.time()
+    return [n for n, t in _EXHAUSTED.items() if t > now]
+
+
 def search_available(keys: Dict[str, str]) -> List[str]:
+    """Search APIs with a key that have not just reported "out of credits" (skipped for 30 minutes, so a run
+    does not spend every query on a dead service)."""
+    gone = set(exhausted())
     out = []
     for name in SEARCH_ORDER:
+        if name in gone:
+            continue
         if name == "google_cse":
             if keys.get("google_cse_key") and keys.get("google_cse_cx"):
                 out.append(name)
@@ -211,6 +231,9 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
             else:
                 return [], f"unknown search service {name}", False
     except _HTTPFail as exc:
+        if exc.code in (401, 402, 403) or (exc.code == 429 and re.search(r"run out|out of|quota|credits|limit",
+                                                                         str(exc), re.I)):
+            mark_exhausted(name, str(exc))
         return [], f"{SERVICES.get(name, (0, name))[1]} {exc}", exc.code == 429
     except Exception as exc:
         return [], f"{name} {type(exc).__name__}: {str(exc)[:120]}", False

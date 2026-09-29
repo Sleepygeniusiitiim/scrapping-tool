@@ -1623,6 +1623,7 @@ const jobView = { id: "", from: 0, timer: null };
 async function startJob() {
   const intent = $("intent").value.trim();
   if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
+  if (!(await preflight())) return;
   const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
   const months = Number($("maxAge").value);
   try {
@@ -1680,12 +1681,32 @@ $("jobsBtn").onclick = async () => {
 };
 $("nextBtn").onclick = () => startRun(true);
 
+// Before spending AI / search credits: is the server ready? (database, a search engine that still has credits)
+async function preflight() {
+  let r;
+  try { r = await api("/api/readiness"); }
+  catch (e) { $("runStatus").textContent = "❌ " + e.message; return false; }
+  if (r.database !== "ok") {
+    $("progress").classList.remove("hidden");
+    logEv("error", "The server has no working database: " + r.database + "  →  Vercel → your project → Settings → " +
+      "Environment Variables → add DATABASE_URL = your Neon connection string (Neon → Connect), then Deployments → Redeploy.");
+    $("runStatus").textContent = "❌ No database configured on the server — see the log.";
+    return false;
+  }
+  const live = (r.search_configured || []).filter((n) => !(r.exhausted || []).includes(n));
+  if ((r.exhausted || []).length) logEv("warning", `Out of credits, skipped for 30 min: ${r.exhausted.join(", ")}.` +
+    (live.length ? ` Using ${live.join(", ")} instead.` : " No other search API key is set — only DuckDuckGo is left, which often returns nothing from Vercel. Add a Serper key (2,500 free searches) in ⚙️ Settings."));
+  else if (!(r.search_configured || []).length) logEv("warning", "No Google search API key is set — DuckDuckGo alone often returns nothing from Vercel. Add a Serper key (2,500 free searches) in ⚙️ Settings.");
+  return true;
+}
+
 async function startRun(nextRound) {
   const intent = $("intent").value.trim();
   if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
   store("csa_pw", $("pw").value);
   Object.assign(state, { stop: false, robotsHinted: false, googleHinted: false, runRecords: [], waveStats: {}, logLines: [] });
   $("progress").classList.remove("hidden"); $("planBox").classList.add("hidden");
+  if (!(await preflight())) { state.stop = true; return; }
   renderStats(); renderRun(); setRunning(true);
   const totals = { crawled: 0, records: 0 };
   const rounds = nextRound ? loadRounds(intent) : { round: 0, queries: [] };
