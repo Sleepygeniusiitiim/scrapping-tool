@@ -78,7 +78,7 @@ async def run_job(job: dict, wid: str) -> None:
         if ai is None:
             raise RuntimeError("No AI key on the worker (set GEMINI_API_KEY / GROQ_API_KEY / … or LOCAL_LLM_URL)")
         if job["kind"] == "run":
-            totals = await runner.run(ai, job.get("command") or "", opts, keys, emit,
+            totals = await runner.run_rounds(ai, job.get("command") or "", opts, keys, emit,
                                       lambda: state["cancel"] or _stop["flag"],
                                       lambda t: jobs.update(job_id, stats=t))
             jobs.update(job_id, stats=totals, run_id=totals.get("run_id"))
@@ -93,6 +93,11 @@ async def run_job(job: dict, wid: str) -> None:
         pumper.cancel()
         jobs.log(job_id, buf)
         jobs.update(job_id, status="cancelled" if state["cancel"] else "done")
+        hours = float(opts.get("repeat_hours") or 0)
+        if hours and not state["cancel"] and job["kind"] == "run":     # scheduled repeat: queue the next one
+            nxt = {k: v for k, v in opts.items() if k not in ("keys", "llm_keys")}
+            new = jobs.enqueue("run", job.get("command") or "", nxt, run_after_hours=hours)
+            print(f"next run of this job queued for +{hours:g} h: {new['id']}", flush=True)
     except Exception as exc:
         pumper.cancel()
         emit(f"FAILED: {type(exc).__name__}: {exc}")

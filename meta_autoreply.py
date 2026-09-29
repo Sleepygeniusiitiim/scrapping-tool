@@ -254,6 +254,13 @@ async def handle_message(platform: str, sender_id: str, text: str) -> dict:
     if re.fullmatch(r"\s*(stop|no|not interested|unsubscribe)\s*[.!]*\s*", text or "", re.IGNORECASE):
         _q("""UPDATE meta_threads SET status = 'not_interested', last_message = %s, updated_at = NOW()
               WHERE platform = %s AND user_id = %s""", (text[:1000], row["platform"], row["user_id"]))
+        try:                                   # an opt-out is permanent: never saved or contacted again
+            import privacy
+            privacy.add(row.get("phone"), row.get("email"),
+                        _source_url(row["platform"], row.get("username"), row["user_id"]),
+                        row.get("name"), f"replied {text.strip()[:20]} to the {platform} auto-reply")
+        except Exception:
+            pass
         return {"status": "not_interested"}
     emails, phones = rule_extractor.emails_in(text), rule_extractor.phones_in(text)
     name = _name_in(text) or row.get("name")

@@ -31,7 +31,20 @@ import integrations
 import rule_extractor
 from fetcher import _Robots
 
-DIRECTORIES = ("justdial", "indiamart", "sulekha", "tradeindia", "yellowpages", "facebook.com", "instagram.com",
+# Sites that list many businesses (directories, data brokers, lead databases, city guides, social / map links):
+# never a business's own website, and their contacts belong to the site, not to the business.
+AGGREGATORS = ("placementindia", "idbf.in", "cybo.com", "worldorgs", "contactout", "rocketreach", "companydetails",
+               "threebestrated", "findglocal", "infobel", "bharatbz", "localpunjab", "mybathinda", "karnalguide",
+               "apnapanipat", "amritsarfirst", "labourbooking", "freelistingindia", "dnb.com", "zaubacorp", "tofler",
+               "indiainfo.net", "buyersellerworld", "justvisitonline", "indosearch", "brandestate", "plenoemprego",
+               "yappe.in", "jsdl.in", "asklaila", "grotal", "yelu.in", "infoisinfo", "joonsquare", "exportersindia",
+               "whatsapp.com", "wa.me", "threads.net", "threads.com", "waze.com", "maps.app.goo.gl", "goo.gl",
+               "linktr.ee", "bizdir", "companieslist", "thecompanycheck", "instafinancials", "zoominfo", "apollo.io",
+               "lusha.com", "crunchbase", "glassdoor", "ambitionbox", "naukri", "shine.com", "timesjobs",
+               "workindia", "apna.co", "indeed", "monster", "foundit", "quikr", "olx", "clickindia", "yellowpages",
+               "tradeindia", "sulekha", "justdial", "indiamart", "grexa.site", "mapquest",
+               "hotfrog", "cylex", "brownbook", "manta.com", "yelp", "trustpilot", "gov.in", "nic.in", "wikipedia")
+DIRECTORIES = AGGREGATORS + ("justdial", "indiamart", "sulekha", "tradeindia", "yellowpages", "facebook.com", "instagram.com",
                "linkedin.com", "google.", "youtube.com", "wikipedia.org", "quora.com", "reddit.com", "twitter.com",
                "x.com", "yelp.", "glassdoor", "naukri", "indeed", "shiksha", "collegedunia", "urbanpro", "magicpin")
 _PAGE_HINT = re.compile(r"contact|about|team|reach|enquir|inquir|admission|career|staff|faculty|management|"
@@ -46,8 +59,22 @@ _SOCIAL = re.compile(r"https?://(?:[a-z]{2,3}\.)?(?:linkedin\.com/(?:company|in|
 
 
 def is_directory(url: str) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return any(d in host for d in DIRECTORIES)
+    """A directory / aggregator / social host. Dotted entries match the domain ("dnb.com", "gov.in"); bare names
+    match the site's own label ("justdial" → justdial.com, not naukripoint.com for "naukri")."""
+    host = (urlparse(url if "//" in url else "http://" + url).hostname or "").lower().removeprefix("www.")
+    if not host:
+        return False
+    labels = host.split(".")
+    site = labels[-3] if len(labels) >= 3 and labels[-2] in ("co", "org", "net", "gov", "ac", "com") else \
+        labels[-2] if len(labels) >= 2 else host
+    for d in DIRECTORIES:
+        if "." in d:
+            if host == d or host.endswith("." + d) or (d.endswith(".") and host.startswith(d)) or \
+                    (d.endswith(".") and ("." + d) in host):
+                return True
+        elif site == d or site.startswith(d) and d in ("google", "yelp"):
+            return True
+    return False
 
 
 def _tokens(name: str) -> List[str]:
@@ -256,6 +283,10 @@ async def crawl(website: str, respect_robots: bool = True, max_pages: int = 6,
         if r.status_code >= 400 or "html" not in r.headers.get("content-type", "html"):
             continue
         out["pages"] += 1
+        if out["pages"] == 1:
+            head = BeautifulSoup(r.text[:300000], "html.parser")
+            out["title"] = head.title.get_text(" ", strip=True) if head.title else ""
+            out["text_sample"] = head.get_text(" ", strip=True)[:4000]
         x = _extract(str(r.url), r.text)
         for k in ("emails", "phones", "whatsapp", "social"):
             out[k] |= x[k]
@@ -301,7 +332,8 @@ async def crawl(website: str, respect_robots: bool = True, max_pages: int = 6,
                 p["email"] = g["email"]            # published by the company — a real address, not a guess
             elif g:
                 p["email_guess"] = g
-    return {"website": website, "pages": out["pages"], "status": out["status"] if not out["pages"] else "ok",
+    return {"website": website, "title": out.get("title", ""), "text_sample": out.get("text_sample", ""),
+            "pages": out["pages"], "status": out["status"] if not out["pages"] else "ok",
             "emails": [{"email": e, "domain_accepts_mail": ok} for e, ok in zip(emails, checks)],
             "phones": sorted(out["phones"])[:10], "whatsapp": sorted(out["whatsapp"])[:5],
             "social": sorted(out["social"])[:8], "people": people[:10], "email_format": pattern,
@@ -353,18 +385,57 @@ async def guess_for_person(keys: Dict[str, str], full_name: str, company: str, r
     return g
 
 
+def host_owned(name: str, url: str) -> bool:
+    """The site's domain carries the business's own name ("gillinternational.in" for Gill International)."""
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    if not host or is_directory(url):
+        return False
+    toks = [t for t in _tokens(name) if len(t) >= 3]
+    joined = re.sub(r"[^a-z0-9]", "", host.split(".")[0])
+    return bool(toks) and (any(t in joined for t in toks) or
+                           "".join(t[0] for t in toks) == joined[:len(toks)] and len(toks) >= 3)
+
+
+def page_names(res: dict, name: str) -> bool:
+    """The crawled site names the business in its title / text (for domains like "hrintl.com")."""
+    toks = [t for t in _tokens(name) if len(t) >= 3]
+    text = (res.get("title", "") + " " + res.get("text_sample", "")).lower()
+    return bool(toks) and sum(t in text for t in toks) >= (len(toks) if len(toks) <= 2 else len(toks) - 1)
+
+
+def own_emails(emails: List[str], site: str) -> List[str]:
+    """Addresses that belong to the business: on its own domain, or a personal mailbox (gmail …) it publishes on
+    its own site — never an address of a directory / data broker (support@contactout.com, info@companydetails.in)."""
+    dom = (urlparse(site).hostname or "").lower().removeprefix("www.")
+    out = []
+    for e in emails:
+        d = e.split("@")[-1].lower()
+        if any(a in d for a in AGGREGATORS if "." in a or len(a) > 6):
+            continue
+        if d == dom or d.endswith("." + dom) or dom.endswith("." + d) or d.startswith(FREE_MAIL) or \
+                d.split(".")[0] == dom.split(".")[0]:
+            out.append(e)
+    return out
+
+
 async def for_organization(keys: Dict[str, str], name: str, city: str, page_url: str,
                            respect_robots: bool = True) -> Optional[dict]:
-    """Contacts for one organization lead: its own site (found if needed), crawled."""
+    """Contacts for one organization lead: its own site (found if needed), crawled — only when the site is
+    really the business's (its name in the domain, or on the site), and only the site's own contacts."""
     site = None
-    if page_url and not is_directory(page_url):
+    if page_url and not is_directory(page_url) and host_owned(name, page_url):
         p = urlparse(page_url)
         site = f"{p.scheme}://{p.netloc}/"
     if not site and name:
         site = await discover_website(keys, name, city)
     if not site:
         return None
-    return await crawl(site, respect_robots, keys=keys)
+    res = await crawl(site, respect_robots, keys=keys)
+    if not res or not (host_owned(name, site) or page_names(res, name)):
+        return None                       # someone else's site: its phones / emails are not this business's
+    res["emails"] = [e for e in res["emails"] if e["email"] in own_emails([x["email"] for x in res["emails"]], site)]
+    res["people"] = [p for p in res["people"] if not p.get("email") or p["email"] in own_emails([p["email"]], site)]
+    return res
 
 
 _DM_ROLE = re.compile(r"\b(owner|co-?founder|founder|managing director|director|proprietor|partner|principal|"

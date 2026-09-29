@@ -3,7 +3,7 @@ Vercel serverless API (FastAPI) for the Candidate Sourcing Agent.
 
 Connected to Neon PostgreSQL (`DATABASE_URL`) and Google Gemini (`GEMINI_API_KEY`).
 Every endpoint verifies `X-App-Password` against `APP_PASSWORD` (defaulting to
-`CSA-Neon-Vercel-2026!` if not overridden in environment variables).
+set in the APP_PASSWORD environment variable).
 Also supports passing `X-Gemini-Key` from the web UI if `GEMINI_API_KEY` is not
 set in server environment variables.
 """
@@ -52,7 +52,7 @@ from intent_miner.understand import understand as im_understand  # noqa: E402
 import outreach  # noqa: E402
 from schema import CandidateRecord, clean_email, clean_phone  # noqa: E402
 
-DEFAULT_APP_PASSWORD = "CSA-Neon-Vercel-2026!"
+DEFAULT_APP_PASSWORD = ""        # no built-in password: APP_PASSWORD must be set in the environment
 
 app = FastAPI(title="Candidate Sourcing Agent API", docs_url=None, redoc_url=None)
 
@@ -113,6 +113,9 @@ app.add_middleware(VercelPathNormalizedMiddleware)
 # ---------------------------------------------------------------------------
 def require_password(x_app_password: Optional[str] = Header(default=None)) -> None:
     expected = (os.getenv("APP_PASSWORD") or DEFAULT_APP_PASSWORD).strip()
+    if not expected:
+        raise HTTPException(503, "APP_PASSWORD is not set on the server: add it in the Vercel project's environment "
+                                 "variables and redeploy.")
     provided = (x_app_password or "").strip()
     if not provided or not hmac.compare_digest(provided, expected):
         raise HTTPException(401, "Wrong password. Use your Vercel APP_PASSWORD.")
@@ -297,6 +300,48 @@ async def health(
     except Exception as exc:
         out["gemini_error"] = str(getattr(exc, "detail", exc))
     return out
+
+
+class SuppressIn(BaseModel):
+    phone: Optional[str] = Field(None, max_length=40)
+    email: Optional[str] = Field(None, max_length=200)
+    profile: Optional[str] = Field(None, max_length=500)
+    name: Optional[str] = Field(None, max_length=200)
+    reason: str = Field("opted out", max_length=200)
+
+
+@router.post("/privacy/suppress")
+def privacy_suppress(body: SuppressIn):
+    """Do not contact this person again: added to the list, their saved contact details erased."""
+    import privacy
+    _db()
+    try:
+        return _im_db(privacy.add, body.phone, body.email, body.profile, body.name, body.reason)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/privacy/list")
+def privacy_list():
+    import privacy
+    _db()
+    return {"entries": _im_db(privacy.listing, 500)}
+
+
+@router.post("/privacy/remove")
+def privacy_remove(body: dict):
+    import privacy
+    _db()
+    _im_db(privacy.remove, int(body.get("id") or 0))
+    return {"ok": True}
+
+
+@router.post("/privacy/purge")
+def privacy_purge(body: dict):
+    """Erase individuals' contact details older than N days (businesses are kept)."""
+    import privacy
+    _db()
+    return _im_db(privacy.purge, int(body.get("days") or 180))
 
 
 @router.get("/readiness")
@@ -914,6 +959,9 @@ class JobIn(BaseModel):
     batch: int = Field(5, ge=1, le=8)
     settings: IMSettings = Field(default_factory=IMSettings)
     use_page_keys: bool = False
+    rounds: int = Field(1, ge=1, le=20)              # automatic rounds, each with new searches
+    pause_minutes: float = Field(0, ge=0, le=720)    # wait between rounds
+    repeat_hours: float = Field(0, ge=0, le=720)     # run the whole job again every N hours (0 = once)
 
 
 @router.post("/jobs")

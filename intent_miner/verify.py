@@ -221,3 +221,64 @@ async def check(ai, spec: QuerySpec, command: str, leads: List[dict], texts: Dic
                 L["why"] = L.get("why", []) + ["⚠ Unverified: MEA registration"]
             kept.append(L)
     return kept, rejected
+
+
+# ---------------------------------------------------------------------------
+# Score calibration: HIGH only with evidence for the command's requirements
+# ---------------------------------------------------------------------------
+_OVERSEAS_CMD = re.compile(r"overseas|abroad|foreign|gulf|emigrat|\bmea\b|external affairs|recruiting agent|\bra\b",
+                           re.IGNORECASE)
+# large domestic staffing / executive-search brands: not emigration recruiting agents
+DOMESTIC_BRANDS = re.compile(r"\b(?:randstad|adecco|michael page|teamlease|quess|manpowergroup|kelly services|"
+                             r"ciel hr|abc consultants|hunt partners|korn ferry|egon zehnder|heidrick|spencer stuart|"
+                             r"allegis|hays|robert half|persol|naukri|workindia|apna|indeed|monster|foundit|"
+                             r"placementindia|shine\.com)\b", re.IGNORECASE)
+_OFF_TYPE = re.compile(r"\b(?:it recruit|bpo placement|software|visa agent|visa consult|travel agen|tours|"
+                       r"immigration|employment exchange|employment office|unemployment office|training cent|"
+                       r"csc|facilitation cent|study visa|education consult)", re.IGNORECASE)
+_OVERSEAS_NAME = re.compile(r"overseas|international|intl|abroad|gulf|global|foreign|manpower|emigra|world|"
+                            r"expat|middle east|arabia|qatar|dubai|kuwait|oman|saudi", re.IGNORECASE)
+
+
+def _has_requirement_evidence(L: dict, texts: str) -> bool:
+    gm = L.get("gov_match") or {}
+    if gm.get("status") == "matched" and re.search(r"mea|emigrat|recruit|\bra\b|register", gm.get("dataset", ""), re.I):
+        return True
+    return bool(L.get("requirement_evidence")) or bool(mea_evidence(texts)) or \
+        bool(re.search(r"(?:approved|licen[cs]ed|registered|certified)\s+(?:by|with|under)\s+(?:the\s+)?"
+                       r"(?:mea|ministry of external affairs|government of india|govt\.? of india|poe)", texts, re.I) or
+                  re.search(r"(?:\bmea\b|ministry of external affairs|e-?migrate)[^.]{0,40}?"
+                            r"(?:approved|licen[cs]ed|registered|certified|licen[cs]e)", texts, re.I))
+
+
+def calibrate(leads: List[dict], spec: QuerySpec, command: str) -> Tuple[List[dict], List[Tuple[dict, str]]]:
+    """Business leads after the fit check and the government-list match:
+    * overseas / MEA commands: big domestic staffing brands removed; IT / BPO placement, visa / travel agents,
+      employment exchanges without an overseas word in the name scored down (−15);
+    * a command with hard requirements: a lead reaches HIGH (80+) only when the evidence shows them (RA licence,
+      match on an official MEA list, "approved by MEA" on its own pages); otherwise capped at 79 and marked."""
+    from . import scoring
+    overseas = bool(_OVERSEAS_CMD.search(command + " " + " ".join(spec.requirements)))
+    kept, dropped = [], []
+    for L in leads:
+        name = L.get("display_name") or ""
+        blob = " ".join(str(x) for x in [name, L.get("profession"), " ".join(map(str, L.get("evidence") or [])),
+                                         " ".join(map(str, L.get("why") or []))] if x)
+        if overseas and DOMESTIC_BRANDS.search(name):
+            dropped.append((L, "domestic staffing / job-portal brand, not an emigration recruiting agent"))
+            continue
+        score = int(L.get("lead_score") or 0)
+        if overseas and _OFF_TYPE.search(f"{name} {L.get('profession') or ''}") and not _OVERSEAS_NAME.search(name):
+            score -= 15
+            L["why"] = (L.get("why") or []) + ["− Business type is not clearly overseas recruitment"]
+        if spec.requirements or overseas:
+            if _has_requirement_evidence(L, blob):
+                L["why"] = (L.get("why") or []) + ["✓ Requirement shown (licence / official list / approval)"]
+            elif score >= 80:
+                score = 79
+                L["why"] = (L.get("why") or []) + ["⚠ Capped below HIGH: no licence number, official-list match or "
+                                                   "approval statement found"]
+        L["lead_score"] = max(0, score)
+        L["tier"] = scoring.tier(L["lead_score"])
+        kept.append(L)
+    return kept, dropped

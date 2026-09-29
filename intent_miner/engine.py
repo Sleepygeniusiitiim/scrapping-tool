@@ -214,7 +214,9 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         if h and h in known and not settings.get("reprocess"):
             stats["unchanged"] += 1           # same content already classified in an earlier run
             continue
+        import company_contacts as _cc
         if orgs and d.metadata.get("site_contacts") and d.source not in ("directories", "maps") \
+                and not _cc.is_directory(d.url) \
                 and not any(u.kind == "organization" for u in d.units) and _site_name(d):
             # a business's own page: its header / footer contacts belong to the business itself
             d.units.append(Unit("organization", _site_name(d), f"{d.title}. {d.metadata['site_contacts']}", d.url,
@@ -335,6 +337,10 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         if orgs:
             author = (r.organization if r and r.organization else None) or \
                 (u.author if u.kind == "organization" else None) or _site_name(d)
+            if not valid_org_name(author):
+                stats["bad_names"] = stats.get("bad_names", 0) + 1
+                events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
+                continue
         key = (_org_key(author, d.url) if orgs and author else
                f"{d.source}:{author.lower()}" if author else
                f"contact:{(emails or phones or [''])[0]}" if (emails or phones) and own_contact else f"url:{d.url}#{i}")
@@ -356,8 +362,12 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
                          "score": score, "evidence": evidence[0] if evidence else ""}],
         }
         if orgs:
-            lead["website"] = d.metadata.get("website") or _website_in(u.text + " " + (d.metadata.get("links") or ""),
-                                                                        author or "") or None
+            import company_contacts as _cc
+            site = d.metadata.get("website") or ""
+            site = site if site and not _cc.is_directory(site) else ""
+            lead["website"] = site or _website_in(u.text + " " + (d.metadata.get("links") or ""), author or "") or None
+            if lead["profile_url"] and _cc.is_directory(lead["profile_url"]) and "linkedin.com/in/" not in lead["profile_url"]:
+                lead["profile_url"] = lead["website"]
             lead["origin"] = lead["origin"] or d.metadata.get("city") or None
             if d.metadata.get("address"):
                 lead["address"] = d.metadata["address"]
@@ -431,6 +441,16 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     # ---- Government directories (imported lists): link each lead to its official record --------------
     if leads and settings.get("gov_match", True):
         await _gov_match(ai, leads, candidates, cand_lead, settings, stats, warnings)
+
+    # ---- Businesses: final scores — HIGH only with evidence for the command's requirements -------------
+    if orgs and leads:
+        from . import verify
+        leads, dropped = verify.calibrate(leads, spec, settings.get("intent") or spec.summary)
+        if dropped:
+            gone = {id(L) for L, _ in dropped}
+            candidates = [c for c in candidates if id(cand_lead.get(c.source_url)) not in gone]
+            warnings.append("Removed after checking: " + "; ".join(f"{L.get('display_name')}: {w}"
+                                                                   for L, w in dropped[:5]))
 
     saved = await asyncio.to_thread(store.upsert_leads, run_id, leads) if leads else []
     if saved and settings.get("semantic_index", True):
@@ -646,6 +666,23 @@ def _site_name(d: RawDocument) -> Optional[str]:
                       r"services|agencies|trainers)\s+(?:in|near|at)\b", head, re.I):
         return None
     return head[:120] or None
+
+
+_BAD_NAME = re.compile(r"^(?:#|\(|contact details|contact us|home|about us|anonymous|unknown|page \d|post|"
+                       r"recruitment agency in |best |top \d|list of|ra$|n/?a$|business consultant$|"
+                       r"recruitment service,)", re.IGNORECASE)
+
+
+def valid_org_name(name: Optional[str]) -> bool:
+    """A real business name — not a page heading ("# Contact details found on the page"), a placeholder
+    ("(anonymous post)"), an abbreviation ("RA") or a directory category title."""
+    n = (name or "").strip()
+    if len(n) < 3 or len(n) > 120 or _BAD_NAME.search(n) or not re.search(r"[A-Za-z]{2}", n):
+        return False
+    if re.search(r"\b(?:in|near)\s+(?:india|delhi|mumbai|hyderabad|bangalore|[A-Z][a-z]+)\s*$", n) and \
+            re.search(r"\b(?:services?|agenc(?:y|ies)|consultants?|jobs|placements?)\s+in\b", n, re.I):
+        return False                           # "Recruitment Service, E Recruitment Solution in Hyderabad"
+    return True
 
 
 def _website_in(text: str, name: str) -> Optional[str]:

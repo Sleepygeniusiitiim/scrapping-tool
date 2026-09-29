@@ -41,11 +41,8 @@ log = logging.getLogger(__name__)
 SCRAPED_URLS_TABLE = "scraped_urls"
 CANDIDATES_TABLE = "candidates"
 
-DEFAULT_NEON_DATABASE_URL = (
-    "postgresql://neondb_owner:npg_jBms9Rc4oHgD@"
-    "ep-fancy-dust-b5rdd2ee-pooler.c-7.us-east-2.aws.neon.tech/"
-    "neondb?sslmode=require&channel_binding=require"
-)
+# No built-in database: the connection string comes from the environment (DATABASE_URL on Vercel) only.
+DEFAULT_NEON_DATABASE_URL = ""
 
 RETRYABLE_STATUSES = ("robots", "quota")
 _RETRYABLE_SQL = ", ".join(f"'{x}'" for x in RETRYABLE_STATUSES)
@@ -134,6 +131,9 @@ def _resolve_database_url(url: Optional[str] = None) -> str:
         or os.getenv("POSTGRES_URL")
         or DEFAULT_NEON_DATABASE_URL
     ).strip()
+    if not env_url:
+        raise SupabaseError("No database configured: set DATABASE_URL (your Neon connection string) in the Vercel "
+                            "project's environment variables and redeploy.")
     return env_url
 
 
@@ -376,8 +376,9 @@ def save_candidates(candidates: List[CandidateRecord]) -> int:
     if not candidates:
         return 0
     _ensure_schema()
+    import privacy
     by_url: dict[str, dict] = {}
-    for r in _merge_duplicates([c.to_db_row() for c in candidates]):
+    for r in privacy.filter_rows(_merge_duplicates([c.to_db_row() for c in candidates])):
         by_url[r["source_url"]] = r
     rows = [
         (

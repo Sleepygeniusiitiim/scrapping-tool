@@ -34,7 +34,12 @@ def available(keys: Dict[str, str]) -> List[str]:
 
 
 def _norm(p: dict) -> dict:
-    return {k: (str(v).strip() if v is not None else "") for k, v in p.items()}
+    out = {k: (str(v).strip() if v is not None else "") for k, v in p.items()}
+    if out.get("website"):
+        import company_contacts
+        if company_contacts.is_directory(out["website"]):     # a directory profile / WhatsApp link, not a website
+            out["listing"], out["website"] = out["website"], ""
+    return out
 
 
 async def places(keys: Dict[str, str], query: str, limit: int = 20) -> List[dict]:

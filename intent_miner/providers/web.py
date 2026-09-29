@@ -282,11 +282,14 @@ class RssProvider(BaseProvider):
 def entity_hits(entities: List[dict], query: str = "") -> List[dict]:
     """Google's local pack and knowledge panel as ready documents: one organization each, with the phone,
     website, address and named founders / owners Google shows (no page to read)."""
+    import company_contacts
     city = (re.search(r"\bin\s+([A-Z][\w ]+)$", query) or [None, ""])[1]
     out = []
     for e in entities:
         if not e.get("name"):
             continue
+        if e.get("website") and company_contacts.is_directory(e["website"]):
+            e = {**e, "website": ""}
         lines = [f"{e['name']} — {e.get('category') or 'business'}."]
         for label, k in (("Address", "address"), ("Phone", "phone"), ("Website", "website")):
             if e.get(k):

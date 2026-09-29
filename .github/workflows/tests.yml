@@ -1,0 +1,23 @@
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - name: Page script parses
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          s = pathlib.Path("public/index.html").read_text()
+          pathlib.Path("page.js").write_text("\n".join(re.findall(r"<script>(.*?)</script>", s, re.S)))
+          PY
+          node --check page.js

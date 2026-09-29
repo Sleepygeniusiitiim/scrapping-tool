@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS im_jobs (
     created_at TIMESTAMPTZ DEFAULT NOW(), started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, heartbeat_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_im_jobs_status ON im_jobs (status, created_at);
+ALTER TABLE im_jobs ADD COLUMN IF NOT EXISTS run_after TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS im_workers (
     worker TEXT PRIMARY KEY, info JSONB DEFAULT '{}'::jsonb, last_seen TIMESTAMPTZ DEFAULT NOW()
 );
@@ -75,9 +76,12 @@ def worker_id() -> str:
 
 
 # ---------------------------------------------------------------------------
-def enqueue(kind: str, command: str, options: dict) -> dict:
-    return _row(_q("INSERT INTO im_jobs (kind, command, options) VALUES (%s, %s, %s) RETURNING *",
-                   (kind, command, json.dumps(options)), "one", "Queuing job"))
+def enqueue(kind: str, command: str, options: dict, run_after_hours: float = 0) -> dict:
+    """Queue a job; with run_after_hours it waits that long before a worker may start it."""
+    return _row(_q("""INSERT INTO im_jobs (kind, command, options, run_after)
+                      VALUES (%s, %s, %s, CASE WHEN %s > 0 THEN NOW() + make_interval(secs => %s) END) RETURNING *""",
+                   (kind, command, json.dumps(options), run_after_hours, run_after_hours * 3600), "one",
+                   "Queuing job"))
 
 
 def get(job_id: str, log_from: int = 0) -> Optional[dict]:
@@ -90,7 +94,8 @@ def get(job_id: str, log_from: int = 0) -> Optional[dict]:
 
 
 def recent(limit: int = 20) -> List[dict]:
-    rows = _q("""SELECT id, kind, status, command, run_id, stats, error, created_at, started_at, finished_at, worker
+    rows = _q("""SELECT id, kind, status, command, run_id, stats, error, created_at, started_at, finished_at, worker,
+                        run_after, options->>'rounds' AS rounds, options->>'repeat_hours' AS repeat_hours
                  FROM im_jobs ORDER BY created_at DESC LIMIT %s""", (limit,), "all")
     return [_row(r) for r in rows]
 
@@ -117,6 +122,7 @@ def claim(worker: str, kinds: Optional[List[str]] = None) -> Optional[dict]:
     r = _q("""UPDATE im_jobs SET status = 'running', worker = %s, attempts = attempts + 1,
                      started_at = COALESCE(started_at, NOW()), heartbeat_at = NOW()
               WHERE id = (SELECT id FROM im_jobs WHERE status = 'queued' AND NOT cancel_requested
+                            AND (run_after IS NULL OR run_after <= NOW())
                             AND (%s::text[] IS NULL OR kind = ANY(%s::text[]))
                           ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
               RETURNING *""", (worker, kinds, kinds), "one", "Claiming job")

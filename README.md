@@ -33,11 +33,11 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
 
    | Name | Value |
    |---|---|
-   | `DATABASE_URL` | `postgresql://neondb_owner:npg_jBms9Rc4oHgD@ep-fancy-dust-b5rdd2ee-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require` |
-   | `APP_PASSWORD` | `CSA-Neon-Vercel-2026!` (also configured as default fallback) |
+   | `DATABASE_URL` | your Neon connection string (Neon dashboard → Connect) |
+   | `APP_PASSWORD` | a long random password of your choice (required — there is no built-in default) |
    | `GEMINI_API_KEY` | AI Studio (`AIza…`) or Vertex express (`AQ.…`) key (can also be entered directly in the UI) |
 
-3. Redeploy so the variables take effect. Open the site, enter the password (`CSA-Neon-Vercel-2026!`), and click **Test connections**.
+3. Redeploy so the variables take effect. Open the site, enter your APP_PASSWORD, and click **Test connections**.
 
 ## Contact details, comments and Scrape.do
 
@@ -169,6 +169,53 @@ engine — oldest first, read more than 1 day / 3 days / 1 week / 1 month ago, o
 gave leads or have several posts / comments — with the current intent and settings. Pages whose content
 hash has not changed are skipped without any AI cost; changed pages are scored again, so new comments
 become new leads while existing people are merged, not duplicated.
+
+## The app (layout)
+
+* **🚀 Search** — one box: describe who you want, or pick a preset (people who want jobs abroad · businesses and
+  their owners · specific businesses by name · everyone on an official list). Search settings are folded away.
+  **Rounds**: run 1–10 rounds in a row, each with new searches (no query is repeated), with an optional pause;
+  on a background worker the whole job can also **repeat automatically** every 6 h / 12 h / day / week, and the
+  results collect under 📦 Background jobs and in Leads (the page can be closed).
+* **📋 Leads** — qualified lead cards (with 🚫 Do not contact) and the contacts table.
+* **🏛️ Lists & lookups** — official lists (import, match, make leads), find businesses by name, analyse links,
+  search everything saved.
+* **✉️ Outreach** — drafted messages and the Instagram / Facebook auto-reply.
+* **⚙️ Settings** — app password, AI provider and keys, service keys, privacy.
+
+## Security setup (required)
+
+There is no built-in database or password: set `DATABASE_URL` (Neon connection string) and `APP_PASSWORD` (a long
+random password) in the Vercel project's environment variables and redeploy. Without them the app says so instead
+of starting. **If you used the earlier built-in values, rotate them** — change the Neon database password (Neon →
+Roles → Reset password) and choose a new `APP_PASSWORD`: the old values remain in the repository's git history.
+
+## Contact quality
+
+* Directory / data-broker / social sites (JustDial, IndiaMART, placementindia, idbf, cybo, ContactOut, RocketReach,
+  companydetails, WhatsApp / Facebook links …) are never taken as a business's website, and their phones / emails
+  are never attached to a business.
+* A website is used only when it belongs to the business (its name in the domain, or on the site), and only
+  addresses on its own domain (or a personal mailbox it publishes itself) are kept.
+* Page headings and placeholders ("# Contact details found on the page", "(anonymous post)", "RA") are not leads.
+* Scores: for a command with hard requirements (e.g. MEA registration) a business reaches HIGH only when the
+  evidence shows them — an RA licence number, a match on an official list, or an approval statement on its own
+  pages; otherwise it is capped at 79 and marked. Large domestic staffing / job-portal brands are removed for
+  overseas-recruitment commands. The newest assessment replaces older scores.
+
+## Privacy & consent
+
+⚙️ Settings → 🛡️ Privacy: a **do-not-contact list** (STOP replies to the auto-reply, 🚫 on a lead, or added by
+hand) — listed people are never saved or contacted again and their saved details are erased; **retention** —
+erase individuals' phone / email older than 90 / 180 / 365 days (businesses are kept). Each contact keeps its
+source link and contact source. Collect and use personal contacts only for a lawful purpose (India's DPDP Act),
+prefer consent-based first contact (the auto-reply on your own posts), and honour opt-outs.
+
+## Tests
+
+`pip install -r requirements-dev.txt && python -m pytest -q` — contact extraction and ownership, fit check and
+score calibration, official-list PDF import, zero-send mailbox check (local fake mail server), source planning and
+search merging. GitHub Actions runs them on every push (`.github/workflows/tests.yml`); no network or database needed.
 
 ## Complete lists: official registers, list import by link, businesses by name
 

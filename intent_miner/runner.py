@@ -34,6 +34,7 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
                                        auto)
     run_id = await asyncio.to_thread(store.create_run, command, spec.model_dump())
     totals["run_id"] = run_id
+    totals["queries"] = [q.query for q in spec.queries]
     if auto:
         emit("Source plan: " + " · ".join(f"{c.source} {c.weight} ({c.reason})" for c in spec.source_plan
                                           if c.weight >= 50))
@@ -117,3 +118,48 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
          f"{totals['leads']} leads, {totals['records']} contacts ({totals['with_phone']} with phone, "
          f"{totals['with_email']} with email) from {totals['pages']} pages and {totals['searches']} searches.")
     return totals
+
+
+_SUM = ("pages", "leads", "records", "with_phone", "with_email", "blocked", "failed", "searches")
+
+
+async def run_rounds(ai, command: str, options: dict, keys: Dict[str, str],
+                     emit: Callable[[str], None], stopped: Callable[[], bool],
+                     on_stats: Optional[Callable[[dict], None]] = None) -> dict:
+    """`rounds` runs of the same command one after another; every round plans NEW searches (all queries of
+    earlier rounds are excluded), optionally pausing `pause_minutes` between rounds."""
+    rounds = max(1, min(20, int(options.get("rounds") or 1)))
+    pause = max(0.0, float(options.get("pause_minutes") or 0))
+    exclude: List[str] = list(options.get("exclude_queries") or [])
+    grand: dict = {k: 0 for k in _SUM}
+    grand.update(rounds_done=0, rounds=rounds, run_ids=[])
+    for r in range(rounds):
+        if stopped():
+            break
+        if rounds > 1:
+            emit(f"━━━ Round {r + 1} of {rounds} ━━━")
+
+        def partial(t, _g=dict(grand)):
+            if on_stats:
+                on_stats({**_g, **{k: _g[k] + t.get(k, 0) for k in _SUM},
+                          "run_ids": _g["run_ids"] + [t.get("run_id")], "run_id": t.get("run_id")})
+
+        t = await run(ai, command, {**options, "exclude_queries": exclude}, keys, emit, stopped, partial)
+        exclude += t.get("queries", [])
+        for k in _SUM:
+            grand[k] += t.get(k, 0)
+        grand["run_ids"].append(t.get("run_id"))
+        grand["run_id"] = t.get("run_id")
+        grand["rounds_done"] = r + 1
+        if on_stats:
+            on_stats(dict(grand))
+        if r < rounds - 1 and pause and not stopped():
+            emit(f"Pausing {pause:g} min before round {r + 2}…")
+            waited = 0.0
+            while waited < pause * 60 and not stopped():
+                await asyncio.sleep(5)
+                waited += 5
+    if rounds > 1:
+        emit(f"All rounds done: {grand['rounds_done']} rounds, {grand['leads']} leads, {grand['records']} contacts "
+             f"({grand['with_phone']} with phone, {grand['with_email']} with email).")
+    return grand

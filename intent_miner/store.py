@@ -245,8 +245,9 @@ def _host(u: Optional[str]) -> str:
 def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
     """Insert or merge leads. Same key → same lead; same email / phone → merged into the existing lead;
     same name on another platform → recorded as a *possible* match needing verification (never merged)."""
+    import privacy
     out = []
-    for L in leads:
+    for L in privacy.filter_rows(leads):
         contact_match = None
         if L.get("email") or L.get("phone"):
             digits = re.sub(r"\D", "", L.get("phone") or "")[-10:]
@@ -283,8 +284,11 @@ def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
                 timeline = COALESCE(EXCLUDED.timeline, im_leads.timeline),
                 intent_type = COALESCE(EXCLUDED.intent_type, im_leads.intent_type),
                 intent_score = GREATEST(im_leads.intent_score, EXCLUDED.intent_score),
-                lead_score = GREATEST(im_leads.lead_score, EXCLUDED.lead_score),
-                tier = CASE WHEN EXCLUDED.lead_score > im_leads.lead_score THEN EXCLUDED.tier ELSE im_leads.tier END,
+                -- the newest assessment wins (checks improve); within one run the best source counts
+                lead_score = CASE WHEN im_leads.run_id IS NOT DISTINCT FROM EXCLUDED.run_id
+                                  THEN GREATEST(im_leads.lead_score, EXCLUDED.lead_score) ELSE EXCLUDED.lead_score END,
+                tier = CASE WHEN im_leads.run_id IS NOT DISTINCT FROM EXCLUDED.run_id
+                                 AND im_leads.lead_score > EXCLUDED.lead_score THEN im_leads.tier ELSE EXCLUDED.tier END,
                 confidence = GREATEST(im_leads.confidence, EXCLUDED.confidence),
                 freshness = GREATEST(im_leads.freshness, EXCLUDED.freshness),
                 evidence = COALESCE((SELECT jsonb_agg(DISTINCT e) FROM (
@@ -318,9 +322,9 @@ def list_leads(min_score: int = 0, limit: int = 1000, run_id: str = "") -> List[
     rows = _q(f"""SELECT l.*, COALESCE((SELECT jsonb_agg(jsonb_build_object('url', s.url, 'source', s.source,
                           'kind', s.unit_kind, 'date', s.activity_date, 'score', s.score) ORDER BY s.score DESC)
                           FROM im_lead_sources s WHERE s.lead_key = l.lead_key), '[]'::jsonb) AS sources
-                  FROM im_leads l WHERE l.lead_score >= %s {"AND l.run_id::text = %s" if run_id else ""}
+                  FROM im_leads l WHERE l.lead_score >= %s {"AND l.run_id::text = ANY(%s)" if run_id else ""}
                   ORDER BY l.lead_score DESC, l.last_activity DESC NULLS LAST LIMIT %s""",
-              (min_score, run_id, limit) if run_id else (min_score, limit), "all")
+              (min_score, [x for x in run_id.split(",") if x], limit) if run_id else (min_score, limit), "all")
     return [db._serialize_row(dict(r)) for r in rows]
 
 

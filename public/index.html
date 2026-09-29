@@ -7,52 +7,104 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
 <style>
   :root {
-    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd;
-    --accent: #2f5bd3; --accent-text: #fff; --ok: #1f7a4a; --warn: #9a6200; --err: #b3261e;
-    --code: #f1f0ec;
+    --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f9fafb; --text: #16181d; --muted: #667085; --line: #e4e7ec;
+    --accent: #3056d3; --accent-2: #eef2ff; --accent-text: #ffffff; --ok: #12805c; --ok-bg: #e7f6ef;
+    --warn: #a15c07; --warn-bg: #fdf3e2; --err: #b42318; --err-bg: #fdecea; --code: #f2f4f7;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08); --radius: 12px;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #151514; --panel: #1e1e1c; --text: #ecebe6; --muted: #9c9b95; --line: #33332f;
-      --accent: #7c9bff; --accent-text: #0e1320; --ok: #6cc596; --warn: #e0b25a; --err: #f08a80; --code: #262624; }
+    :root:not([data-theme="light"]) { --bg: #0f1115; --panel: #171a21; --panel-2: #1c2029; --text: #e8eaef; --muted: #98a1b3;
+      --line: #2a2f3a; --accent: #7f9cff; --accent-2: #1d2440; --accent-text: #0b1020; --ok: #4fd1a1; --ok-bg: #11291f;
+      --warn: #f2b84b; --warn-bg: #2d2412; --err: #ff8a80; --err-bg: #331a18; --code: #1f232c; --shadow: none; }
   }
+  :root[data-theme="dark"] { --bg: #0f1115; --panel: #171a21; --panel-2: #1c2029; --text: #e8eaef; --muted: #98a1b3;
+      --line: #2a2f3a; --accent: #7f9cff; --accent-2: #1d2440; --accent-text: #0b1020; --ok: #4fd1a1; --ok-bg: #11291f;
+      --warn: #f2b84b; --warn-bg: #2d2412; --err: #ff8a80; --err-bg: #331a18; --code: #1f232c; --shadow: none; }
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   body { margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
+    font: 15px/1.55 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  /* ---- shell ---- */
+  .topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 10px 20px; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+  .brand .logo { font-size: 22px; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 10px;
+    background: var(--accent-2); }
+  .brand b { display: block; font-size: 15px; } .brand small { color: var(--muted); font-size: 12px; }
+  .nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  .nav button { border: 0; background: transparent; padding: 8px 12px; border-radius: 8px; color: var(--muted); font-weight: 500; }
+  .nav button:hover { background: var(--panel-2); color: var(--text); }
+  .nav button[aria-current=page] { background: var(--accent-2); color: var(--accent); }
+  .nav .count { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 99px; background: var(--accent);
+    color: var(--accent-text); font-size: 11px; line-height: 18px; text-align: center; }
+  .nav .count:empty { display: none; }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 16px 80px; }
+  .view > h2:first-child, .view > section:first-child { margin-top: 0; }
+  .banner { background: var(--warn-bg); color: var(--warn); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 14px; }
   h1 { font-size: 24px; margin: 0 0 4px; }
-  h2 { font-size: 17px; margin: 28px 0 10px; }
+  h2 { font-size: 18px; margin: 28px 0 10px; letter-spacing: -.01em; }
+  h3.sec { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 8px 0; }
   .sub { color: var(--muted); margin: 0 0 20px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  /* ---- surfaces ---- */
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px;
+    box-shadow: var(--shadow); margin-bottom: 14px; }
+  .hero { padding: 22px; }
+  .hero-head { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
+  .hero-head h2 { margin: 0; font-size: 20px; }
+  .hero textarea#intent { min-height: 96px; font-size: 16px; padding: 12px 14px; border-radius: 10px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border-radius: 99px; padding: 6px 12px; font-size: 13px; background: var(--panel-2); }
+  .chip.on { background: var(--accent-2); border-color: var(--accent); color: var(--accent); }
+  details.adv, details.panel-d { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 12px 16px; box-shadow: var(--shadow); }
+  details.adv { background: var(--panel-2); box-shadow: none; }
+  details.panel-d { margin: 0 0 14px; }
+  details.panel-d > summary, details.adv > summary { font-weight: 600; color: var(--text); }
+  .rounds { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); margin-top: 14px;
+    align-items: end; }
+  .rounds .hint { grid-column: 1 / -1; margin: 0; }
+  /* ---- forms ---- */
   label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-  input, select, textarea { width: 100%; font: inherit; color: var(--text); background: var(--bg);
-    border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; }
+  input, select, textarea { width: 100%; font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; transition: border-color .15s, box-shadow .15s; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
   textarea { min-height: 70px; resize: vertical; }
-  input[type=checkbox] { width: auto; margin-right: 6px; }
-  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+  input[type=checkbox] { width: auto; margin-right: 6px; accent-color: var(--accent); }
+  .row label, label:has(> input[type=checkbox]) { display: inline-flex; align-items: center; color: var(--text); margin: 0; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
-    border-radius: 7px; padding: 7px 14px; cursor: pointer; }
-  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+    border-radius: 8px; padding: 8px 14px; cursor: pointer; transition: background .15s, border-color .15s; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600;
+    padding: 10px 20px; }
+  button.primary:hover { filter: brightness(1.05); }
   button:disabled { opacity: .5; cursor: not-allowed; }
   details { margin-top: 12px; }
   summary { cursor: pointer; color: var(--muted); }
   .status { font-size: 13px; color: var(--muted); }
   .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
-  pre.log { background: var(--code); border-radius: 8px; padding: 10px 12px; max-height: 280px;
-    overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 0; }
-  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  pre.log { background: var(--code); border-radius: 10px; padding: 12px 14px; max-height: 320px;
+    overflow: auto; font: 12.5px/1.55 ui-monospace, "SF Mono", Consolas, monospace; white-space: pre-wrap; margin: 0; }
+  /* ---- tables ---- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { background: var(--code); font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:hover td { background: var(--panel-2); }
+  th { background: var(--panel-2); font-weight: 600; white-space: nowrap; position: sticky; top: 0; color: var(--muted);
+    font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.evidence { min-width: 280px; max-width: 420px; }
   td[contenteditable=true] { outline: none; }
   td[contenteditable=true]:focus { background: var(--code); }
   td.dirty { box-shadow: inset 3px 0 0 var(--warn); }
   .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
-  .tabs button[aria-selected=true] { border-color: var(--accent); color: var(--accent); }
+  .tabs button[aria-selected=true] { border-color: var(--accent); color: var(--accent); background: var(--accent-2); }
   .hidden { display: none !important; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  /* ---- cards ---- */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 10px; }
   .card h3 { margin: 0; font-size: 15px; }
   .card .meta { color: var(--muted); font-size: 13px; }
   .card textarea { min-height: 90px; margin-top: 8px; }
@@ -60,109 +112,58 @@
   .badge.sent { border-color: var(--warn); color: var(--warn); }
   .badge.replied { border-color: var(--ok); color: var(--ok); }
   .badge.not_interested { color: var(--muted); }
-  .im-card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 12px 14px; margin: 10px 0; }
-  .im-card h4 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .im-tier { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); }
-  .im-tier.HIGH { color: var(--ok); border-color: var(--ok); }
-  .im-tier.MEDIUM { color: var(--warn); border-color: var(--warn); }
+  .im-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 14px 16px;
+    margin: 10px 0; box-shadow: var(--shadow); }
+  .im-card h4 { margin: 0 0 8px; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .im-tier { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line);
+    letter-spacing: .02em; }
+  .im-tier.HIGH { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
+  .im-tier.MEDIUM { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
   .im-meta { display: grid; gap: 4px 16px; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); font-size: 13px; }
   .im-meta b { color: var(--muted); font-weight: 500; }
-  .im-quote { margin: 8px 0; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--bg); font-size: 13px; }
+  .im-quote { margin: 8px 0; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--panel-2);
+    border-radius: 0 8px 8px 0; font-size: 13px; }
   .im-why { font-size: 13px; color: var(--muted); margin: 4px 0 0; padding: 0; list-style: none; }
   .im-spec { font-size: 13px; }
-  .im-spec code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  .im-spec code { background: var(--code); padding: 1px 6px; border-radius: 6px; }
   .filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); margin-bottom: 10px; }
-  a { color: var(--accent); word-break: break-all; }
+  a { color: var(--accent); word-break: break-word; }
+  @media (max-width: 640px) {
+    .topbar { padding: 8px 12px; } .brand small { display: none; }
+    .nav { width: 100%; overflow-x: auto; flex-wrap: nowrap; } .nav button { white-space: nowrap; }
+    main { padding: 14px 12px 64px; } .panel, .hero { padding: 14px; }
+  }
 </style>
 </head>
 <body>
+
+<header class="topbar">
+  <div class="brand"><span class="logo">🔎</span><div><b>Sourcing Agent</b><small>find people &amp; businesses · get their contacts</small></div></div>
+  <nav class="nav" id="nav">
+    <button data-view="search" aria-current="page">🚀 Search</button>
+    <button data-view="leads">📋 Leads <span class="count" id="navLeads"></span></button>
+    <button data-view="lists">🏛️ Lists &amp; lookups</button>
+    <button data-view="outreach">✉️ Outreach</button>
+    <button data-view="settings">⚙️ Settings</button>
+  </nav>
+</header>
 <main>
-  <h1>🔎 Candidate Sourcing Agent</h1>
-  <p class="sub">AI plans multi-wave search queries → DuckDuckGo → Neon DB dedup → page fetch → AI extraction → Neon DB.</p>
+  <div class="banner hidden" id="setupBanner">Enter your app password and AI key in <a href="#" data-goto="settings">⚙️ Settings</a> to start.</div>
 
-  <section class="panel" id="login">
-    <div class="row">
-      <div style="flex:1;min-width:220px">
-        <label for="pw">App password (APP_PASSWORD on Vercel)</label>
-        <input id="pw" type="password" autocomplete="current-password" placeholder="CSA-Neon-Vercel-2026!">
+  <div class="view" data-view="search">
+  <section class="panel hero">
+    <div class="hero-head">
+      <h2>What are you looking for?</h2>
+      <div class="chips" id="presets">
+        <button class="chip" data-preset="people">👤 People who want jobs abroad</button>
+        <button class="chip" data-preset="business">🏢 Businesses &amp; their owners</button>
+        <button class="chip" data-preset="names">🔎 Specific businesses by name</button>
+        <button class="chip" data-preset="list">🏛️ Everyone on an official list</button>
       </div>
-      <div style="flex:0.7;min-width:150px">
-        <label for="llmProvider">AI provider</label>
-        <select id="llmProvider">
-          <option value="openrouter">OpenRouter</option>
-          <option value="cerebras">Cerebras (fast, generous free tier)</option>
-          <option value="groq">Groq (fast, free tier)</option>
-          <option value="mistral">Mistral (free tier)</option>
-          <option value="deepseek">DeepSeek (cheap)</option>
-          <option value="kimi">Kimi / Moonshot (cheap)</option>
-        </select>
-      </div>
-      <div style="flex:1.4;min-width:240px">
-        <label for="orKey" id="orKeyLabel">API key</label>
-        <input id="orKey" type="password" autocomplete="off" placeholder="Uses the server key unless entered here">
-      </div>
-      <div style="flex:1;min-width:200px">
-        <label for="orModel">AI model</label>
-        <input id="orModel" list="orModels" autocomplete="off">
-        <datalist id="orModels"></datalist>
-      </div>
-      <button id="testBtn" style="align-self:flex-end">Test connections</button>
     </div>
-    <details style="margin-top:8px">
-      <summary>Gemini key (free tier — also used as a fallback)</summary>
-      <div style="margin-top:8px;max-width:520px">
-        <label for="geminiKey">Gemini API Key (AIza… or AQ.…)</label>
-        <input id="geminiKey" type="password" autocomplete="off" placeholder="Uses server GEMINI_API_KEY unless entered here">
-      </div>
-    </details>
-    <p style="color:var(--muted);font-size:13px;margin:10px 0 0">Automatic fallback: enter keys for as many providers as you like (pick each one in
-      “AI provider” and paste its key — every key is remembered). The chosen provider is used first; when it
-      runs out of credits or hits its limit, the run switches to the next provider with a key
-      (Gemini → Groq → Cerebras → Mistral → OpenRouter → DeepSeek → Kimi).</p>
-    <p class="status" id="testOut"></p>
-  </section>
-
-  <h2 id="keysHeading">🔑 Lead databases &amp; search API keys</h2>
-  <section class="panel">
-    <details id="intBox" open>
-      <summary>Apollo, Lusha, ContactOut, RocketReach · Google search · unblockers — click to show / hide</summary>
-      <p style="color:var(--muted);font-size:13px">Paste API keys (from each service's dashboard → API / Integrations).
-        Keys stay in this browser and are sent only to your own server; Vercel env vars work too. Account
-        passwords are not supported — automated logins break these services' terms and get accounts banned.</p>
-      <div id="intFields"></div>
-      <h3 style="font-size:14px;margin:14px 0 6px">Test the lead databases</h3>
-      <p style="color:var(--muted);font-size:13px;margin:0 0 6px">One real lookup in each service that has a key
-        (uses one credit each) — shows exactly what each service replies. These services need a LinkedIn profile
-        link, or a name plus current company.</p>
-      <div class="grid">
-        <div><label for="tLi">LinkedIn profile link</label><input id="tLi" placeholder="https://www.linkedin.com/in/…"></div>
-        <div><label for="tName">or full name</label><input id="tName"></div>
-        <div><label for="tCo">+ current company</label><input id="tCo"></div>
-        <div style="align-self:flex-end"><button id="tBtn">🔎 Test lookup</button></div>
-      </div>
-      <pre class="log" id="tOut" style="display:none;white-space:pre-wrap"></pre>
-      <h3 style="font-size:14px;margin:14px 0 6px">Verify emails / find a work email</h3>
-      <p style="color:var(--muted);font-size:13px;margin:0 0 6px">Zero-send check: syntax, disposable inbox, DNS / MX,
-        then the mail server is asked (SMTP RCPT) whether the mailbox exists — nothing is sent. “Catch-all” means the
-        domain accepts every address, so the answer is inconclusive. Vercel blocks port 25; set <code>SMTP_VERIFY_URL</code>
-        (email_verify.py running on any small server) or a Hunter / ZeroBounce / NeverBounce key for mailbox checks.</p>
-      <div class="grid">
-        <div><label for="vEmails">Emails (comma / new line)</label><textarea id="vEmails" rows="2"></textarea></div>
-        <div style="align-self:flex-end"><button id="vBtn">✉️ Verify</button></div>
-        <div><label for="fName">Full name</label><input id="fName" placeholder="Harpreet Kaur"></div>
-        <div><label for="fCo">Company or domain</label><input id="fCo" placeholder="fortishealthcare.com"></div>
-        <div style="align-self:flex-end"><button id="fBtn">🔎 Find work email</button></div>
-      </div>
-      <pre class="log" id="vOut" style="display:none;white-space:pre-wrap"></pre>
-      <p style="color:var(--muted);font-size:13px;margin-top:10px">Keys are saved as you type. Click
-        “Test connections” at the top to see which services are active.</p>
-    </details>
-  </section>
-
-  <h2>Search</h2>
-  <section class="panel">
-    <label for="intent">Discovery intent</label>
+    <label for="intent">Describe it in your own words — who, where, what contact details</label>
     <textarea id="intent">Find Indian candidates who are interested for abroad opportunities in CNC</textarea>
+    <details class="adv" id="advBox"><summary>⚙️ Search settings — sources, mode, depth, filters</summary>
     <div class="row" style="margin-top:8px" id="imSources">
       <span class="status" style="margin:0">Sources:</span>
       <label><input type="checkbox" value="search" checked>Search engines</label>
@@ -218,6 +219,18 @@
         <label title="Also run the related searches Google suggests for each query (more results for the same intent)."><input id="expandRelated" type="checkbox" checked>Also run Google's related searches</label>
       </div>
     </details>
+    </details>
+    <div class="rounds">
+      <div><label for="roundsN">Rounds</label><select id="roundsN"><option value="1">1 round</option><option value="2">2 rounds</option>
+        <option value="3">3 rounds</option><option value="5">5 rounds</option><option value="10">10 rounds</option></select></div>
+      <div><label for="roundPause">Pause between rounds</label><select id="roundPause"><option value="0">none</option>
+        <option value="5">5 min</option><option value="30">30 min</option><option value="60">1 hour</option></select></div>
+      <div><label for="repeatEvery" title="Background worker only: queue the same job again after each finished run">Repeat automatically</label>
+        <select id="repeatEvery"><option value="0">no</option><option value="6">every 6 hours</option><option value="12">every 12 hours</option>
+        <option value="24">every day</option><option value="168">every week</option></select></div>
+      <p class="status hint">Each round plans <b>new</b> searches (none of the earlier queries are repeated). With the background
+        worker you can close the page — results collect under 📦 Background jobs and in Leads.</p>
+    </div>
     <div class="row" style="margin-top:14px">
       <button class="primary" id="startBtn">🚀 Start</button>
       <button id="nextBtn" disabled title="Run new searches for the same intent, avoiding every query already used">🔁 Next round</button>
@@ -232,6 +245,7 @@
     <div id="jobsBox"></div>
   </section>
 
+  
   <div id="progress" class="hidden">
     <h2>Progress</h2>
     <details id="planBox" class="hidden"><summary>🧭 Search plan</summary><pre class="log" id="planText"></pre></details>
@@ -240,7 +254,11 @@
     <pre class="log" id="log"></pre>
   </div>
 
-  <h2>🧠 Understanding &amp; qualified leads <span style="font-size:13px;color:var(--muted);font-weight:400">— intent-scored
+  
+  </div>
+
+  <div class="view hidden" data-view="leads">
+  <h2>🧠 Qualified leads <span style="font-size:13px;color:var(--muted);font-weight:400">— intent-scored
     leads with evidence from the same run</span></h2>
   <section class="panel" id="imPanel">
     <p class="status" style="margin-top:0">Runs with 🚀 Start above (Search mode “Combined” or “Intent Miner only”) and uses the
@@ -267,60 +285,10 @@
       <label><input id="recheckProductive" type="checkbox" checked>only pages that gave leads or have comments</label>
       <label>max <input id="recheckMax" type="number" min="5" max="300" value="60" style="width:80px"> pages</label>
     </div>
-    <details style="margin-top:8px"><summary>🔎 Search everything saved (meaning, words and misspelt names)</summary>
-      <p class="status">Finds saved leads, candidates and government-list records by meaning (“heavy vehicle trainer” finds
-        “HMV driving instructor”), exact words and registration numbers, and misspelt names — pgvector + full-text + fuzzy
-        search on your Neon database. Run “Update search index” once after upgrading, then new leads are indexed automatically.</p>
-      <div class="row"><input id="sq" placeholder="e.g. truck driving school owner Ludhiana" style="flex:1">
-        <label><input type="checkbox" class="skind" value="lead" checked>leads</label>
-        <label><input type="checkbox" class="skind" value="candidate" checked>candidates</label>
-        <label><input type="checkbox" class="skind" value="gov">government lists</label>
-        <button id="sBtn">🔎 Search</button><button id="sIdx">🧮 Update search index</button></div>
-      <div id="sOut"></div>
-    </details>
-    <details style="margin-top:8px"><summary>🏢 Find specific businesses by name</summary>
-      <p class="status">Type business names (one per line, up to 8 at a time) — each is looked up on Google Maps (phone, website,
-        address), its own website is read (phones, emails, WhatsApp, people) and its owners / directors are searched on LinkedIn.</p>
-      <textarea id="namesBox" rows="3" placeholder="Magic Billion&#10;Aimpersand&#10;Moksh Overseas"></textarea>
-      <div class="row" style="margin-top:6px"><input id="namesCity" placeholder="city (optional, e.g. Gurugram)" style="width:220px">
-        <button id="namesBtn">🏢 Find these businesses</button><span class="status" id="namesOut"></span></div>
-    </details>
-    <details style="margin-top:8px"><summary>🔗 Analyse specific posts / pages (paste links)</summary>
-      <p class="status">Paste Instagram / Facebook / YouTube / Reddit / blog / forum links, one per line. Each page is read
-        directly (no searching) and every commenter showing interest becomes a lead. Instagram: the public embed page shows
-        the caption and usually only the first few comments without login, and it needs “Respect robots.txt” unticked. All
-        comments of <b>your own</b> posts come through the 🤖 auto-reply (Meta API).</p>
-      <textarea id="linksBox" rows="3" placeholder="https://www.instagram.com/p/DdVoGp5g1Za/&#10;https://www.youtube.com/watch?v=…"></textarea>
-      <div class="row" style="margin-top:6px"><button id="linksBtn">🔗 Read these links</button>
-        <span class="status">Uses the discovery intent above (or “people interested in this post” if empty).</span></div>
-    </details>
-    <details style="margin-top:8px"><summary>🏛️ Government lists — match leads to official records</summary>
-      <p class="status">Import public lists published by government bodies, then every lead (from new runs, or with the
-        button below) is matched to its official record: the AI compares name (spelling variants, Pvt/Ltd, initials),
-        place, type and any registration no. A confirmed match adds the record's registered phone / email / website /
-        address to the lead; weaker ones are shown as “possible” for you to check. Good sources: MCA company / LLP master
-        data, state transport lists of motor-driving schools, NCVT / Skill India ITI & training-partner lists, Indian
-        Nursing Council institutions, Udyam lists, any data.gov.in dataset. Voter rolls, Aadhaar, e-Shram and similar ID
-        lists are refused (not public; illegal to use for outreach).</p>
-      <div class="grid">
-        <div><label for="govName">List name</label><input id="govName" placeholder="Punjab motor driving schools 2025"></div>
-        <div><label for="govKind">Contains</label><select id="govKind"><option value="org">Organisations (institutes, schools, companies)</option>
-          <option value="person">People (professional register, e.g. nursing council)</option></select></div>
-      </div>
-      <div class="row" style="margin-top:6px"><input id="govFile" type="file" accept=".csv,.xlsx,.xls,.html,.htm">
-        <label><input id="govReplace" type="checkbox">replace this list if it exists</label>
-        <button id="govImportBtn">⬆️ Import file</button></div>
-      <div class="row" style="margin-top:6px"><input id="govResource" placeholder="data.gov.in resource id (from the dataset's API tab)" style="flex:1">
-        <button id="govApiBtn">⬇️ Import from data.gov.in</button></div>
-      <div class="row" style="margin-top:6px"><input id="govUrl" placeholder="or a link to a published list — PDF / Excel / CSV / web table (e.g. MEA list of active recruiting agents)" style="flex:1">
-        <button id="govUrlBtn">🔗 Import from link</button></div>
-      <div class="row" style="margin-top:6px"><label>Region for “Make leads” <input id="govRegion" placeholder="North India, or Punjab, Haryana, or Ludhiana" style="width:260px"></label>
-        <span class="status">📚 Imported lists → ➕ Make leads: every business of the list in that region becomes a lead, and its phone / email / website / owners are looked up.</span></div>
-      <div class="row" style="margin-top:6px"><button id="govMatchBtn">🔎 Match saved leads now</button>
-        <label><input id="govOnlyNew" type="checkbox" checked>only leads not matched before</label>
-        <button id="govListBtn">📚 Imported lists</button></div>
-      <div id="govOut" class="status"></div>
-    </details>
+    
+    
+    
+    
     <div id="imSpec" class="im-spec"></div>
     <div id="imExtra"></div>
     <div class="row" style="margin-top:10px" id="imExport" hidden>
@@ -332,11 +300,11 @@
     <div id="imLeads"></div>
   </section>
 
-  <h2>Results</h2>
+  
+  <h2>Contacts table</h2>
   <div class="tabs" role="tablist">
     <button role="tab" aria-selected="true" data-tab="run">This run</button>
     <button role="tab" aria-selected="false" data-tab="db">All saved candidates (Neon DB)</button>
-    <button role="tab" aria-selected="false" data-tab="outreach">Outreach</button>
   </div>
   <section id="tab-run"></section>
   <section id="tab-db" class="hidden">
@@ -363,7 +331,72 @@
     </details>
     <div id="dbView"></div>
   </section>
-  <section id="tab-outreach" class="hidden">
+  
+
+  </div>
+
+  <div class="view hidden" data-view="lists">
+    <h2>Lists &amp; lookups</h2>
+    <p class="status">Complete lists come from official registers; specific businesses and posts can be looked up directly.</p>
+    <details class="panel-d" open id="govBox"><summary>🏛️ Government &amp; official lists — import, match, make leads</summary>
+      <p class="status">Import public lists published by government bodies, then every lead (from new runs, or with the
+        button below) is matched to its official record: the AI compares name (spelling variants, Pvt/Ltd, initials),
+        place, type and any registration no. A confirmed match adds the record's registered phone / email / website /
+        address to the lead; weaker ones are shown as “possible” for you to check. Good sources: MCA company / LLP master
+        data, state transport lists of motor-driving schools, NCVT / Skill India ITI & training-partner lists, Indian
+        Nursing Council institutions, Udyam lists, any data.gov.in dataset. Voter rolls, Aadhaar, e-Shram and similar ID
+        lists are refused (not public; illegal to use for outreach).</p>
+      <div class="grid">
+        <div><label for="govName">List name</label><input id="govName" placeholder="Punjab motor driving schools 2025"></div>
+        <div><label for="govKind">Contains</label><select id="govKind"><option value="org">Organisations (institutes, schools, companies)</option>
+          <option value="person">People (professional register, e.g. nursing council)</option></select></div>
+      </div>
+      <div class="row" style="margin-top:6px"><input id="govFile" type="file" accept=".csv,.xlsx,.xls,.html,.htm">
+        <label><input id="govReplace" type="checkbox">replace this list if it exists</label>
+        <button id="govImportBtn">⬆️ Import file</button></div>
+      <div class="row" style="margin-top:6px"><input id="govResource" placeholder="data.gov.in resource id (from the dataset's API tab)" style="flex:1">
+        <button id="govApiBtn">⬇️ Import from data.gov.in</button></div>
+      <div class="row" style="margin-top:6px"><input id="govUrl" placeholder="or a link to a published list — PDF / Excel / CSV / web table (e.g. MEA list of active recruiting agents)" style="flex:1">
+        <button id="govUrlBtn">🔗 Import from link</button></div>
+      <div class="row" style="margin-top:6px"><label>Region for “Make leads” <input id="govRegion" placeholder="North India, or Punjab, Haryana, or Ludhiana" style="width:260px"></label>
+        <span class="status">📚 Imported lists → ➕ Make leads: every business of the list in that region becomes a lead, and its phone / email / website / owners are looked up.</span></div>
+      <div class="row" style="margin-top:6px"><button id="govMatchBtn">🔎 Match saved leads now</button>
+        <label><input id="govOnlyNew" type="checkbox" checked>only leads not matched before</label>
+        <button id="govListBtn">📚 Imported lists</button></div>
+      <div id="govOut" class="status"></div>
+    </details>
+    <details class="panel-d" open id="namesBoxD"><summary>🏢 Find specific businesses by name</summary>
+      <p class="status">Type business names (one per line, up to 8 at a time) — each is looked up on Google Maps (phone, website,
+        address), its own website is read (phones, emails, WhatsApp, people) and its owners / directors are searched on LinkedIn.</p>
+      <textarea id="namesBox" rows="3" placeholder="Magic Billion&#10;Aimpersand&#10;Moksh Overseas"></textarea>
+      <div class="row" style="margin-top:6px"><input id="namesCity" placeholder="city (optional, e.g. Gurugram)" style="width:220px">
+        <button id="namesBtn">🏢 Find these businesses</button><span class="status" id="namesOut"></span></div>
+    </details>
+    <details class="panel-d"><summary>🔗 Analyse specific posts / pages (paste links)</summary>
+      <p class="status">Paste Instagram / Facebook / YouTube / Reddit / blog / forum links, one per line. Each page is read
+        directly (no searching) and every commenter showing interest becomes a lead. Instagram: the public embed page shows
+        the caption and usually only the first few comments without login, and it needs “Respect robots.txt” unticked. All
+        comments of <b>your own</b> posts come through the 🤖 auto-reply (Meta API).</p>
+      <textarea id="linksBox" rows="3" placeholder="https://www.instagram.com/p/DdVoGp5g1Za/&#10;https://www.youtube.com/watch?v=…"></textarea>
+      <div class="row" style="margin-top:6px"><button id="linksBtn">🔗 Read these links</button>
+        <span class="status">Uses the discovery intent above (or “people interested in this post” if empty).</span></div>
+    </details>
+    <details class="panel-d"><summary>🔎 Search everything saved (meaning, words and misspelt names)</summary>
+      <p class="status">Finds saved leads, candidates and government-list records by meaning (“heavy vehicle trainer” finds
+        “HMV driving instructor”), exact words and registration numbers, and misspelt names — pgvector + full-text + fuzzy
+        search on your Neon database. Run “Update search index” once after upgrading, then new leads are indexed automatically.</p>
+      <div class="row"><input id="sq" placeholder="e.g. truck driving school owner Ludhiana" style="flex:1">
+        <label><input type="checkbox" class="skind" value="lead" checked>leads</label>
+        <label><input type="checkbox" class="skind" value="candidate" checked>candidates</label>
+        <label><input type="checkbox" class="skind" value="gov">government lists</label>
+        <button id="sBtn">🔎 Search</button><button id="sIdx">🧮 Update search index</button></div>
+      <div id="sOut"></div>
+    </details>
+  </div>
+
+  <div class="view hidden" data-view="outreach">
+    <h2>Outreach</h2>
+    <section id="tab-outreach">
     <details class="panel" id="metaBox" style="margin-bottom:12px">
       <summary>🤖 Auto-reply to “interested” comments on your own Instagram / Facebook posts</summary>
       <p class="status">When someone comments “interested” (or similar) on a post from <b>your official</b> Instagram
@@ -410,6 +443,106 @@
     </div>
     <div id="obList" style="margin-top:12px"></div>
   </section>
+  </div>
+
+  <div class="view hidden" data-view="settings">
+    <h2>Settings</h2>
+    <h3 class="sec">🔐 Access &amp; AI</h3>
+    <section class="panel" id="login">
+    <div class="row">
+      <div style="flex:1;min-width:220px">
+        <label for="pw">App password (APP_PASSWORD on Vercel)</label>
+        <input id="pw" type="password" autocomplete="current-password" placeholder="APP_PASSWORD set on Vercel">
+      </div>
+      <div style="flex:0.7;min-width:150px">
+        <label for="llmProvider">AI provider</label>
+        <select id="llmProvider">
+          <option value="openrouter">OpenRouter</option>
+          <option value="cerebras">Cerebras (fast, generous free tier)</option>
+          <option value="groq">Groq (fast, free tier)</option>
+          <option value="mistral">Mistral (free tier)</option>
+          <option value="deepseek">DeepSeek (cheap)</option>
+          <option value="kimi">Kimi / Moonshot (cheap)</option>
+        </select>
+      </div>
+      <div style="flex:1.4;min-width:240px">
+        <label for="orKey" id="orKeyLabel">API key</label>
+        <input id="orKey" type="password" autocomplete="off" placeholder="Uses the server key unless entered here">
+      </div>
+      <div style="flex:1;min-width:200px">
+        <label for="orModel">AI model</label>
+        <input id="orModel" list="orModels" autocomplete="off">
+        <datalist id="orModels"></datalist>
+      </div>
+      <button id="testBtn" style="align-self:flex-end">Test connections</button>
+    </div>
+    <details style="margin-top:8px">
+      <summary>Gemini key (free tier — also used as a fallback)</summary>
+      <div style="margin-top:8px;max-width:520px">
+        <label for="geminiKey">Gemini API Key (AIza… or AQ.…)</label>
+        <input id="geminiKey" type="password" autocomplete="off" placeholder="Uses server GEMINI_API_KEY unless entered here">
+      </div>
+    </details>
+    <p style="color:var(--muted);font-size:13px;margin:10px 0 0">Automatic fallback: enter keys for as many providers as you like (pick each one in
+      “AI provider” and paste its key — every key is remembered). The chosen provider is used first; when it
+      runs out of credits or hits its limit, the run switches to the next provider with a key
+      (Gemini → Groq → Cerebras → Mistral → OpenRouter → DeepSeek → Kimi).</p>
+    <p class="status" id="testOut"></p>
+  </section>
+    <h2 id="keysHeading">🔑 Service keys — search, Maps, unblockers, lead databases, email checks</h2>
+  <section class="panel">
+    <details id="intBox" open>
+      <summary>Apollo, Lusha, ContactOut, RocketReach · Google search · unblockers — click to show / hide</summary>
+      <p style="color:var(--muted);font-size:13px">Paste API keys (from each service's dashboard → API / Integrations).
+        Keys stay in this browser and are sent only to your own server; Vercel env vars work too. Account
+        passwords are not supported — automated logins break these services' terms and get accounts banned.</p>
+      <div id="intFields"></div>
+      <h3 style="font-size:14px;margin:14px 0 6px">Test the lead databases</h3>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 6px">One real lookup in each service that has a key
+        (uses one credit each) — shows exactly what each service replies. These services need a LinkedIn profile
+        link, or a name plus current company.</p>
+      <div class="grid">
+        <div><label for="tLi">LinkedIn profile link</label><input id="tLi" placeholder="https://www.linkedin.com/in/…"></div>
+        <div><label for="tName">or full name</label><input id="tName"></div>
+        <div><label for="tCo">+ current company</label><input id="tCo"></div>
+        <div style="align-self:flex-end"><button id="tBtn">🔎 Test lookup</button></div>
+      </div>
+      <pre class="log" id="tOut" style="display:none;white-space:pre-wrap"></pre>
+      <h3 style="font-size:14px;margin:14px 0 6px">Verify emails / find a work email</h3>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 6px">Zero-send check: syntax, disposable inbox, DNS / MX,
+        then the mail server is asked (SMTP RCPT) whether the mailbox exists — nothing is sent. “Catch-all” means the
+        domain accepts every address, so the answer is inconclusive. Vercel blocks port 25; set <code>SMTP_VERIFY_URL</code>
+        (email_verify.py running on any small server) or a Hunter / ZeroBounce / NeverBounce key for mailbox checks.</p>
+      <div class="grid">
+        <div><label for="vEmails">Emails (comma / new line)</label><textarea id="vEmails" rows="2"></textarea></div>
+        <div style="align-self:flex-end"><button id="vBtn">✉️ Verify</button></div>
+        <div><label for="fName">Full name</label><input id="fName" placeholder="Harpreet Kaur"></div>
+        <div><label for="fCo">Company or domain</label><input id="fCo" placeholder="fortishealthcare.com"></div>
+        <div style="align-self:flex-end"><button id="fBtn">🔎 Find work email</button></div>
+      </div>
+      <pre class="log" id="vOut" style="display:none;white-space:pre-wrap"></pre>
+      <p style="color:var(--muted);font-size:13px;margin-top:10px">Keys are saved as you type. Click
+        “Test connections” at the top to see which services are active.</p>
+    </details>
+  </section>
+    <section class="panel" id="privacyPanel">
+    <h2 style="margin-top:0">🛡️ Privacy &amp; consent</h2>
+    <p class="status">People who opt out (STOP reply to the auto-reply, 🚫 on a lead, or added here) are never saved or contacted
+      again, and their saved contact details are erased. Individuals' contact details can be erased after a retention period;
+      businesses are kept. Every contact keeps where it came from (source link and contact source).</p>
+    <div class="grid">
+      <div><label for="dncPhone">Phone</label><input id="dncPhone"></div>
+      <div><label for="dncEmail">Email</label><input id="dncEmail"></div>
+      <div><label for="dncProfile">Profile link</label><input id="dncProfile"></div>
+      <div style="align-self:flex-end"><button id="dncAdd">🚫 Add to do-not-contact</button></div>
+    </div>
+    <div class="row" style="margin-top:10px"><button id="dncList">📋 Show do-not-contact list</button>
+      <label>Erase individuals' contacts older than <select id="purgeDays" style="width:auto"><option value="90">90 days</option>
+        <option value="180" selected>180 days</option><option value="365">1 year</option></select></label>
+      <button id="purgeBtn">🧹 Erase now</button><span class="status" id="dncOut"></span></div>
+    <div id="dncBox"></div>
+  </section>
+  </div>
 </main>
 
 <script>
@@ -428,7 +561,7 @@ const state = { running: false, stop: false, runRecords: [], dbRecords: null, wa
 // ---------- storage (per-browser convenience only) ----------
 function store(k, v) { try { v === undefined ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (_) {} }
 function load(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
-$("pw").value = load("csa_pw") || "CSA-Neon-Vercel-2026!";
+$("pw").value = load("csa_pw") || "";
 $("pw").addEventListener("change", () => store("csa_pw", $("pw").value));
 $("geminiKey").value = load("csa_gemini_key") || "";
 // AI provider: key and model are remembered per provider in this browser.
@@ -712,7 +845,6 @@ document.querySelectorAll("[role=tab]").forEach((b) => b.addEventListener("click
   document.querySelectorAll("[role=tab]").forEach((x) => x.setAttribute("aria-selected", x === b));
   $("tab-run").classList.toggle("hidden", b.dataset.tab !== "run");
   $("tab-db").classList.toggle("hidden", b.dataset.tab !== "db");
-  $("tab-outreach").classList.toggle("hidden", b.dataset.tab !== "outreach");
 }));
 
 $("loadDb").onclick = async () => {
@@ -901,6 +1033,7 @@ function imRenderSpec(spec) {
 }
 function imRenderLeads() {
   const leads = [...im.leads.values()].sort((a, b) => b.lead_score - a.lead_score);
+  $("navLeads").textContent = leads.length ? String(leads.length) : "";
   $("imExport").hidden = !leads.length;
   $("imLeads").innerHTML = leads.length ? `<p class="status">${leads.length} qualified leads · ` +
     `${leads.filter((l) => l.tier === "HIGH").length} high, ${leads.filter((l) => l.tier === "MEDIUM").length} medium</p>` : "";
@@ -935,8 +1068,17 @@ function imRenderLeads() {
         ${(L.possible_matches || []).length ? `<p class="status">Possible same person elsewhere (needs verification): ${(L.possible_matches).map((m) => esc(m.name + " on " + m.platform)).join(", ")}</p>` : ""}</details>
       <div class="row" style="margin-top:6px">${src.slice(0, 3).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.source)} source ↗</a>`).join(" ")}
         ${L.profile_url ? `<a href="${esc(L.profile_url)}" target="_blank" rel="noopener noreferrer">profile ↗</a>` : ""}
+        <button data-dnc title="Opt this person / business out: never saved or contacted again, saved details erased" style="padding:2px 10px">🚫 Do not contact</button>
         <label style="margin-left:auto">Status <select data-id="${esc(L.id)}">${["QUALIFIED", "ENRICHED", "EXPORTED", "CONTACTED", "RESPONDED", "CONVERTED"]
           .map((st) => `<option ${st === L.status ? "selected" : ""}>${st}</option>`).join("")}</select></label></div>`;
+    card.querySelector("button[data-dnc]").onclick = async () => {
+      if (!confirm(`Never contact ${L.display_name || "this lead"} again and erase their saved details?`)) return;
+      try {
+        await api("/api/privacy/suppress", { phone: L.phone, email: L.email, profile: L.profile_url, name: L.display_name,
+          reason: "marked do-not-contact on a lead card" });
+        im.leads.delete(L.id); imRenderLeads();
+      } catch (err) { alert(err.message); }
+    };
     card.querySelector("select").onchange = async (e) => {
       try { await api("/api/im/status", { lead_ids: [L.id], status: e.target.value }); L.status = e.target.value; }
       catch (err) { alert(err.message); }
@@ -989,7 +1131,7 @@ async function runDoctor(spec) {
   if ($("extraction").value === "rules") tips.push("Page reading is “rules only”: choose <b>hybrid</b> for the AI to judge the shortlisted posts (more accurate leads, a few AI calls per batch).");
   if (/too old/.test(log) && Number($("maxAge").value)) tips.push("Many posts were older than the time window: widen <b>Only leads active in the last</b> to get more.");
   if (!ws.length) { box.innerHTML = ""; return; }
-  box.innerHTML = `<div class="im-card"><h4>📋 Run summary</h4>
+  box.innerHTML = `<div class="im-card"><h4>📋 Run summary <button data-goto="leads" style="margin-left:auto;padding:4px 12px">See leads →</button></h4>
     <p><b>${c.records}</b> contacts saved · <b>${c.withPhone}</b> with phone · <b>${c.withEmail}</b> with email · ${c.both} with both` +
     `${c.verified ? ` · ${c.verified} emails verified` : ""}${c.guessed ? ` · ${c.guessed} work-email guesses` : ""}` +
     `${c.orgs ? ` · ${c.orgs} businesses${c.owners ? ` (${c.owners} with owners / people named)` : ""}` : ""}</p>` +
@@ -1443,7 +1585,38 @@ function addRunRecords(recs) {
   }
 }
 
-$("startBtn").onclick = () => $("bgRun").checked ? startJob() : startRun(false);
+// Start: N automatic rounds (each with new searches), here in the page or on a background worker.
+$("startBtn").onclick = async () => {
+  if ($("bgRun").checked) return startJob();
+  const n = Number($("roundsN").value) || 1, pause = Number($("roundPause").value) || 0;
+  state.roundsLeft = n;
+  for (let r = 0; r < n; r++) {
+    await startRun(r > 0);
+    if (state.stop) break;
+    if (r < n - 1) {
+      state.roundsLeft = n - r - 1;
+      if (pause) {
+        logEv("info", `Round ${r + 1} of ${n} done — next round in ${pause} min (⏹ Stop cancels).`);
+        $("stopBtn").disabled = false; $("runStatus").textContent = `Waiting ${pause} min before round ${r + 2} of ${n}…`;
+        const until = Date.now() + pause * 60000;
+        while (Date.now() < until && !state.stop) await new Promise((ok) => setTimeout(ok, 1000));
+        if (state.stop) break;
+      } else logEv("info", `Round ${r + 1} of ${n} done — starting round ${r + 2} with new searches.`);
+    }
+  }
+  state.roundsLeft = 0;
+  if (n > 1 && "Notification" in window && Notification.permission === "granted")
+    new Notification("Sourcing Agent", { body: `${n} rounds finished — ${state.runRecords.length} contacts in the last round.` });
+};
+$("stopBtn").onclick = () => {
+  state.stop = true; $("stopBtn").disabled = true;
+  $("runStatus").textContent = "Stopping after the current step…";
+  if (jobView.id) api(`/api/jobs/${jobView.id}/cancel`, {}).catch(() => {});
+};
+$("roundsN").onchange = () => {
+  if (Number($("roundsN").value) > 1 && "Notification" in window && Notification.permission === "default")
+    Notification.requestPermission().catch(() => {});
+};
 
 // ---------- Background jobs (persistent workers) ----------
 const jobView = { id: "", from: 0, timer: null };
@@ -1457,7 +1630,8 @@ async function startJob() {
       max_age_days: months ? Math.round(months * 30.5) : null,
       num_queries: Math.max(4, Math.min(60, num("numWaves") * num("qpw"))), max_urls: Math.max(num("maxUrls") || 30, 60),
       batch: Math.min(8, num("batch") || 5), settings: imSettings({ mode: "combined" }, intent, []),
-      use_page_keys: $("bgKeys").checked });
+      use_page_keys: $("bgKeys").checked, rounds: Number($("roundsN").value) || 1,
+      pause_minutes: Number($("roundPause").value) || 0, repeat_hours: Number($("repeatEvery").value) || 0 });
     $("runStatus").textContent = r.workers.length ? `Queued — ${r.workers.length} worker(s) online.` :
       "Queued, but no worker is online: start worker/worker.py (see README) and it will pick this up.";
     watchJob(r.job.id);
@@ -1477,10 +1651,13 @@ function watchJob(id) {
       const st = j.stats || {};
       $("runStatus").textContent = `Job ${j.status}${j.worker ? " on " + j.worker : ""} · ${st.leads || 0} leads · ` +
         `${st.records || 0} contacts (${st.with_phone || 0} phone, ${st.with_email || 0} email)` + (j.error ? ` · ${j.error}` : "");
-      if (j.run_id || st.run_id) {
-        const L = await api(`/api/im/leads?run_id=${encodeURIComponent(j.run_id || st.run_id)}`);
-        im.runId = j.run_id || st.run_id; im.leads.clear(); L.leads.forEach((x) => im.leads.set(x.id, x)); imRenderLeads();
+      const runs = (st.run_ids || []).filter(Boolean).concat(j.run_id || st.run_id || []).filter(Boolean);
+      if (runs.length) {
+        const ids = [...new Set(runs)].join(",");
+        const L = await api(`/api/im/leads?run_id=${encodeURIComponent(ids)}`);
+        im.runId = ids; im.leads.clear(); L.leads.forEach((x) => im.leads.set(x.id, x)); imRenderLeads();
       }
+      if (st.rounds > 1) $("runStatus").textContent += ` · round ${Math.min((st.rounds_done || 0) + (j.status === "running" ? 1 : 0), st.rounds)} of ${st.rounds}`;
       if (["done", "failed", "cancelled"].includes(j.status)) clearInterval(jobView.timer);
     } catch (e) { $("runStatus").textContent = "❌ " + e.message; clearInterval(jobView.timer); }
   };
@@ -1752,6 +1929,72 @@ $("obDraft").onclick = async () => {
 };
 
 renderStats(); renderRun(); refreshNextBtn();
+
+// ---------- app shell: views ----------
+function showView(name) {
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("hidden", v.dataset.view !== name));
+  document.querySelectorAll("#nav button").forEach((b) => b.toggleAttribute("aria-current", b.dataset.view === name));
+  store("csa_view", name);
+  window.scrollTo({ top: 0 });
+}
+document.querySelectorAll("#nav button").forEach((b) => b.onclick = () => showView(b.dataset.view));
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("[data-goto]");
+  if (a) { e.preventDefault(); showView(a.dataset.goto); }
+});
+showView(load("csa_view") || "search");
+function checkSetup() { $("setupBanner").classList.toggle("hidden", !!$("pw").value.trim()); }
+$("pw").addEventListener("input", checkSetup); checkSetup();
+
+// ---------- presets: one click sets the sensible options for the kind of search ----------
+const PRESETS = {
+  people: { intent: "Find Indian candidates who are interested in jobs abroad as <role> in <country> — people who commented “interested” or shared their number",
+    set: () => { $("onlyInterested").checked = true; $("autoSources").checked = true; $("searchMode").value = "combined"; } },
+  business: { intent: "Find contact details of owners / decision makers of all <type of business> in <region or city>",
+    set: () => { $("onlyInterested").checked = false; $("autoSources").checked = true; $("searchMode").value = "combined"; $("requireBoth").checked = false; } },
+};
+document.querySelectorAll("#presets .chip").forEach((c) => c.onclick = () => {
+  const k = c.dataset.preset;
+  if (k === "names") { showView("lists"); $("namesBoxD").open = true; $("namesBox").focus(); return; }
+  if (k === "list") { showView("lists"); $("govBox").open = true; $("govUrl").focus(); return; }
+  document.querySelectorAll("#presets .chip").forEach((x) => x.classList.toggle("on", x === c));
+  const p = PRESETS[k]; p.set();
+  const cur = $("intent").value.trim();
+  const demo = "Find Indian candidates who are interested for abroad opportunities in CNC";
+  if (!cur || cur === demo || Object.values(PRESETS).some((x) => x.intent === cur)) $("intent").value = p.intent;
+  $("intent").focus(); $("intent").select();
+});
+
+// ---------- privacy ----------
+$("dncAdd").onclick = async () => {
+  try {
+    const r = await api("/api/privacy/suppress", { phone: $("dncPhone").value.trim() || null, email: $("dncEmail").value.trim() || null,
+      profile: $("dncProfile").value.trim() || null, reason: "added in Settings" });
+    $("dncOut").textContent = `Added. ${r.erased} saved record(s) erased.`;
+    ["dncPhone", "dncEmail", "dncProfile"].forEach((id) => $(id).value = "");
+  } catch (e) { $("dncOut").textContent = "❌ " + e.message; }
+};
+$("dncList").onclick = async () => {
+  try {
+    const r = await api("/api/privacy/list");
+    $("dncBox").innerHTML = r.entries.length ? `<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Phone (last 10)</th><th>Email</th>` +
+      `<th>Profile</th><th>Reason</th><th>Added</th><th></th></tr></thead><tbody>` + r.entries.map((x) =>
+        `<tr><td>${esc(x.phone_key || "")}</td><td>${esc(x.email || "")}</td><td>${esc(x.profile || "")}</td><td>${esc(x.reason || "")}</td>` +
+        `<td>${esc((x.created_at || "").slice(0, 10))}</td><td><button data-rm="${x.id}" style="padding:2px 8px">remove</button></td></tr>`).join("") +
+      `</tbody></table></div>` : "<p class='status'>Nobody on the list.</p>";
+    $("dncBox").querySelectorAll("button[data-rm]").forEach((b) => b.onclick = async () => {
+      await api("/api/privacy/remove", { id: Number(b.dataset.rm) }); $("dncList").onclick();
+    });
+  } catch (e) { $("dncOut").textContent = "❌ " + e.message; }
+};
+$("purgeBtn").onclick = async () => {
+  const days = Number($("purgeDays").value);
+  if (!confirm(`Erase phone numbers and emails of individuals saved more than ${days} days ago? Businesses are kept.`)) return;
+  try {
+    const r = await api("/api/privacy/purge", { days });
+    $("dncOut").textContent = `Erased contact details of ${r.candidates} candidates and ${r.leads} leads older than ${days} days.`;
+  } catch (e) { $("dncOut").textContent = "❌ " + e.message; }
+};
 </script>
 </body>
 </html>
