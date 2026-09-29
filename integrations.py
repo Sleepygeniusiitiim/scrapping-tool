@@ -419,6 +419,8 @@ async def enrich_one(name: str, keys: Dict[str, str], person: dict) -> dict:
     if r.status_code in (402, 429):
         return {"error": f"{label} out of credits / rate limited ({r.status_code}): {why}", "stop": True,
                 "status": r.status_code}
+    if r.status_code == 400 and re.search(r"api.?key|token|unauthori", why, re.I):
+        return {"error": f"{label} rejected the API key (400): {why}", "stop": True, "status": 400}
     if r.status_code == 404:
         return {"emails": [], "phones": [], "status": 404, "raw": why}
     if r.status_code >= 400:
@@ -481,8 +483,9 @@ async def enrich_person(keys: Dict[str, str], person: dict, providers: Optional[
             return found
         person = {**person, "linkedin_url": url}
         found["profile_url"] = url
+    gone = set(exhausted())
     for p in providers or ENRICH_ORDER:
-        if not keys.get(p) or p in stopped:
+        if not keys.get(p) or p in stopped or p in gone:
             continue
         if found["email"] and found["phone"]:
             break
@@ -492,6 +495,7 @@ async def enrich_person(keys: Dict[str, str], person: dict, providers: Optional[
             found["errors"].append(f"{p}: {res['error']}")
             if res.get("stop"):
                 stopped.add(p)
+                mark_exhausted(p, res["error"])      # bad key / no API on the plan: skip it in later batches
             continue
         if not found["email"] and res["emails"]:
             found["email"], found["provider"] = res["emails"][0], found["provider"] or p

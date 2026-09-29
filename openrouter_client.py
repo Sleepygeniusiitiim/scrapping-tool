@@ -53,13 +53,28 @@ PROVIDERS = {
     "kimi": {"url": "https://api.moonshot.ai/v1/chat/completions", "label": "Kimi (Moonshot)",
              "model": "kimi-k2-turbo-preview", "fallbacks": ["kimi-latest", "moonshot-v1-32k"],
              "env": "MOONSHOT_API_KEY", "credits": "platform.moonshot.ai/console"},
+    # More free tiers (OpenAI-compatible). Model ids can be changed on the page if a provider renames them.
+    "sambanova": {"url": "https://api.sambanova.ai/v1/chat/completions", "label": "SambaNova",
+                  "model": "Meta-Llama-3.3-70B-Instruct", "fallbacks": ["Meta-Llama-3.1-8B-Instruct"],
+                  "env": "SAMBANOVA_API_KEY", "credits": "cloud.sambanova.ai"},
+    "nvidia": {"url": "https://integrate.api.nvidia.com/v1/chat/completions", "label": "NVIDIA NIM",
+               "model": "meta/llama-3.3-70b-instruct", "fallbacks": ["meta/llama-3.1-8b-instruct"],
+               "env": "NVIDIA_API_KEY", "credits": "build.nvidia.com"},
+    "github": {"url": "https://models.github.ai/inference/chat/completions", "label": "GitHub Models",
+               "model": "openai/gpt-4.1-mini", "fallbacks": ["meta/Llama-3.3-70B-Instruct"],
+               "env": "GITHUB_MODELS_TOKEN", "credits": "github.com/marketplace/models"},
     # Self-hosted small model (Ollama / vLLM / llama.cpp server, any OpenAI-compatible endpoint): free bulk parsing.
     "local": {"url": os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1/chat/completions").strip(),
               "label": "Local model", "model": os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct").strip(),
               "fallbacks": [], "env": "LOCAL_LLM_KEY", "credits": "your own server"},
 }
 # Providers whose API takes the older `max_tokens` instead of `max_completion_tokens`.
-_MAX_TOKENS_PROVIDERS = {"mistral", "deepseek", "kimi", "local"}
+_MAX_TOKENS_PROVIDERS = {"mistral", "deepseek", "kimi", "local", "sambanova", "nvidia", "github"}
+# Output cap per call. Providers reserve (and free tiers count) the whole cap up front, so a big cap burns
+# credits and trips per-minute token limits even when the reply is short. A cut-off reply is retried once
+# with MAX_OUTPUT_TOKENS_LONG.
+MAX_OUTPUT_TOKENS = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "3000") or 3000)
+MAX_OUTPUT_TOKENS_LONG = 8000
 APP_URL = "https://scrapping-tool-theta.vercel.app"
 APP_TITLE = "Candidate Sourcing Agent"
 
@@ -106,6 +121,9 @@ class OpenRouter:
         self.mode = self.provider
         self._sem = asyncio.Semaphore(max_concurrency)
         self._schema_ok = True      # flips off if the provider rejects json_schema
+        self._json_mode_ok = True   # flips off if it rejects response_format altogether
+        self.max_out = MAX_OUTPUT_TOKENS
+        self._capped = False        # output cap lowered to what the remaining credit can pay for
 
     def _payload(self, prompt: str, schema: Type[T], system_instruction: Optional[str],
                  temperature: float, thinking_budget: int) -> dict:
@@ -120,17 +138,19 @@ class OpenRouter:
             "temperature": temperature,
         }
         if self.provider == "openrouter":
-            body["max_tokens"] = 8000
+            body["max_tokens"] = self.max_out
             body["reasoning"] = {"effort": effort, "exclude": True}
             if self.fallbacks:
                 body["models"] = [self.model, *self.fallbacks]   # OpenRouter routes the fallbacks itself
         elif self.provider in _MAX_TOKENS_PROVIDERS:
-            body["max_tokens"] = 8000
+            body["max_tokens"] = self.max_out
         else:
-            body["max_completion_tokens"] = 8000
+            body["max_completion_tokens"] = self.max_out
             if "gpt-oss" in self.model:
                 body["reasoning_effort"] = effort
-        if self._schema_ok:
+        if not self._json_mode_ok:
+            pass                                         # the system prompt already asks for JSON only
+        elif self._schema_ok:
             body["response_format"] = {"type": "json_schema", "json_schema": {
                 "name": schema.__name__, "strict": False, "schema": schema_json}}
         else:
@@ -176,6 +196,11 @@ class OpenRouter:
                         text = ((choice.get("message") or {}).get("content") or "").strip()
                         if data.get("model"):
                             self.model_used = data["model"]
+                        cut = choice.get("finish_reason") == "length"
+                        if cut and self.max_out < MAX_OUTPUT_TOKENS_LONG and not self._capped:
+                            self.max_out = MAX_OUTPUT_TOKENS_LONG      # long answer: once more with room
+                            attempt -= 1
+                            continue
                         if not text:
                             return schema()            # moderation / empty reply → nothing found
                         try:
@@ -190,6 +215,16 @@ class OpenRouter:
                     last = f"{code}: {msg}"
                     if code in (401, 403) and ("key" in msg.lower() or code == 401):
                         raise GeminiError(f"{self.label} rejected the API key ({code}): {msg}")
+                    if code == 402 and not self._capped and "afford" in msg:
+                        # "You requested up to N tokens, but can only afford M": the leftover credit may
+                        # still cover a smaller reply.
+                        m = re.search(r"afford (\d+)", msg)
+                        room = int(m.group(1)) if m else 0
+                        if room >= 1200:
+                            self.max_out = min(self.max_out, room - 200)
+                            self._capped = True
+                            attempt -= 1
+                            continue
                     if code == 402:
                         raise GeminiQuotaError(
                             f"{self.label} credits are used up ({msg}). Add credits at {self.cfg['credits']} "
@@ -198,7 +233,12 @@ class OpenRouter:
                         self._schema_ok = False          # retry with plain JSON mode
                         attempt -= 1
                         continue
-                    if code in (404, 429, 503) and self.fallbacks and self.provider != "openrouter":
+                    if code in (400, 422) and not self._schema_ok and self._json_mode_ok and \
+                            ("response_format" in msg or "json" in msg.lower()):
+                        self._json_mode_ok = False       # retry without response_format
+                        attempt -= 1
+                        continue
+                    if code in (404, 413, 429, 503) and self.fallbacks and self.provider != "openrouter":
                         # Direct providers: model busy, rate-limited or unknown → next model.
                         log.warning("%s model %s returned %s; using %s", self.label, self.model, code, self.fallbacks[0])
                         self.model = self.fallbacks.pop(0)

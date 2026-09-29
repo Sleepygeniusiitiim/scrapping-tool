@@ -177,7 +177,8 @@ def _gemini(
     if not entries:
         raise HTTPException(500, "No AI key: choose a provider and enter its key on the page, or set "
                                  "OPENROUTER_API_KEY / GROQ_API_KEY / CEREBRAS_API_KEY / MISTRAL_API_KEY / "
-                                 "DEEPSEEK_API_KEY / MOONSHOT_API_KEY / GEMINI_API_KEY in Vercel.")
+                                 "SAMBANOVA_API_KEY / NVIDIA_API_KEY / GITHUB_MODELS_TOKEN / DEEPSEEK_API_KEY / "
+                                 "MOONSHOT_API_KEY / GEMINI_API_KEY in Vercel.")
     return AIChain(entries)
 
 

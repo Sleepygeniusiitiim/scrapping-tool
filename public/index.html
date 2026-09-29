@@ -461,6 +461,9 @@
           <option value="cerebras">Cerebras (fast, generous free tier)</option>
           <option value="groq">Groq (fast, free tier)</option>
           <option value="mistral">Mistral (free tier)</option>
+          <option value="sambanova">SambaNova (free tier)</option>
+          <option value="nvidia">NVIDIA NIM (free credits)</option>
+          <option value="github">GitHub Models (free with a GitHub account)</option>
           <option value="deepseek">DeepSeek (cheap)</option>
           <option value="kimi">Kimi / Moonshot (cheap)</option>
         </select>
@@ -575,6 +578,12 @@ const LLM = {
     ["openai/gpt-oss-120b", "default"], ["llama-3.3-70b-versatile", "alternative"], ["openai/gpt-oss-20b", "fastest"]] },
   mistral: { key: "Mistral API key", env: "MISTRAL_API_KEY", models: [
     ["mistral-small-latest", "default"], ["mistral-medium-latest", "better"]] },
+  sambanova: { key: "SambaNova API key", env: "SAMBANOVA_API_KEY", models: [
+    ["Meta-Llama-3.3-70B-Instruct", "default"], ["Meta-Llama-3.1-8B-Instruct", "fastest"]] },
+  nvidia: { key: "NVIDIA API key (nvapi-…)", env: "NVIDIA_API_KEY", models: [
+    ["meta/llama-3.3-70b-instruct", "default"], ["meta/llama-3.1-8b-instruct", "fastest"]] },
+  github: { key: "GitHub token (models:read scope)", env: "GITHUB_MODELS_TOKEN", models: [
+    ["openai/gpt-4.1-mini", "default"], ["meta/Llama-3.3-70B-Instruct", "alternative"]] },
   deepseek: { key: "DeepSeek API key (sk-…)", env: "DEEPSEEK_API_KEY", models: [["deepseek-chat", "default"]] },
   kimi: { key: "Kimi / Moonshot API key (sk-…)", env: "MOONSHOT_API_KEY", models: [
     ["kimi-k2-turbo-preview", "default"], ["kimi-latest", "alternative"]] },
@@ -1705,7 +1714,7 @@ async function startRun(nextRound) {
   const intent = $("intent").value.trim();
   if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
   store("csa_pw", $("pw").value);
-  Object.assign(state, { stop: false, robotsHinted: false, googleHinted: false, runRecords: [], waveStats: {}, logLines: [] });
+  Object.assign(state, { stop: false, robotsHinted: false, googleHinted: false, engineWarned: new Set(), runRecords: [], waveStats: {}, logLines: [] });
   $("progress").classList.remove("hidden"); $("planBox").classList.add("hidden");
   if (!(await preflight())) { state.stop = true; return; }
   renderStats(); renderRun(); setRunning(true);
@@ -1769,6 +1778,12 @@ async function runPipeline(intent, totals, rounds) {
           logEv("warning", "Google search is not configured, so only DuckDuckGo is used and many pages are missed. " +
             "Add a Serper.dev, SerpApi, Google Programmable Search, Brave or Scrape.do key under " +
             "“🔑 Lead databases & search API keys” (Serper.dev has a free starter allowance).", name);
+        }
+        // why an engine shows ✗ — once per engine and run, so a bad key or an API that is not enabled is visible
+        state.engineWarned = state.engineWarned || new Set();
+        for (const ee of r.engine_errors || []) {
+          const eng = ee.split(":")[0];
+          if (!state.engineWarned.has(eng)) { state.engineWarned.add(eng); logEv("warning", `Search engine ${ee.slice(0, 260)}`, name); }
         }
         if (r.error) logEv("warning", `Query skipped (${r.error.slice(0, 120)}): ${q}`, name);
         else logEv("query", `${r.hits.length} results (+${added} new) [${(r.sources || []).join("+")}] ← ${q}`, name);

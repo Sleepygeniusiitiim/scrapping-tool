@@ -30,7 +30,9 @@ from gemini_client import Gemini, GeminiError, GeminiQuotaError
 from schema import CandidateRecord, ComprehensiveSearchPlan, PageExtraction, clean_email, clean_phone
 from search_module import google_search_scrapedo, platform_from_url, search_query
 
-MAX_CONTENT_CHARS_FOR_LLM = 45_000
+# Page text sent to the AI per page. Long pages are cut down to their start plus the lines that carry contact
+# details or "interested / CV / looking for a job" signals (see _focus), which is where candidates are.
+MAX_CONTENT_CHARS_FOR_LLM = int(os.getenv("LLM_PAGE_CHARS", "12000") or 12000)
 GROUNDING_MIN_OVERLAP = 0.6   # share of evidence words that must appear on the page
 
 
@@ -156,7 +158,7 @@ def _extract_prompt(intent: str, url: str, platform: str, content: str, snippet_
             if snippet_only else "")
     return (f"Sourcing intent: {intent.strip()}\n"
             f"Page URL: {url}\nPlatform: {platform}\n\n{note}"
-            f"----- PAGE CONTENT -----\n{content[:MAX_CONTENT_CHARS_FOR_LLM]}\n"
+            f"----- PAGE CONTENT -----\n{_focus(content, MAX_CONTENT_CHARS_FOR_LLM)}\n"
             f"----- END -----")
 
 
@@ -169,6 +171,33 @@ _CANDIDATE_SIGNAL = re.compile(
     r"interested|my cv|resume|\bcv\b|looking for (?:a )?(?:job|opportunit)|open to work|years? (?:of )?experience|"
     r"\bi am\b|\biam\b|\bi'm\b|\bmy (?:name|number|mail|email)|whatsapp|contact|@\w+\.\w+|\+?\d[\d\s-]{8,}\d",
     re.IGNORECASE)
+
+
+def _focus(content: str, budget: int) -> str:
+    """The page start plus every line (with its neighbours) that looks like a person, a contact or an intent
+    signal, in page order, within `budget` characters — instead of blindly cutting long pages."""
+    if len(content) <= budget:
+        return content
+    head = min(2500, budget // 4)
+    lines = content[head:].split("\n")
+    keep = set()
+    for i, line in enumerate(lines):
+        if _CANDIDATE_SIGNAL.search(line):
+            keep.update((i - 1, i, i + 1))
+    out, used = [content[:head], "\n[…]"], head + 5
+    last = -2
+    for i in sorted(k for k in keep if 0 <= k < len(lines)):
+        line = lines[i].strip()
+        if not line:
+            continue
+        if used + len(line) + 6 > budget:
+            break
+        if i != last + 1:
+            out.append("[…]")
+        out.append(line)
+        used += len(line) + 6
+        last = i
+    return "\n".join(out)
 
 
 def _is_grounded(evidence: Optional[str], content: str) -> bool:
@@ -421,6 +450,7 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
         "error": "; ".join(errors) if errors and not hits else None,
         "rate_limited": rate_limited,
         "sources": sources,
+        "engine_errors": errors,
         "google_missing": backend in ("auto", "google") and not google_apis,
         "hits": list(hits.values())[:max_results * 2],
         **_dedupe_extras(extras),
@@ -480,7 +510,7 @@ def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max
             cur["date"] = cur.get("date") or h.get("date") or _hit_date(h)
     ranked = sorted(fused.values(), key=lambda h: -score[h["url"]])
     return {"query": query, "error": "; ".join(errors) if errors and not ranked else None, "rate_limited": False,
-            "sources": sources, "google_missing": len(engines) == 1, "hits": ranked[:max_results * 3],
+            "sources": sources, "engine_errors": errors, "google_missing": len(engines) == 1, "hits": ranked[:max_results * 3],
             **_dedupe_extras(extras)}
 
 

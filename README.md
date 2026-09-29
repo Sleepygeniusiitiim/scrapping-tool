@@ -504,15 +504,22 @@ In rules mode the only AI call is the search plan (once per round).
 
 ## AI providers and automatic fallback
 
-Supported: **OpenRouter**, **Gemini**, **Groq**, **Cerebras**, **Mistral**, **DeepSeek** and **Kimi (Moonshot)**.
+Supported: **OpenRouter**, **Gemini**, **Groq**, **Cerebras**, **Mistral**, **SambaNova**, **NVIDIA NIM**,
+**GitHub Models**, **DeepSeek** and **Kimi (Moonshot)**.
 Pick a provider on the home page and paste its key; repeat for as many providers as you like (each key
 is remembered in the browser). Or set the keys in Vercel: `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
-`GROQ_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`
-(optional model overrides: `<PROVIDER>_MODEL`, e.g. `KIMI_MODEL`).
+`GROQ_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `SAMBANOVA_API_KEY`, `NVIDIA_API_KEY`,
+`GITHUB_MODELS_TOKEN`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY` (optional model overrides: `<PROVIDER>_MODEL`, e.g. `KIMI_MODEL`).
 
 The chosen provider is used first. When it runs out of credits, hits a daily/rate limit or rejects its
 key, the run switches to the next provider that has a key and logs it — free tiers first:
-Gemini → Groq → Cerebras → Mistral → OpenRouter → DeepSeek → Kimi. Only when every provider is exhausted
+Gemini → Groq → Cerebras → Mistral → SambaNova → NVIDIA → GitHub Models → OpenRouter → DeepSeek → Kimi.
+A provider that ran out is skipped for 30 minutes (3 hours for daily quotas) by the same server instance;
+“Test connections” re-checks all of them.
+
+Token use is kept down by: sending each page's start plus only the lines with contact details or
+interest signals (`LLM_PAGE_CHARS`, default 12,000 characters ≈ 3,000 tokens), and capping each reply at
+`AI_MAX_OUTPUT_TOKENS` (default 3,000; a cut-off reply is retried once with 8,000). Only when every provider is exhausted
 does the run stop; unread pages are retried next run. "Test connections" checks every provider in the chain.
 
 OpenRouter is pay-as-you-go (one balance for many models); its own fallback only switches models
