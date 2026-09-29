@@ -182,6 +182,13 @@ def _gemini(
     return AIChain(entries)
 
 
+def _thinker(gemini=Depends(_gemini), x_claude_key: Optional[str] = Header(default=None),
+             x_claude_model: Optional[str] = Header(default=None)):
+    """The AI for the thinking steps only (understanding the command, planning searches): Claude first when
+    its key is set on the page or as ANTHROPIC_API_KEY, then the usual chain. Page reading never uses it."""
+    return ai_router.reasoning(gemini, (x_claude_key or "").strip(), (x_claude_model or "").strip())
+
+
 def _keys(x_integrations: Optional[str] = Header(default=None)) -> dict:
     """Third-party service keys (search, unblock, enrichment) from the page, falling back to env vars."""
     return integrations.resolve_keys(_json_header_raw(x_integrations))
@@ -278,6 +285,8 @@ async def health(
     x_llm_models: Optional[str] = Header(default=None),
     x_database_url: Optional[str] = Header(default=None),
     x_integrations: Optional[str] = Header(default=None),
+    x_claude_key: Optional[str] = Header(default=None),
+    x_claude_model: Optional[str] = Header(default=None),
 ):
     out = {}
     try:
@@ -300,6 +309,13 @@ async def health(
         out["gemini"] = await gem.ping()
     except Exception as exc:
         out["gemini_error"] = str(getattr(exc, "detail", exc))
+    claude_key = (x_claude_key or os.getenv("ANTHROPIC_API_KEY", "")).strip()
+    if claude_key:
+        try:
+            from claude_client import Claude
+            out["claude"] = await Claude(claude_key, model=(x_claude_model or "").strip()).ping()
+        except Exception as exc:
+            out["claude_error"] = str(exc)[:300]
     return out
 
 
@@ -370,7 +386,7 @@ def readiness(x_integrations: Optional[str] = Header(default=None)):
 @router.post("/plan")
 async def plan(
     body: PlanIn,
-    gemini = Depends(_gemini),
+    gemini = Depends(_thinker),
 ):
     try:
         result = await pipeline.plan_search(gemini, body.intent, body.num_waves, body.queries_per_wave,
@@ -643,7 +659,7 @@ def _im_db(fn, *a):
 
 
 @router.post("/im/understand")
-async def im_understand_ep(body: IMUnderstandIn, gemini=Depends(_gemini)):
+async def im_understand_ep(body: IMUnderstandIn, gemini=Depends(_thinker)):
     _db()
     try:
         spec = await im_understand(gemini, body.command, body.sources, body.max_age_days, body.num_queries,
@@ -976,14 +992,16 @@ class JobIn(BaseModel):
 @router.post("/jobs")
 def job_create(body: JobIn, x_integrations: Optional[str] = Header(default=None),
                x_llm_keys: Optional[str] = Header(default=None), x_gemini_key: Optional[str] = Header(default=None),
-               x_llm_provider: Optional[str] = Header(default=None)):
+               x_llm_provider: Optional[str] = Header(default=None),
+               x_claude_key: Optional[str] = Header(default=None)):
     import jobs
     _db()
     opts = body.model_dump(exclude={"command", "use_page_keys"})
     opts["llm_provider"] = (x_llm_provider or "").strip()
     if body.use_page_keys:        # stored with the job only until it finishes (then erased)
         opts["keys"] = _json_header_raw(x_integrations)
-        opts["llm_keys"] = {**_json_header(x_llm_keys), **({"gemini": x_gemini_key.strip()} if x_gemini_key else {})}
+        opts["llm_keys"] = {**_json_header(x_llm_keys), **({"gemini": x_gemini_key.strip()} if x_gemini_key else {}),
+                            **({"claude": x_claude_key.strip()} if x_claude_key else {})}
     job = _im_db(jobs.enqueue, "run", body.command, opts)
     return {"job": {k: job[k] for k in ("id", "status", "created_at")}, "workers": _im_db(jobs.workers)}
 

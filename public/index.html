@@ -486,10 +486,27 @@
         <input id="geminiKey" type="password" autocomplete="off" placeholder="Uses server GEMINI_API_KEY unless entered here">
       </div>
     </details>
+    <details style="margin-top:8px">
+      <summary>Claude key — used only for thinking (understanding the command, planning searches)</summary>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:1.4;min-width:240px">
+          <label for="claudeKey">Anthropic API key (sk-ant-…)</label>
+          <input id="claudeKey" type="password" autocomplete="off" placeholder="Uses server ANTHROPIC_API_KEY unless entered here">
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label for="claudeModel">Claude model</label>
+          <input id="claudeModel" list="claudeModels" autocomplete="off" placeholder="claude-opus-5-5">
+          <datalist id="claudeModels"><option value="claude-opus-5-5">best planning (default)</option>
+            <option value="claude-sonnet-5-5">cheaper</option><option value="claude-haiku-4-5">cheapest</option></datalist>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:13px;margin:6px 0 0">Claude never reads or analyses pages — that stays on the
+        provider above. If Claude fails or runs out of credit, planning falls back to the provider above.</p>
+    </details>
     <p style="color:var(--muted);font-size:13px;margin:10px 0 0">Automatic fallback: enter keys for as many providers as you like (pick each one in
       “AI provider” and paste its key — every key is remembered). The chosen provider is used first; when it
       runs out of credits or hits its limit, the run switches to the next provider with a key
-      (Gemini → Groq → Cerebras → Mistral → OpenRouter → DeepSeek → Kimi).</p>
+      (Gemini → Groq → Cerebras → Mistral → SambaNova → NVIDIA → GitHub Models → OpenRouter → DeepSeek → Kimi).</p>
     <p class="status" id="testOut"></p>
   </section>
     <h2 id="keysHeading">🔑 Service keys — search, Maps, unblockers, lead databases, email checks</h2>
@@ -615,6 +632,10 @@ $("llmProvider").addEventListener("change", () => { store("csa_llm_provider", ll
 $("orKey").addEventListener("change", () => store("csa_key_" + llmProvider(), $("orKey").value.trim()));
 $("orModel").addEventListener("change", () => store("csa_model_" + llmProvider(), $("orModel").value.trim()));
 $("geminiKey").addEventListener("change", () => store("csa_gemini_key", $("geminiKey").value.trim()));
+$("claudeKey").value = load("csa_claude_key") || "";
+$("claudeModel").value = load("csa_claude_model") || "";
+$("claudeKey").addEventListener("change", () => store("csa_claude_key", $("claudeKey").value.trim()));
+$("claudeModel").addEventListener("change", () => store("csa_claude_model", $("claudeModel").value.trim()));
 if (load("csa_extraction")) $("extraction").value = load("csa_extraction");
 if (load("csa_search_mode")) $("searchMode").value = load("csa_search_mode");
 $("searchMode").addEventListener("change", () => store("csa_search_mode", $("searchMode").value));
@@ -643,6 +664,9 @@ async function api(path, body) {
   headers["X-LLM-Models"] = savedLLM("model");
   const gk = $("geminiKey").value.trim();
   if (gk) headers["X-Gemini-Key"] = gk;
+  const ck = $("claudeKey").value.trim(), cm = $("claudeModel").value.trim();
+  if (ck) headers["X-Claude-Key"] = ck;
+  if (cm) headers["X-Claude-Model"] = cm;
   headers["X-Integrations"] = integrationKeys();
   const res = await fetch(url, {
     method: body === undefined ? "GET" : "POST",
@@ -1543,6 +1567,7 @@ $("testBtn").onclick = async () => {
     const dbErr = r.database_error || r.supabase_error;
     const parts = [dbMsg ? "✅ " + dbMsg : "❌ Neon DB: " + dbErr,
                    r.gemini ? "✅ " + r.gemini : "❌ AI: " + r.gemini_error,
+                   ...(r.claude ? ["✅ " + r.claude] : r.claude_error ? ["❌ Claude: " + r.claude_error] : []),
                    intLine(r.integrations)];
     out.textContent = parts.join("  ·  ");
   } catch (e) { out.className = "status err"; out.textContent = e.message; }

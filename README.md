@@ -502,6 +502,15 @@ Fetching pages never uses AI — it is plain HTTP (`fetcher.py`). Reading them i
 
 In rules mode the only AI call is the search plan (once per round).
 
+## Claude for planning only
+
+Set `ANTHROPIC_API_KEY` in Vercel (or paste the key under ⚙️ Settings → “Claude key”). Claude then does
+only the thinking steps — understanding the command and planning the searches — and nothing else: page
+reading, comment classification and fit checks stay on the provider chain below. If Claude fails or runs
+out of credit, planning falls back to that chain. Optional: `CLAUDE_MODEL` (default `claude-opus-5-5`;
+`claude-sonnet-5-5` is cheaper), `CLAUDE_EFFORT` (`low` | `medium` | `high`, default `medium`). A request
+Claude declines is re-run on another Claude model automatically (server-side fallback).
+
 ## AI providers and automatic fallback
 
 Supported: **OpenRouter**, **Gemini**, **Groq**, **Cerebras**, **Mistral**, **SambaNova**, **NVIDIA NIM**,

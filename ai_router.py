@@ -46,6 +46,22 @@ def bulk(chain: Optional[AIChain]) -> Optional[AIChain]:
     return routed
 
 
+def reasoning(chain: Optional[AIChain], claude_key: str = "", claude_model: str = "") -> Optional[AIChain]:
+    """The chain for the thinking steps (understanding the command, planning searches): Claude first when a
+    key is set (ANTHROPIC_API_KEY or the page), then the usual chain. Page reading never goes through here."""
+    key = (claude_key or os.getenv("ANTHROPIC_API_KEY", "")).strip()
+    if not key:
+        return chain
+    from claude_client import Claude
+    entries: List = [("Claude", lambda: Claude(key, model=claude_model))]
+    if chain is not None:
+        entries += list(chain._all)
+    routed = AIChain(entries)
+    if chain is not None:
+        routed.notices = chain.notices
+    return routed
+
+
 def embed_endpoint() -> Optional[str]:
     """OpenAI-compatible /v1/embeddings next to the local chat endpoint."""
     url = os.getenv("LOCAL_EMBED_URL", "").strip()

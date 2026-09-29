@@ -29,7 +29,9 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
               "searches": 0}
 
     emit("Understanding the command and choosing sources…")
-    spec: QuerySpec = await understand(ai, command, sources, options.get("max_age_days"),
+    import ai_router
+    thinker = ai_router.reasoning(ai, (options.get("llm_keys") or {}).get("claude", ""))   # Claude plans only
+    spec: QuerySpec = await understand(thinker, command, sources, options.get("max_age_days"),
                                        int(options.get("num_queries") or 16), options.get("exclude_queries") or [],
                                        auto)
     run_id = await asyncio.to_thread(store.create_run, command, spec.model_dump())
