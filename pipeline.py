@@ -403,6 +403,8 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
         for name in google_apis:
             if name == "scrapedo":
                 outcome = google_search_scrapedo(query, token, max_results=max_results, region=region)
+                if outcome.error and not outcome.hits and (outcome.rate_limited or "rejected" in outcome.error):
+                    integrations.mark_exhausted("scrapedo", outcome.error)
             else:
                 found, err, limited = integrations.web_search(name, keys, query, max_results, region,
                                                               max_age_months, extras)

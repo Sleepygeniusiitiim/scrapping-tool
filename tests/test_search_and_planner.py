@@ -49,3 +49,24 @@ def test_out_of_credit_search_api_is_skipped(monkeypatch):
     assert not hits and "run out" in err
     assert "serpapi" not in integrations.search_available(keys) and "serper" in integrations.search_available(keys)
     integrations._EXHAUSTED.clear()
+
+
+def test_scrapedo_search_and_fallback(monkeypatch):
+    import search_module
+    from search_module import QueryOutcome, SearchHit
+
+    def fake(query, token, max_results=10, region="in-en", timeout=30):
+        o = QueryOutcome(query=query)
+        if token == "dead":
+            o.error, o.rate_limited = "Scrape.do rate limit / out of credits", True
+        else:
+            o.hits = [SearchHit(url="https://gillinternational.in/", title="Gill International", snippet="", query=query)]
+        return o
+
+    monkeypatch.setattr(search_module, "google_search_scrapedo", fake)
+    integrations._EXHAUSTED.clear()
+    hits = integrations.search_first({"scrapedo": "ok"}, '"Gill International" contact')
+    assert hits[0]["url"] == "https://gillinternational.in/"
+    hits, err, _ = integrations.web_search("scrapedo", {"scrapedo": "dead"}, "q", 10, "in-en")
+    assert not hits and "scrapedo" in integrations.exhausted()
+    integrations._EXHAUSTED.clear()

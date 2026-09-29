@@ -178,6 +178,15 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
     ex = extras if extras is not None else {}
     for k in ("entities", "questions", "related"):
         ex.setdefault(k, [])
+    if name == "scrapedo":                     # Google results through Scrape.do's SERP endpoint
+        from search_module import google_search_scrapedo
+        r = google_search_scrapedo(query, keys["scrapedo"], max_results=n, region=region)
+        if r.error and not r.hits:
+            if r.rate_limited or "rejected" in r.error:
+                mark_exhausted(name, r.error)
+            return [], r.error, r.rate_limited
+        return [{"url": h.url, "title": h.title, "snippet": h.snippet, "date": dates.parse(getattr(h, "date", None))}
+                for h in r.hits][:n], None, False
     pages = max(1, min(SEARCH_MAX_PAGES, (n + 9) // 10))
     try:
         # Short timeout: a slow search API must not hold up the run (DuckDuckGo results are used anyway).
@@ -424,17 +433,30 @@ async def enrich_one(name: str, keys: Dict[str, str], person: dict) -> dict:
             "raw": why}
 
 
+def search_first(keys: Dict[str, str], query: str, n: int = 10, region: str = "in-en") -> List[dict]:
+    """Hits from the first configured search API that answers (Serper, Google CSE, SerpApi, Scrape.do, Brave —
+    services out of credits are skipped); DuckDuckGo when none has a key or all fail."""
+    for name in search_available(keys):
+        hits, err, _ = web_search(name, keys, query, n, region)
+        if hits:
+            return hits
+    try:
+        from search_module import search_query
+        return [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in search_query(query, max_results=n).hits]
+    except Exception:
+        return []
+
+
 def find_linkedin_url(keys: Dict[str, str], name: str, hints: str = "") -> Optional[str]:
     """A lead with only a name: look for their LinkedIn profile with a Google search API
     ("Name" role place site:linkedin.com/in) and accept a result only if its title starts with the name."""
     words = [w for w in re.findall(r"[A-Za-z][A-Za-z.'-]+", name or "") if len(w) > 1]
     if len(words) < 2:
         return None                                  # a single word / handle matches too many people
-    apis = [a for a in search_available(keys) if a != "scrapedo"]
-    if not apis:
+    if not search_available(keys):
         return None
     query = f'site:linkedin.com/in "{" ".join(words[:3])}" {hints}'.strip()
-    hits, _, _ = web_search(apis[0], keys, query, 5, "wt-wt")
+    hits = search_first(keys, query, 5, "wt-wt")
     want = " ".join(w.lower() for w in words[:2])
     for h in hits:
         title = re.sub(r"[^a-z ]+", " ", (h.get("title") or "").lower())

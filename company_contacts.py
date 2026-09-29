@@ -98,13 +98,7 @@ def find_website(keys: Dict[str, str], name: str, city: str = "") -> Optional[st
     official = name.endswith(" official website")
     name = name.removesuffix(" official website")
     query = (f'"{name}" official website' if official else f'"{name}" {city} contact').strip()
-    apis = [a for a in integrations.search_available(keys) if a != "scrapedo"]
-    hits = []
-    if apis:
-        hits, _, _ = integrations.web_search(apis[0], keys, query, 10, "in-en")
-    if not hits:
-        from search_module import search_query
-        hits = [{"url": h.url, "title": h.title} for h in search_query(query, max_results=10).hits]
+    hits = integrations.search_first(keys, query, 10, "in-en")
     for h in hits:
         if not is_directory(h["url"]) and _matches(name, h["url"], h.get("title", "")):
             p = urlparse(h["url"])
@@ -443,12 +437,7 @@ _DM_ROLE = re.compile(r"\b(owner|co-?founder|founder|managing director|director|
 
 
 def _dm_search(keys: Dict[str, str], query: str) -> List[dict]:
-    apis = [a for a in integrations.search_available(keys) if a != "scrapedo"]
-    if apis:
-        hits, _, _ = integrations.web_search(apis[0], keys, query, 10, "in-en")
-        return hits
-    from search_module import search_query
-    return [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in search_query(query, max_results=10).hits]
+    return integrations.search_first(keys, query, 10, "in-en")
 
 
 async def decision_makers(keys: Dict[str, str], org_name: str, city: str = "") -> List[dict]:
@@ -490,13 +479,8 @@ async def decision_makers(keys: Dict[str, str], org_name: str, city: str = "") -
 def _harvest_sync(keys: Dict[str, str], domain: str) -> List[str]:
     query = f'"@{domain}"'
     hits = []
-    apis = [a for a in integrations.search_available(keys) if a != "scrapedo"]
     try:
-        if apis:
-            hits, _, _ = integrations.web_search(apis[0], keys, query, 20, "in-en")
-        else:
-            from search_module import search_query
-            hits = [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in search_query(query, max_results=20).hits]
+        hits = integrations.search_first(keys, query, 20, "in-en")
     except Exception:
         return []
     found = set()

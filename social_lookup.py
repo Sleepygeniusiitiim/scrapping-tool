@@ -44,12 +44,7 @@ def search_profile(keys: Dict[str, str], profile_url: str) -> Optional[dict]:
         return None
     site = {"linkedin.com": "linkedin.com/in"}.get(host, host)
     query = f'site:{site} "{handle}"'
-    apis = [a for a in integrations.search_available(keys) if a != "scrapedo"]
-    hits = []
-    if apis:
-        hits, _, _ = integrations.web_search(apis[0], keys, query, 10, "wt-wt")
-    if not hits:
-        hits = [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in search_query(query, max_results=10).hits]
+    hits = integrations.search_first(keys, query, 10, "wt-wt")
     for h in hits:
         if _key(h.get("url", "")) != (host, handle):
             continue                                  # a page that only mentions the handle — not their profile
