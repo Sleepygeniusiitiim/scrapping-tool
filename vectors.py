@@ -138,7 +138,9 @@ def _vec(v: Sequence[float]) -> str:
 def upsert_text(kind: str, rows: List[Tuple[str, str]]) -> int:
     """Full-text / trigram part (immediate, no API calls). rows: [(ref, body)]."""
     st = ensure()
-    rows = [(str(r), b[:6000]) for r, b in rows if r and b and b.strip()]
+    # one row per ref: a batch can carry the same lead twice (merged duplicates), and Postgres refuses to
+    # update one row twice in a single INSERT … ON CONFLICT
+    rows = list({str(r): (str(r), b[:6000]) for r, b in rows if r and b and b.strip()}.values())
     if not rows:
         return 0
 

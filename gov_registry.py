@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import threading
 from difflib import SequenceMatcher
@@ -194,10 +195,13 @@ _FIELDS: List[Tuple[str, Tuple[str, ...]]] = [
     ("email", ("e-mail", "email", "mail id", "mail")),
     ("website", ("website", "web site", "url", "web address")),
     ("phone", ("mobile", "phone", "telephone", "contact no", "contact number", "tel", "landline", "fax")),
-    ("reg_no", ("registration no", "registration number", "reg no", "reg. no", "regn", "cin", "llpin", "llp identification",
+    ("reg_no", ("registration no", "registration number", "reg no", "reg. no", "regn", "ra no", "rc no",
+                "licence no.", "license no.", "cin", "llpin", "llp identification",
                 "udyam", "licence no", "license no", "licence number", "license number", "iti code", "mis code",
                 "institute code", "affiliation no", "registration", "code")),
-    ("name", ("name of the institute", "name of institute", "institute name", "name of school", "school name",
+    ("name", ("name of the ra", "name of ra", "ra name", "name of recruiting agent", "recruiting agent name",
+              "name of the recruiting agent", "name of the agency", "agency name", "name of agency",
+              "name of the institute", "name of institute", "institute name", "name of school", "school name",
               "name of the school", "company name", "name of company", "llp name", "enterprise name",
               "name of enterprise", "college name", "name of college", "institution name", "name of institution",
               "centre name", "center name", "establishment name", "firm name", "organisation name",
@@ -308,10 +312,88 @@ def save_records(records: List[dict], replace_dataset: bool = False) -> int:
     return len(records)
 
 
+_RA_NO = re.compile(r"\bB\s?-?\s?\d{2,5}\s?/\s?[A-Z]{2,6}\s?/\s?[A-Z]{2,6}[^\s,;]{0,40}", re.IGNORECASE)
+MAX_PDF_PAGES = int(os.getenv("GOV_PDF_MAX_PAGES", "400") or 400)
+
+
+def pdf_rows(data: bytes) -> List[List[str]]:
+    """Table rows from a PDF (official lists are usually tables). Header rows repeat on every page; only the
+    first is kept. Falls back to one row per text line when the PDF has no ruled tables."""
+    import io
+    import pdfplumber
+    rows: List[List[str]] = []
+    header = None
+    lines: List[str] = []
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for page in pdf.pages[:MAX_PDF_PAGES]:
+            tables = page.extract_tables() or []
+            for t in tables:
+                for r in t:
+                    cells = [re.sub(r"\s+", " ", c or "").strip() for c in r]
+                    if not any(cells):
+                        continue
+                    if header is None and "name" in map_columns(cells):
+                        header = cells
+                        rows.append(cells)
+                    elif header is not None and cells == header:
+                        continue
+                    else:
+                        rows.append(cells)
+            if not tables:
+                lines += (page.extract_text() or "").splitlines()
+    if rows:
+        return rows
+    # no tables: lines with a registration number become "name | reg no | rest" rows
+    out = [["Name", "Registration No", "Address"]]
+    for ln in lines:
+        m = _RA_NO.search(ln)
+        if m:
+            before, after = ln[:m.start()].strip(" ,.-|0123456789"), ln[m.end():].strip(" ,.-|")
+            out.append([before or after[:80], m.group(0), after])
+    return out if len(out) > 1 else []
+
+
+def _html_rows(data: bytes) -> List[List[str]]:
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(data, "html.parser")
+    best: List[List[str]] = []
+    for table in soup.find_all("table"):
+        rows = [[c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])] for tr in table.find_all("tr")]
+        if len(rows) > len(best):
+            best = rows
+    return best
+
+
+def read_rows(filename: str, data: bytes) -> List[List[str]]:
+    import portal_import
+    if (filename or "").lower().endswith(".pdf") or data[:5] == b"%PDF-":
+        return pdf_rows(data)
+    return portal_import._read_rows(filename, data)
+
+
+async def import_url(dataset: str, kind: str, url: str, replace: bool = False) -> dict:
+    """A list published on a website — PDF, Excel / CSV download or an HTML table — straight into gov_records."""
+    import httpx
+    async with httpx.AsyncClient(timeout=90, follow_redirects=True,
+                                 headers={"User-Agent": "Mozilla/5.0 (compatible; list-import)"}) as c:
+        r = await c.get(url)
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code} downloading the list")
+    ctype = r.headers.get("content-type", "")
+    name = url.split("?")[0].rsplit("/", 1)[-1]
+    if "html" in ctype and not name.lower().endswith((".pdf", ".xls", ".xlsx", ".csv")):
+        rows = await asyncio.to_thread(_html_rows, r.content)
+    else:
+        rows = await asyncio.to_thread(read_rows, name, r.content)
+    records, info = rows_to_records(dataset, kind, rows, url)
+    info["saved"] = await asyncio.to_thread(save_records, records, replace)
+    await asyncio.to_thread(_index_dataset, dataset, info)
+    return info
+
+
 def import_file(dataset: str, kind: str, filename: str, data: bytes, source_url: str = "",
                 replace: bool = False) -> dict:
-    import portal_import
-    rows = portal_import._read_rows(filename, data)
+    rows = read_rows(filename, data)
     records, info = rows_to_records(dataset, kind, rows, source_url)
     info["saved"] = save_records(records, replace)
     _index_dataset(dataset, info)

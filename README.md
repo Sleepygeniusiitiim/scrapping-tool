@@ -170,6 +170,22 @@ gave leads or have several posts / comments — with the current intent and sett
 hash has not changed are skipped without any AI cost; changed pages are scored again, so new comments
 become new leads while existing people are merged, not duplicated.
 
+## Complete lists: official registers, list import by link, businesses by name
+
+* **Official registers are lists, not leads.** When a run meets a register such as MEA's "District and State wise
+  list of Active Recruiting Agents" (a PDF on mea.gov.in / emigrate.gov.in with many RA licence numbers), every row
+  is imported into 🏛️ Government lists instead of the page becoming one lead called "RA".
+* **Import by link:** 🏛️ Government lists → paste the link of a PDF / Excel / CSV / web-table list (tables that
+  repeat their header on every PDF page are joined; lists without ruled tables are read line by line around the
+  registration numbers).
+* **➕ Make leads:** every business of an imported list in a region ("North India", "Punjab, Haryana", "Ludhiana")
+  becomes a lead carrying its registration, and its missing phone / email / website / owners are looked up
+  (Maps listing → own website → shared inboxes → LinkedIn), 6 at a time.
+* **🏢 Find specific businesses by name:** type names ("Magic Billion", "Aimpersand") — each is looked up the same way.
+
+Search engines, Maps and directories only return what they rank for the words searched (Maps: about 20 places per
+search), so a complete list of a licensed profession comes from its official register, not from search.
+
 ## Accuracy: fit check, one lead per business, full Google results
 
 * **Fit check** (`intent_miner/verify.py`) for business searches: rules first — the target region's cities / states

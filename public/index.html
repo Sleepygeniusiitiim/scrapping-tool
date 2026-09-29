@@ -278,6 +278,13 @@
         <button id="sBtn">🔎 Search</button><button id="sIdx">🧮 Update search index</button></div>
       <div id="sOut"></div>
     </details>
+    <details style="margin-top:8px"><summary>🏢 Find specific businesses by name</summary>
+      <p class="status">Type business names (one per line, up to 8 at a time) — each is looked up on Google Maps (phone, website,
+        address), its own website is read (phones, emails, WhatsApp, people) and its owners / directors are searched on LinkedIn.</p>
+      <textarea id="namesBox" rows="3" placeholder="Magic Billion&#10;Aimpersand&#10;Moksh Overseas"></textarea>
+      <div class="row" style="margin-top:6px"><input id="namesCity" placeholder="city (optional, e.g. Gurugram)" style="width:220px">
+        <button id="namesBtn">🏢 Find these businesses</button><span class="status" id="namesOut"></span></div>
+    </details>
     <details style="margin-top:8px"><summary>🔗 Analyse specific posts / pages (paste links)</summary>
       <p class="status">Paste Instagram / Facebook / YouTube / Reddit / blog / forum links, one per line. Each page is read
         directly (no searching) and every commenter showing interest becomes a lead. Instagram: the public embed page shows
@@ -305,6 +312,10 @@
         <button id="govImportBtn">⬆️ Import file</button></div>
       <div class="row" style="margin-top:6px"><input id="govResource" placeholder="data.gov.in resource id (from the dataset's API tab)" style="flex:1">
         <button id="govApiBtn">⬇️ Import from data.gov.in</button></div>
+      <div class="row" style="margin-top:6px"><input id="govUrl" placeholder="or a link to a published list — PDF / Excel / CSV / web table (e.g. MEA list of active recruiting agents)" style="flex:1">
+        <button id="govUrlBtn">🔗 Import from link</button></div>
+      <div class="row" style="margin-top:6px"><label>Region for “Make leads” <input id="govRegion" placeholder="North India, or Punjab, Haryana, or Ludhiana" style="width:260px"></label>
+        <span class="status">📚 Imported lists → ➕ Make leads: every business of the list in that region becomes a lead, and its phone / email / website / owners are looked up.</span></div>
       <div class="row" style="margin-top:6px"><button id="govMatchBtn">🔎 Match saved leads now</button>
         <label><input id="govOnlyNew" type="checkbox" checked>only leads not matched before</label>
         <button id="govListBtn">📚 Imported lists</button></div>
@@ -966,6 +977,10 @@ async function runDoctor(spec) {
   const robots = (log.match(/robots\.txt/g) || []).length;
   if (robots >= 3 && $("robots").checked) tips.push(`${robots} pages were skipped because their robots.txt forbids crawlers. Untick <b>Respect robots.txt</b> to read them (your decision — those sites ask crawlers not to).`);
   if (sum("blocked") >= 3 && ready && (I.unblock || []).filter((u) => u !== "jina").length === 0) tips.push(`${sum("blocked")} pages refused the server (login walls / bot checks). An unblocker key (<b>ScraperAPI</b> or <b>ZenRows</b>, free trials) reads most of them.`);
+  const outOf = (log.match(/(SerpApi|Serper|Brave|Google Programmable)[^\n]*?(?:run out of searches|out of credits|HTTP 429|HTTP 402)/gi) || []);
+  if (outOf.length) tips.push(`${outOf.length} searches failed because a search API ran out of credits (${esc(outOf[0].split(" ")[0])}): top it up or add another key (Serper gives 2,500 free) — those searches returned nothing.`);
+  if (/OpenRouter credits are used up/.test(log)) tips.push("OpenRouter has no credits left — every batch switched to Gemini. Top it up or pick Gemini / Groq as the first AI provider.");
+  if (/Official register found/.test(log)) tips.push("An official register was imported into 🏛️ Government lists — press ➕ Make leads next to it to get contacts for every business on it in your region.");
   if (/Reddit refused \(403\)/.test(log) && ready && !ready.reddit_api) tips.push("Reddit refused the server: add a Reddit API app (client id + secret) — see README.");
   if (!orgs && c.records && c.records - c.withPhone - c.withEmail > 0 && !$("useLeadDb").checked) tips.push(`${c.records - Math.max(c.withPhone, c.withEmail)} leads have no contact: tick <b>Look up contacts of interested leads in lead databases</b>.`);
   if ($("useLeadDb").checked && ready && !(I.enrich || []).length) tips.push("Lead-database lookups are on but no Apollo / Lusha / ContactOut / RocketReach / Hunter key is set.");
@@ -1186,18 +1201,58 @@ $("sIdx").onclick = async () => {
   } catch (e) { $("sOut").innerHTML = `<p class="status">❌ ${esc(e.message)}</p>`; }
 };
 
+$("namesBtn").onclick = async () => {
+  const names = $("namesBox").value.split("\n").map((x) => x.trim()).filter(Boolean);
+  if (!names.length) { $("namesOut").textContent = "Type at least one name."; return; }
+  $("namesOut").textContent = "Looking them up…";
+  let found = 0;
+  try {
+    for (let b = 0; b < names.length; b += 8) {
+      const r = await api("/api/im/names", { names: names.slice(b, b + 8), city: $("namesCity").value.trim(), respect_robots: $("robots").checked });
+      r.leads.forEach((L) => { im.leads.set(L.id, L); if (L.phone || L.email) found++; }); imRenderLeads();
+      $("namesOut").textContent = `${found} of ${Math.min(b + 8, names.length)} found with a phone or email. ` + (r.warnings || []).join(" · ");
+    }
+  } catch (e) { $("namesOut").textContent = "❌ " + e.message; }
+};
+
 // ---------- Government lists ----------
 async function govList() {
   const r = await api("/api/gov/datasets");
   $("govOut").innerHTML = r.datasets.length ? r.datasets.map((d) => `<div>${esc(d.dataset)} — ${d.records} ${d.kind === "person" ? "people" : "organisations"}` +
-    ` (${d.with_phone} with phone, ${d.with_email} with email) <button data-del="${esc(d.dataset)}" style="padding:2px 8px">🗑</button></div>`).join("")
+    ` (${d.with_phone} with phone, ${d.with_email} with email) ` + (d.kind === "org" ? `<button data-mk="${esc(d.dataset)}" style="padding:2px 8px">➕ Make leads</button> ` : "") +
+    `<button data-del="${esc(d.dataset)}" style="padding:2px 8px">🗑</button></div>`).join("")
     : "No government lists imported yet.";
+  $("govOut").querySelectorAll("button[data-mk]").forEach((b) => b.onclick = () => govMakeLeads(b.dataset.mk));
   $("govOut").querySelectorAll("button[data-del]").forEach((b) => b.onclick = async () => {
     if (!confirm(`Delete the list “${b.dataset.del}”?`)) return;
     await api("/api/gov/delete", { dataset: b.dataset.del }); govList();
   });
 }
 $("govListBtn").onclick = () => govList().catch((e) => { $("govOut").textContent = "❌ " + e.message; });
+$("govUrlBtn").onclick = async () => {
+  const url = $("govUrl").value.trim(), name = $("govName").value.trim();
+  if (!url) { $("govOut").textContent = "Paste the link of the list."; return; }
+  if (!name) { $("govOut").textContent = "Give the list a name first."; return; }
+  $("govOut").textContent = "Downloading and reading the list (large PDFs take a minute)…";
+  try { govDone(await api("/api/gov/import-url", { dataset: name, kind: $("govKind").value, url, replace: $("govReplace").checked })); }
+  catch (e) { $("govOut").textContent = "❌ " + e.message; }
+};
+async function govMakeLeads(dataset) {
+  const region = $("govRegion").value.trim();
+  let offset = 0, made = 0, phones = 0, emails = 0;
+  const box = $("govOut");
+  try {
+    for (let i = 0; i < 400 && !state.stop; i++) {
+      const r = await api("/api/gov/leads", { dataset, region, offset, limit: 6, respect_robots: $("robots").checked });
+      r.leads.forEach((L) => { im.leads.set(L.id, L); made++; if (L.phone) phones++; if (L.email) emails++; });
+      imRenderLeads();
+      box.textContent = `“${dataset}”${region ? " in " + region : ""}: ${Math.min(r.next_offset, r.total)} of ${r.total} businesses done → ` +
+        `${made} leads, ${phones} with phone, ${emails} with email. ` + (r.warnings || []).slice(-1).join(" ");
+      if (r.done || !r.leads.length && r.next_offset >= r.total) break;
+      offset = r.next_offset;
+    }
+  } catch (e) { box.textContent = "❌ " + e.message; }
+}
 function govDone(r) {
   $("govOut").textContent = (r.note ? r.note + " " : "") + `Imported ${r.saved} records from ${r.rows} rows${r.skipped ? ` (${r.skipped} skipped)` : ""}. Columns used: ` +
     Object.entries(r.columns || {}).map(([k, v]) => `${k} ← “${v}”`).join(", ");

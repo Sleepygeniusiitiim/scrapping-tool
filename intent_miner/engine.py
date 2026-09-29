@@ -188,6 +188,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     # Shared dedup ledger with the classic search: pages read here are skipped by later runs of either.
     await asyncio.to_thread(db.record_scraped_urls, [i["url"] for i in items], settings.get("wave_tag") or "IM")
     docs = await fetch_docs(items, provs)
+    await _official_lists(docs, warnings)
     # ---- normalize + dedupe -----------------------------------------------------------------------
     hashes = {}
     for d in docs:
@@ -491,7 +492,7 @@ async def _gov_match(ai, leads: List[dict], candidates: List[CandidateRecord], c
         warnings.append(f"Government-directory matching failed: {type(exc).__name__}: {str(exc)[:120]}")
         return
     stats["gov_matched"], stats["gov_contacts"] = st["matched"], st["contacts"]
-    stats["llm_calls"] += st["ai"]
+    stats["llm_calls"] = stats.get("llm_calls", 0) + st["ai"]
     for c in candidates:
         L = cand_lead.get(c.source_url)
         if L is not None and (L.get("gov_match") or {}).get("status") == "matched":
@@ -787,3 +788,68 @@ def _candidate(lead: dict, d: RawDocument, i: int, u: Unit) -> CandidateRecord:
         source_url=f"{d.url}#im-{slug}" if i else d.url, platform=d.source,
         profile_url=u.author_url, activity_date=lead.get("last_activity"),
         shows_interest=None if lead["lead_key"].startswith("org:") else True, contact_source="posted_on_page" if (lead.get("email") or lead.get("phone")) else None)
+
+
+# ---------------------------------------------------------------------------
+# Businesses known by name (typed by the user, or rows of an official list) → leads with contacts
+# ---------------------------------------------------------------------------
+def org_lead(name: str, origin: str = "", phone: Optional[str] = None, email: Optional[str] = None,
+             website: Optional[str] = None, platform: str = "manual", source_url: str = "",
+             why: Optional[List[str]] = None, profession: Optional[str] = None, score: int = 80) -> dict:
+    from schema import clean_email, clean_phone
+    return {
+        "lead_key": _org_key(name, source_url), "display_name": name.strip(), "platform": platform,
+        "profile_url": website, "email": clean_email(email) if email else None,
+        "phone": clean_phone(phone) if phone else None, "profession": profession, "origin": origin or None,
+        "destination": None, "timeline": None, "intent_type": "vendor_search", "intent_score": score,
+        "lead_score": score, "tier": scoring.tier(score), "confidence": 0.9, "freshness": 60,
+        "source_quality": SOURCE_QUALITY.get(platform, 70), "evidence": [], "why": list(why or []),
+        "status": "QUALIFIED", "last_activity": None, "website": website,
+        "sources": [{"url": source_url, "source": platform, "kind": "organization", "date": None, "score": score,
+                     "evidence": ""}] if source_url else [],
+    }
+
+
+async def enrich_org_leads(leads: List[dict], keys: Dict[str, str], settings: dict, ai=None,
+                           run_id: str = "") -> dict:
+    """Maps listing (phone, website) → own website (phones, emails, WhatsApp, people) → shared inboxes →
+    owners / directors on LinkedIn → government lists → save. Returns {leads, warnings, stats}."""
+    stats: dict = {}
+    warnings: List[str] = []
+    if leads:
+        await _company_contacts(leads, [], {}, keys, settings, stats, warnings)
+        if settings.get("gov_match", True):
+            await _gov_match(ai, leads, [], {}, settings, stats, warnings)
+    saved = await asyncio.to_thread(store.upsert_leads, run_id, leads) if leads else []
+    if saved:
+        await _index(saved, keys, warnings)
+    return {"leads": saved, "warnings": warnings, "stats": stats}
+
+
+_LISTS_SEEN: set = set()
+
+
+async def _official_lists(docs: List[RawDocument], warnings: List[str]) -> None:
+    """An official register (e.g. MEA's "District and State wise list of Active Recruiting Agents" PDF) is not one
+    lead: every row is a business. Import it into 🏛️ Government lists (all rows, with registration numbers) and
+    drop the page itself from lead-making."""
+    import gov_registry
+    for d in docs:
+        host = (urlparse(d.url).hostname or "").lower()
+        n = len(gov_registry._RA_NO.findall(d.text or ""))
+        if n < 5 or not (host.endswith(".gov.in") or host.endswith(".nic.in") or d.url.lower().endswith(".pdf")):
+            continue
+        d.units = []
+        if d.url in _LISTS_SEEN:
+            continue
+        _LISTS_SEEN.add(d.url)
+        name = f"Official list: {(d.title or host)[:70]}"
+        try:
+            info = await asyncio.wait_for(gov_registry.import_url(name, "org", d.url), timeout=150)
+            warnings.append(f"Official register found ({d.url}): {info.get('saved', 0)} new of {info.get('rows', 0)} "
+                            f"rows imported into 🏛️ Government lists as “{name}” — use “Make leads” there to get "
+                            "contacts for every agency in your region.")
+        except Exception as exc:
+            warnings.append(f"Official register found ({d.url}) but could not be imported automatically "
+                            f"({type(exc).__name__}: {str(exc)[:100]}) — download it and import it under 🏛️ "
+                            "Government lists.")

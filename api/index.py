@@ -763,6 +763,105 @@ async def gov_datagov(body: GovDatagovIn, keys: dict = Depends(_keys)):
         raise HTTPException(502, str(exc))
 
 
+class GovUrlIn(BaseModel):
+    dataset: str = Field(..., min_length=2, max_length=120)
+    kind: str = Field("org", pattern="^(org|person)$")
+    url: str = Field(..., pattern=r"^https?://", max_length=1000)
+    replace: bool = False
+
+
+@router.post("/gov/import-url")
+async def gov_import_url(body: GovUrlIn):
+    """A list published online (PDF, Excel / CSV, HTML table) imported by its link."""
+    _db()
+    try:
+        info = await gov_registry.import_url(body.dataset.strip(), body.kind, body.url, body.replace)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"{type(exc).__name__}: {str(exc)[:200]}")
+    return info
+
+
+class GovLeadsIn(BaseModel):
+    dataset: str = Field(..., min_length=2, max_length=120)
+    region: str = Field("", max_length=300)          # "North India", "Punjab, Haryana", "Ludhiana" …
+    offset: int = Field(0, ge=0)
+    limit: int = Field(6, ge=1, le=12)
+    only_missing: bool = True                        # skip records already made into leads
+    respect_robots: bool = True
+
+
+@router.post("/gov/leads")
+async def gov_leads(body: GovLeadsIn, request: Request, keys: dict = Depends(_keys)):
+    """Rows of an official list (in a region) → leads, each enriched: Maps listing, own website, shared inboxes,
+    owners on LinkedIn. Call repeatedly with the returned offset."""
+    from intent_miner import planner as im_planner, verify as im_verify
+    _db()
+    places = [p.strip() for p in re.split(r"[,;]", body.region) if p.strip()]
+    wanted = list(dict.fromkeys(im_planner.expand_places(places, body.region) +
+                                im_verify._states_for(QuerySpec(origin=places), body.region) + places))
+
+    def load():
+        conds, params = ["dataset = %s", "kind = 'org'"], [body.dataset]
+        if wanted:
+            conds.append("(" + " OR ".join(["state ILIKE %s OR district ILIKE %s OR city ILIKE %s OR address ILIKE %s"]
+                                           * len(wanted)) + ")")
+            for w in wanted:
+                params += [f"%{w}%"] * 4
+        where = " AND ".join(conds)
+        total = gov_registry._q(f"SELECT COUNT(*) AS n FROM gov_records WHERE {where}", params, "one")["n"]
+        rows = gov_registry._q(f"SELECT * FROM gov_records WHERE {where} ORDER BY id OFFSET %s LIMIT %s",
+                               params + [body.offset, body.limit], "all")
+        return int(total), [dict(r) for r in rows]
+    total, rows = await run_in_threadpool(load)
+    leads = []
+    for r in rows:
+        where = ", ".join(x for x in (r.get("district") or r.get("city"), r.get("state")) if x)
+        L = im_engine.org_lead(r["name"], where, r.get("phone"), r.get("email"), r.get("website"), "gov_list",
+                               r.get("source_url") or "", [f"✓ On the official list “{r['dataset']}”"
+                                                           + (f", reg {r['reg_no']}" if r.get("reg_no") else "")],
+                               r.get("category") or "registered recruiting agent", 85)
+        L["gov_match"] = {"status": "matched", "method": "source", "score": 100, "dataset": r["dataset"],
+                          "record_id": r["id"], "name": r["name"], "reg_no": r.get("reg_no"),
+                          "address": r.get("address"), "district": r.get("district"), "state": r.get("state"),
+                          "phone": r.get("phone"), "email": r.get("email"), "signals": ["from the list"]}
+        leads.append(L)
+    h = request.headers
+    try:
+        ai = _gemini(*(h.get(k) for k in ("x-gemini-key", "x-gemini-model", "x-gemini-mode", "x-openrouter-key",
+                                          "x-openrouter-model", "x-llm-provider", "x-llm-key", "x-llm-model",
+                                          "x-llm-keys", "x-llm-models")))
+    except HTTPException:
+        ai = None
+    res = await im_engine.enrich_org_leads(leads, keys, {"respect_robots": body.respect_robots, "gov_match": False},
+                                           ai)
+    return {"total": total, "next_offset": body.offset + len(rows), "done": body.offset + len(rows) >= total,
+            "places": wanted[:40], **res}
+
+
+class NamesIn(BaseModel):
+    names: List[str] = Field(..., min_length=1, max_length=8)
+    city: str = Field("", max_length=100)
+    respect_robots: bool = True
+
+
+@router.post("/im/names")
+async def im_names(body: NamesIn, request: Request, keys: dict = Depends(_keys)):
+    """Businesses the user names ("Magic Billion", "Aimpersand") → Maps listing, website, contacts, owners."""
+    _db()
+    leads = [im_engine.org_lead(n.strip(), body.city.strip(), why=["Looked up by name"], profession=None)
+             for n in body.names if n.strip()]
+    h = request.headers
+    try:
+        ai = _gemini(*(h.get(k) for k in ("x-gemini-key", "x-gemini-model", "x-gemini-mode", "x-openrouter-key",
+                                          "x-openrouter-model", "x-llm-provider", "x-llm-key", "x-llm-model",
+                                          "x-llm-keys", "x-llm-models")))
+    except HTTPException:
+        ai = None
+    return await im_engine.enrich_org_leads(leads, keys, {"respect_robots": body.respect_robots}, ai)
+
+
 @router.get("/gov/datasets")
 def gov_datasets():
     _db()

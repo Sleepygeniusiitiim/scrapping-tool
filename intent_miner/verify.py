@@ -88,7 +88,20 @@ def location_check(text: str, phone: Optional[str], places: List[str]) -> Tuple[
     """('ok' | 'mismatch' | 'unknown', reason)."""
     if not places:
         return "ok", ""
-    low = (text or "").lower()
+    own, text = (text or "").split(" ||| ", 1) if " ||| " in (text or "") else ("", text or "")
+    # the business's own name / address / city first: an interview "in Delhi" mentioned in a post does not
+    # move a Jamshedpur agency or a Dubai company into North India
+    if own.strip():
+        o = own.lower()
+        if any(re.search(r"\b" + re.escape(p.lower()) + r"\b", o) for p in places):
+            return "ok", "in " + next(p for p in places if re.search(r"\b" + re.escape(p.lower()) + r"\b", o))
+        abroad = [k for k, rx in rule_extractor._TARGET_RE.items() if rx.search(own) and k not in ("Europe", "Gulf")]
+        if abroad:
+            return "mismatch", f"based in {abroad[0]} (its own name / address), not in the target region"
+        other = rule_extractor._INDIA_RE.search(own)
+        if other:
+            return "mismatch", f"based in {other.group(0)}, outside {', '.join(places[:3])}…"
+    low = text.lower()
     hit = next((p for p in places if re.search(r"\b" + re.escape(p.lower()) + r"\b", low)), None)
     if hit:
         return "ok", f"in {hit}"
@@ -141,8 +154,15 @@ async def check(ai, spec: QuerySpec, command: str, leads: List[dict], texts: Dic
     needs_mea = any(_MEA_WORDS.search(r) for r in spec.requirements) or bool(_MEA_WORDS.search(command))
     kept, rejected, ask = [], [], []
     for L in leads:
-        text = f"{L.get('display_name') or ''} {L.get('origin') or ''} {L.get('address') or ''} " \
+        text = f"{L.get('display_name') or ''} {L.get('origin') or ''} {L.get('address') or ''} ||| " \
                f"{texts.get(L['lead_key'], '')}"
+        name = L.get("display_name") or ""
+        abroad_name = [k for k, rx in rule_extractor._TARGET_RE.items() if rx.search(name) and k not in ("Europe", "Gulf")]
+        if places and abroad_name and not rule_extractor._INDIA_RE.search(name) and \
+                not re.search(r"\b(?:overseas|manpower|recruit|placement|consultan|travels?|agency|agencies)\b", name, re.I):
+            # "Dubai DUTCO Construction Co. LLC": a company abroad, whatever city its post mentions
+            rejected.append((L, f"a company in {abroad_name[0]} (named so), not a business in the target region"))
+            continue
         loc, why = location_check(text, L.get("phone"), places)
         if loc == "mismatch":
             rejected.append((L, why))
@@ -161,7 +181,7 @@ async def check(ai, spec: QuerySpec, command: str, leads: List[dict], texts: Dic
             lines = []
             for n, (L, text, loc) in enumerate(chunk):
                 pc = phone_city(L.get("phone"))
-                ev = re.sub(r"\s+", " ", text)[:400]
+                ev = re.sub(r"\s+", " ", text.replace(" ||| ", " "))[:400]
                 lines.append(f"[{n}] {L.get('display_name')} | type: {L.get('profession') or '?'} | "
                              f"place: {L.get('origin') or L.get('address') or '?'}"
                              f"{' | phone area: ' + pc if pc else ''} | website: {L.get('website') or '-'} | "
