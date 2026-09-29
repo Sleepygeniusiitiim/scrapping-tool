@@ -54,9 +54,14 @@ class SearchProvider(BaseProvider):
             r = await asyncio.to_thread(pipeline.run_query, query, min(limit, self.max_results), self.region,
                                         self.backend, self.keys, months)
         self.note("failed" if r.get("error") and not r["hits"] else "ok")
-        if r.get("error") and not r["hits"]:
+        self.last_related = r.get("related") or []
+        extra = entity_hits(r.get("entities") or [], query)
+        # "People also ask" answers are often Quora / forum threads with people in their own words
+        extra += [{"url": q["link"], "title": q["question"], "snippet": q.get("snippet") or ""}
+                  for q in r.get("questions") or [] if q.get("link")]
+        if r.get("error") and not r["hits"] and not extra:
             raise RuntimeError(r["error"])
-        return r["hits"]
+        return extra + r["hits"]
 
     async def fetch(self, url: str, hit: Optional[dict] = None) -> RawDocument:
         raise NotImplementedError
@@ -271,3 +276,30 @@ class RssProvider(BaseProvider):
 
     async def fetch(self, url: str, hit: Optional[dict] = None) -> RawDocument:
         return (hit or {}).get("doc") or RawDocument(url=url, source="rss", status="failed", error="not in feed")
+
+
+
+def entity_hits(entities: List[dict], query: str = "") -> List[dict]:
+    """Google's local pack and knowledge panel as ready documents: one organization each, with the phone,
+    website, address and named founders / owners Google shows (no page to read)."""
+    city = (re.search(r"\bin\s+([A-Z][\w ]+)$", query) or [None, ""])[1]
+    out = []
+    for e in entities:
+        if not e.get("name"):
+            continue
+        lines = [f"{e['name']} — {e.get('category') or 'business'}."]
+        for label, k in (("Address", "address"), ("Phone", "phone"), ("Website", "website")):
+            if e.get(k):
+                lines.append(f"{label}: {e[k]}.")
+        if e.get("people"):
+            lines.append("People: " + ", ".join(f"{p['name']} ({p['role']})" for p in e["people"]) + ".")
+        url = e.get("link") or e.get("website") or ("https://www.google.com/search?q=" +
+                                                     re.sub(r"\s+", "+", e["name"]))
+        doc = RawDocument(url=url, source="maps" if e["kind"] == "local_pack" else "search",
+                          title=f"{e['name']} — Google {e['kind'].replace('_', ' ')}", via="api",
+                          metadata={"website": e.get("website") or "", "phone": e.get("phone") or "",
+                                    "address": e.get("address") or "", "city": city,
+                                    "people": "; ".join(f"{p['name']}|{p['role']}" for p in e.get("people") or [])})
+        doc.units.append(Unit("organization", e["name"], " ".join(lines), e.get("website") or None, None))
+        out.append({"url": url, "title": doc.title, "snippet": doc.units[0].text[:300], "date": None, "doc": doc})
+    return out

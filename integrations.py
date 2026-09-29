@@ -99,25 +99,96 @@ def _gl(region: str) -> str:
     return (region.split("-")[0] if region and region != "wt-wt" else "in") or "in"
 
 
+SEARCH_MAX_PAGES = int(os.getenv("SEARCH_MAX_PAGES", "2") or 2)     # Google result pages per query (1 page = 10)
+
+
+def _entity(kind: str, name, phone=None, website=None, address=None, category=None, people=None, link=None) -> dict:
+    return {"kind": kind, "name": (name or "").strip(), "phone": (phone or "").strip(),
+            "website": (website or "").strip(), "address": (address or "").strip(),
+            "category": (category or "").strip(), "people": people or [], "link": link or ""}
+
+
+def _serper_extras(data: dict, extras: dict) -> None:
+    kg = data.get("knowledgeGraph") or {}
+    if kg.get("title"):
+        attrs = kg.get("attributes") or {}
+        pick = lambda *ks: next((v for k, v in attrs.items() if any(x in k.lower() for x in ks)), None)
+        extras["entities"].append(_entity(
+            "knowledge_graph", kg["title"], pick("phone"), kg.get("website"), pick("address", "headquarters"),
+            kg.get("type"), [{"name": v, "role": k} for k, v in attrs.items()
+                             if re.search(r"founder|ceo|owner|director|chairman|president", k, re.I)]))
+    for p in data.get("places") or []:                                  # the local pack
+        extras["entities"].append(_entity("local_pack", p.get("title"), p.get("phoneNumber"), p.get("website"),
+                                          p.get("address"), p.get("category"),
+                                          link=f"https://www.google.com/maps?cid={p['cid']}" if p.get("cid") else ""))
+    extras["questions"] += [{"question": q.get("question"), "snippet": q.get("snippet"), "link": q.get("link")}
+                            for q in data.get("peopleAlsoAsk") or []]
+    extras["related"] += [q.get("query") for q in data.get("relatedSearches") or [] if q.get("query")]
+
+
+def _serpapi_extras(data: dict, extras: dict) -> None:
+    kg = data.get("knowledge_graph") or {}
+    if kg.get("title"):
+        people = [{"name": v, "role": k.replace("_", " ")} for k, v in kg.items()
+                  if isinstance(v, str) and re.search(r"founder|ceo|owner|director|chairman|president", k, re.I)]
+        extras["entities"].append(_entity("knowledge_graph", kg["title"], kg.get("phone"), kg.get("website"),
+                                          kg.get("address") or kg.get("headquarters"), kg.get("type"), people))
+    local = data.get("local_results") or {}
+    places = local.get("places", []) if isinstance(local, dict) else local
+    for p in places or []:
+        links = p.get("links") or {}
+        extras["entities"].append(_entity("local_pack", p.get("title"), p.get("phone"), links.get("website"),
+                                          p.get("address"), p.get("type"),
+                                          link=f"https://www.google.com/maps/place/?q=place_id:{p['place_id']}"
+                                          if p.get("place_id") else ""))
+    extras["questions"] += [{"question": q.get("question"), "snippet": q.get("snippet"), "link": q.get("link")}
+                            for q in data.get("related_questions") or []]
+    extras["related"] += [q.get("query") for q in data.get("related_searches") or [] if q.get("query")]
+
+
 def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, region: str,
-               max_age_months: int = 0) -> Tuple[List[dict], Optional[str], bool]:
-    """(hits, error, rate_limited) from one search API. max_age_months > 0 restricts to recent pages."""
+               max_age_months: int = 0, extras: Optional[dict] = None) -> Tuple[List[dict], Optional[str], bool]:
+    """(hits, error, rate_limited) from one search API. max_age_months > 0 restricts to recent pages.
+    `extras` (optional dict) receives what Google shows besides the organic results, as SerpApi / Serper return
+    it: entities (local pack businesses with phone / website / address, the knowledge panel with phone,
+    website and founders), questions ("People also ask" with their answer links) and related searches."""
     gl = _gl(region)
     n = max(1, min(max_results, 100))
     tbs = {"tbs": f"qdr:m{max_age_months}"} if max_age_months else {}
+    ex = extras if extras is not None else {}
+    for k in ("entities", "questions", "related"):
+        ex.setdefault(k, [])
+    pages = max(1, min(SEARCH_MAX_PAGES, (n + 9) // 10))
     try:
         # Short timeout: a slow search API must not hold up the run (DuckDuckGo results are used anyway).
         with httpx.Client(timeout=httpx.Timeout(12.0, connect=6.0)) as c:
             if name == "serper":
-                r = c.post("https://google.serper.dev/search", headers={"X-API-KEY": keys["serper"]},
-                           json={"q": query, "gl": gl, "hl": "en", "num": n, **tbs})
-                items = [(i.get("link"), i.get("title"), i.get("snippet"), i.get("date"))
-                         for i in _ok(r).get("organic", [])]
+                items = []
+                for page in range(1, pages + 1):          # Google now returns 10 per page: page through
+                    r = c.post("https://google.serper.dev/search", headers={"X-API-KEY": keys["serper"]},
+                               json={"q": query, "gl": gl, "hl": "en", "num": 10, "page": page, **tbs})
+                    data = _ok(r)
+                    if page == 1:
+                        _serper_extras(data, ex)
+                    got = [(i.get("link"), i.get("title"), i.get("snippet"), i.get("date"))
+                           for i in data.get("organic", [])]
+                    items += got
+                    if len(got) < 8:
+                        break
             elif name == "serpapi":
-                r = c.get("https://serpapi.com/search.json", params={
-                    "engine": "google", "q": query, "gl": gl, "hl": "en", "num": n, "api_key": keys["serpapi"], **tbs})
-                items = [(i.get("link"), i.get("title"), i.get("snippet"), i.get("date"))
-                         for i in _ok(r).get("organic_results", [])]
+                items = []
+                for page in range(pages):
+                    r = c.get("https://serpapi.com/search.json", params={
+                        "engine": "google", "q": query, "gl": gl, "hl": "en", "start": page * 10,
+                        "api_key": keys["serpapi"], **tbs})
+                    data = _ok(r)
+                    if page == 0:
+                        _serpapi_extras(data, ex)
+                    got = [(i.get("link"), i.get("title"), i.get("snippet"), i.get("date"))
+                           for i in data.get("organic_results", [])]
+                    items += got
+                    if len(got) < 8 or not (data.get("serpapi_pagination") or {}).get("next"):
+                        break
             elif name == "google_cse":
                 items = []
                 for start in range(1, min(n, 30) + 1, 10):      # 10 per call, max 3 calls

@@ -68,7 +68,9 @@ def _matches(name: str, url: str, title: str) -> bool:
 
 def find_website(keys: Dict[str, str], name: str, city: str = "") -> Optional[str]:
     """The organization's own site from a search API (or DuckDuckGo): first non-directory result matching it."""
-    query = f'"{name}" {city} contact'.strip()
+    official = name.endswith(" official website")
+    name = name.removesuffix(" official website")
+    query = (f'"{name}" official website' if official else f'"{name}" {city} contact').strip()
     apis = [a for a in integrations.search_available(keys) if a != "scrapedo"]
     hits = []
     if apis:
@@ -81,6 +83,62 @@ def find_website(keys: Dict[str, str], name: str, city: str = "") -> Optional[st
             p = urlparse(h["url"])
             return f"{p.scheme}://{p.netloc}/"
     return None
+
+
+_SUFFIX_WORDS = {"group", "services", "service", "travels", "travel", "consultants", "consultancy", "overseas",
+                 "international", "enterprises", "solutions", "pvt", "private", "ltd", "limited", "llp", "india",
+                 "company", "co", "and", "the", "of", "agency", "associates", "global"}
+
+
+def guess_domains(name: str) -> List[str]:
+    """Likely own domains for a business name — the Clearbit-style guess: "Gill Smart Group" → gillsmartgroup.com,
+    gillsmart.com, gillsmartgroup.in, gillsmart.in, gillsmart.co.in …"""
+    words = [w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if w not in ("pvt", "private", "ltd", "limited",
+                                                                                   "llp", "the", "m", "s")]
+    if not words:
+        return []
+    core = [w for w in words if w not in _SUFFIX_WORDS] or words
+    light = [w for w in words if w not in ("group", "services", "service", "company", "co", "and", "the", "of")]
+    stems = list(dict.fromkeys(["".join(words), "".join(light), "".join(core), "-".join(core)] +
+                               (["".join(core[:2])] if len(core) > 2 else [])))
+    # a single word ("rolex") names someone else's site far too often: only when the name is one word
+    stems = [x for x in stems if 4 <= len(x) <= 40 and (len(words) == 1 or x not in words)]
+    return [f"{st}{tld}" for st in stems for tld in (".com", ".in", ".co.in")][:12]
+
+
+async def _probe_site(client, domain: str, name: str) -> Optional[str]:
+    toks = _tokens(name) or re.findall(r"[a-z0-9]{3,}", name.lower())
+    for url in (f"https://{domain}/", f"http://{domain}/"):
+        try:
+            r = await asyncio.wait_for(client.get(url), timeout=7)
+        except Exception:
+            continue
+        if r.status_code >= 400:
+            continue
+        text = BeautifulSoup(r.text[:200000], "html.parser").get_text(" ", strip=True).lower()[:20000]
+        if re.search(r"domain (?:is )?for sale|buy this domain|parked|godaddy|sedo|hugedomains", text):
+            return None
+        # every distinctive word of the name must be on the page (a "gillsmart.com" about something else fails)
+        if toks and sum(t in text for t in toks) >= (len(toks) if len(toks) <= 3 else len(toks) - 1):
+            final = urlparse(str(r.url))
+            return f"{final.scheme}://{final.netloc}/"
+    return None
+
+
+async def discover_website(keys: Dict[str, str], name: str, city: str = "") -> Optional[str]:
+    """The business's own site: likely domains checked directly (free), then web search."""
+    if not name:
+        return None
+    client = primp.AsyncClient(impersonate="chrome", follow_redirects=True, max_redirects=4, timeout=8)
+    doms = guess_domains(name)
+    found = await asyncio.gather(*(_probe_site(client, d, name) for d in doms), return_exceptions=True)
+    for site in found:
+        if isinstance(site, str):
+            return site
+    site = await asyncio.to_thread(find_website, keys, name, city)
+    if not site:
+        site = await asyncio.to_thread(find_website, keys, f"{name} official website", "")
+    return site
 
 
 def _extract(url: str, html: str) -> dict:
@@ -260,7 +318,7 @@ async def company_profile(keys: Dict[str, str], company: str, respect_robots: bo
     if re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+/?", company, re.I):
         site = company if company.startswith("http") else "https://" + company.rstrip("/") + "/"
     else:
-        site = await asyncio.to_thread(find_website, keys, company, "")
+        site = await discover_website(keys, company, "")
     if not site:
         return None
     res = await crawl(site, respect_robots, max_pages=5, keys=keys)
@@ -303,7 +361,7 @@ async def for_organization(keys: Dict[str, str], name: str, city: str, page_url:
         p = urlparse(page_url)
         site = f"{p.scheme}://{p.netloc}/"
     if not site and name:
-        site = await asyncio.to_thread(find_website, keys, name, city)
+        site = await discover_website(keys, name, city)
     if not site:
         return None
     return await crawl(site, respect_robots, keys=keys)

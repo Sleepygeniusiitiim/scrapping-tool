@@ -78,9 +78,11 @@ class QuerySpec(BaseModel):
                                             description="Sources ranked by how likely they give the wanted contacts")
     places: List[str] = Field(default_factory=list, description="Concrete cities / districts to search, when the "
                                                                 "command names a region (e.g. North India)")
+    requirements: List[str] = Field(default_factory=list, description="Hard conditions every result must meet "
+                                                                      "(e.g. registered with MEA as a recruiting agent)")
 
     @field_validator("professions", "origin", "destination", "high_intent_terms", "negative_terms",
-                     "languages", "subreddits", "places", mode="before")
+                     "languages", "subreddits", "places", "requirements", mode="before")
     @classmethod
     def _lists(cls, v):
         return _clean(v)

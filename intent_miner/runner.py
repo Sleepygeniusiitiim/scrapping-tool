@@ -48,6 +48,7 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
     emit(f"Plan: {len(spec.queries)} searches — " + ", ".join(f"{k} {len(v)}" for k, v in by_src.items()))
 
     seen: set = set()
+    _related_cache: Dict[str, List[str]] = {}          # Google's related searches, per source (this run only)
     max_urls = int(options.get("max_urls") or 60)
     batch = max(1, min(8, int(options.get("batch") or 5)))
     concurrency = int(options.get("search_concurrency") or 4)
@@ -62,6 +63,8 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
                 if stopped():
                     return
                 r = await engine.discover(spec, src, q, keys, settings)
+                _related_cache.setdefault(src, []).extend(x for x in r.get("related") or []
+                                                          if x not in _related_cache.get(src, []))
                 totals["searches"] += 1
                 new = 0
                 for h in r["hits"]:
@@ -71,7 +74,15 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
                 emit(f"[{src}] {len(r['hits'])} results (+{new}) ← {q}" +
                      (f"  ⚠️ {r['error'][:120]}" if r.get("error") else ""))
 
+        ran = {q.lower() for q in queries}
+
         await asyncio.gather(*(one(q) for q in queries), return_exceptions=True)
+        if settings.get("expand_related", True) and _related_cache:
+            extra = [x for x in _related_cache.pop(src, []) if x.lower() not in ran][:min(6, len(queries))]
+            if extra:
+                emit(f"[{src}] +{len(extra)} related searches Google suggested: {' · '.join(extra)}")
+                ran.update(x.lower() for x in extra)
+                await asyncio.gather(*(one(q) for q in extra), return_exceptions=True)
         urls = list(hits)
         seen.update(urls)
         fresh = urls if settings.get("reprocess") else await asyncio.to_thread(db.filter_fresh_urls, urls)

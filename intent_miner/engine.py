@@ -12,6 +12,7 @@ import asyncio
 import os
 import re
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 import dates
 import rule_extractor
@@ -90,6 +91,7 @@ async def discover(spec: QuerySpec, source: str, query: str, keys: Dict[str, str
             hits = await provs["search"].search(query, spec, limit)
     except RuntimeError as exc:
         error = str(exc)
+    related = getattr(provs["search"], "last_related", []) if source not in ("reddit", "youtube", "rss") else []
     out = []
     for h in hits:
         if h.get("error"):
@@ -104,7 +106,7 @@ async def discover(spec: QuerySpec, source: str, query: str, keys: Dict[str, str
         if isinstance(doc, RawDocument):     # API / feed already returned the content — send it along
             item["doc"] = _doc_to_json(doc)
         out.append(item)
-    return {"hits": out, "error": error, "health": _health(provs)}
+    return {"hits": out, "error": error, "health": _health(provs), "related": related}
 
 
 def _doc_to_json(d: RawDocument) -> dict:
@@ -353,14 +355,37 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
                          "score": score, "evidence": evidence[0] if evidence else ""}],
         }
         if orgs:
-            lead["website"] = d.metadata.get("website") or None
+            lead["website"] = d.metadata.get("website") or _website_in(u.text + " " + (d.metadata.get("links") or ""),
+                                                                        author or "") or None
             lead["origin"] = lead["origin"] or d.metadata.get("city") or None
+            if d.metadata.get("address"):
+                lead["address"] = d.metadata["address"]
+            if d.metadata.get("people"):            # founders / owners from Google's knowledge panel
+                lead["org_contacts"] = {"emails": [], "phones": [], "whatsapp": [], "social": [], "people": [
+                    {"name": x.split("|")[0], "role": x.split("|")[1] if "|" in x else "", "source": "google"}
+                    for x in d.metadata["people"].split("; ") if x]}
+        lead["_text"] = f"{d.title} {u.text[:800]} {d.metadata.get('address', '')}"
         leads.append(lead)
         events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, key))
         if settings.get("save_to_candidates", True):
             cand = _candidate(lead, d, i, u)
             cand_lead[cand.source_url] = lead
             candidates.append(cand)
+
+    # ---- Businesses: do they fit the command (type, place, required registrations)? --------------------
+    if orgs and leads and settings.get("verify_fit", True):
+        from . import verify
+        kept, rejected = await verify.check(ai if settings.get("use_llm", True) else None, spec,
+                                            settings.get("intent") or spec.summary, leads,
+                                            {L["lead_key"]: L.get("_text", "") for L in leads},
+                                            bool(settings.get("strict_requirements")))
+        if rejected:
+            gone = {id(L) for L, _ in rejected}
+            leads = kept
+            candidates = [c for c in candidates if id(cand_lead.get(c.source_url)) not in gone]
+            stats["rejected_fit"] = len(rejected)
+            warnings.append(f"Fit check: {len(rejected)} businesses removed — " + "; ".join(
+                f"{L.get('display_name')}: {why}" for L, why in rejected[:6])[:600])
 
     # ---- Classic per-page extraction on the same pages (the original pipeline's reader) ----------------
     classic_records: List[CandidateRecord] = []
@@ -445,7 +470,7 @@ async def _index(saved: List[dict], keys: Dict[str, str], warnings: List[str]) -
         warnings.append(f"Search index not updated: {type(exc).__name__}: {str(exc)[:100]}")
 
 
-MAX_COMPANY_CRAWLS_PER_BATCH = _scaled(6)
+MAX_COMPANY_CRAWLS_PER_BATCH = _scaled(8)
 MAX_MAPS_LOOKUPS_PER_BATCH = _scaled(6)
 MAX_OWNER_SEARCHES_PER_BATCH = _scaled(4)
 MAX_ROLE_PROBES_PER_BATCH = _scaled(4)
@@ -507,7 +532,9 @@ async def _company_contacts(leads: List[dict], candidates: List[CandidateRecord]
         warnings.append(f"Google Maps: looked up {len(need)} businesses found without a phone → {got} phones")
 
     # 2. own website
-    todo = sorted(named, key=lambda L: (bool(L.get("email")), not L.get("website")))[:MAX_COMPANY_CRAWLS_PER_BATCH]
+    # businesses still without a phone first, then without an email; known websites before ones to be found
+    todo = sorted(named, key=lambda L: (bool(L.get("phone")), bool(L.get("email")), not L.get("website"))
+                  )[:MAX_COMPANY_CRAWLS_PER_BATCH]
     page_of = {L["lead_key"]: L.get("website") or (L.get("sources") or [{}])[0].get("url", "") for L in todo}
     results = await asyncio.gather(*(company_contacts.for_organization(
         keys, L["display_name"], L.get("origin") or "", page_of[L["lead_key"]], settings.get("respect_robots", True))
@@ -620,13 +647,28 @@ def _site_name(d: RawDocument) -> Optional[str]:
     return head[:120] or None
 
 
+def _website_in(text: str, name: str) -> Optional[str]:
+    """The business's own site when a page about it links it (LinkedIn company page "Website", a directory
+    listing, a knowledge panel) — a URL outside directories / social sites whose host carries the name."""
+    import company_contacts
+    toks = company_contacts._tokens(name)
+    for m in re.finditer(r"https?://[^\s\"'<>)\]]+|\b(?:www\.)?[a-z0-9-]{3,}\.(?:com|in|co\.in|org|net|org\.in)\b",
+                         text or "", re.I):
+        u = m.group(0).rstrip(".,/")
+        u = u if u.startswith("http") else "https://" + u
+        host = (urlparse(u).hostname or "").lower()
+        if host and not company_contacts.is_directory(u) and toks and any(t in host for t in toks):
+            return f"{urlparse(u).scheme}://{host}/"
+    return None
+
+
 def _org_key(name: str, url: str) -> str:
-    from urllib.parse import urlparse
-    host = (urlparse(url).hostname or "").removeprefix("www.")
-    directory = any(x in host for x in ("justdial", "indiamart", "sulekha", "tradeindia", "yellowpages", "linkedin",
-                                         "facebook", "google", "quora", "reddit"))
-    norm = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
-    return f"org:{norm}" if directory else f"org:{norm}|{host}"
+    """One key per business, whatever page it was found on ("Rolex Travel Services" on a directory, its own site
+    and a Maps listing are the same lead). Legal suffixes and abbreviations are normalised
+    (Pvt / Ltd / & / Centre); near-identical names are merged later by fuzzy matching in the store."""
+    import gov_registry
+    norm = gov_registry.name_key(name, True) or re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+    return f"org:{norm}"
 
 
 def hits_by_url(items: List[dict]) -> Dict[str, dict]:

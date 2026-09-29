@@ -214,6 +214,8 @@
         <label title="Keep only people who say they are interested, keen, looking / open to work, ready to join or share their CV"><input id="onlyInterested" type="checkbox" checked>Only leads who say they're interested / keen</label>
         <label title="For interested leads (within “Only leads active in the last…”) that are missing a phone or email, look them up in Apollo / Lusha / ContactOut / RocketReach. Uses those services' credits."><input id="useLeadDb" type="checkbox" checked>Look up contacts of interested leads in lead databases (uses credits)</label>
         <label title="Keep a lead-database result only when the lead then has both a phone number and an email"><input id="requireBoth" type="checkbox" checked>Lead databases: keep only if both phone &amp; email</label>
+        <label title="Businesses whose required registration / licence (e.g. MEA recruiting-agent licence) is not shown anywhere are removed instead of marked “unverified”."><input id="strictReq" type="checkbox">Strict: only businesses whose required registration is shown</label>
+        <label title="Also run the related searches Google suggests for each query (more results for the same intent)."><input id="expandRelated" type="checkbox" checked>Also run Google's related searches</label>
       </div>
     </details>
     <div class="row" style="margin-top:14px">
@@ -538,6 +540,32 @@ function waLink(phone) {
   if (d.length === 10 && /^[6-9]/.test(d)) d = "91" + d;
   return d.length >= 11 && d.length <= 15 ? "https://wa.me/" + d : "";
 }
+// One row per business / person: same normalised name (legal suffixes and "travels / services" ignored) whose
+// phones do not conflict, or the same phone / email. Fields are filled from every row; the newest date is kept.
+function entityKey(r) {
+  const n = String(r.name || "").toLowerCase().replace(/&/g, " and ")
+    .replace(/\b(pvt|private|ltd|limited|llp|the|m\/s|co|company|services?|travels?|consultants?|consultancy|group|india)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ").trim();
+  return n.length >= 3 ? "n:" + n : "";
+}
+function mergeDupes(rows) {
+  const groups = [], byKey = new Map();
+  const digits = (p) => String(p || "").replace(/\D/g, "").slice(-10);
+  for (const r of rows) {
+    const keys = [entityKey(r), r.phone ? "p:" + digits(r.phone) : "", r.email ? "e:" + String(r.email).toLowerCase() : ""].filter(Boolean);
+    let g = keys.map((k) => byKey.get(k)).find((x) => x && !(x.phone && r.phone && digits(x.phone) !== digits(r.phone) && !keys.slice(1).some((k) => byKey.get(k) === x)));
+    if (!g) { g = { ...r, _rows: [] }; groups.push(g); }
+    g._rows.push(r);
+    for (const [k, v] of Object.entries(r)) if (v != null && v !== "" && (g[k] == null || g[k] === "" || (Array.isArray(g[k]) && !g[k].length))) g[k] = v;
+    if (r.activity_date && (!g.activity_date || r.activity_date > g.activity_date)) g.activity_date = r.activity_date;
+    keys.forEach((k) => byKey.set(k, g));
+  }
+  return groups.map((g) => {
+    if (g._rows.length > 1) { g._merged = true; g.platform = [...new Set(g._rows.map((x) => x.platform).filter(Boolean))].join(", ");
+      g.evidence_snippet = `[${g._rows.length} sources] ` + (g.evidence_snippet || ""); }
+    return g;
+  });
+}
 function contactOk(r, want) {
   const ph = !!r.phone, em = !!r.email;
   return !want || (want === "has phone or email" ? ph || em : want === "has phone" ? ph : want === "has email" ? em :
@@ -569,6 +597,9 @@ function buildView(container, getRecords, key) {
   const roleIn = document.createElement("input"); roleWrap.append(roleL, roleIn); f.appendChild(roleWrap);
   const selPlatform = mkSelect("Platform", platforms);
   const selContact = mkSelect("Contact", ["has phone or email", "has phone", "has email", "has both", "no contact"]);
+  const mergeWrap = document.createElement("div"); const mergeL = document.createElement("label");
+  const mergeCb = document.createElement("input"); mergeCb.type = "checkbox"; mergeCb.checked = true;
+  mergeL.append(mergeCb, " Merge duplicates (same business / person from several pages)"); mergeWrap.appendChild(mergeL); f.appendChild(mergeWrap);
 
   const info = document.createElement("p"); info.className = "status";
   const actions = document.createElement("div"); actions.className = "row"; actions.style.margin = "10px 0";
@@ -596,7 +627,7 @@ function buildView(container, getRecords, key) {
   }
 
   function render() {
-    shown = filtered();
+    shown = mergeCb.checked ? mergeDupes(filtered()) : filtered();
     info.textContent = `${shown.length} of ${getRecords().length} records` +
       (key === "db" ? " · click a cell to edit, lists are separated with ;" : "");
     table.replaceChildren();
@@ -620,7 +651,7 @@ function buildView(container, getRecords, key) {
         }
         td.textContent = LIST_COLS.includes(col) ? asList(r[col]).join("; ") : (r[col] ?? "");
         if (col === "evidence_snippet") td.className = "evidence";
-        if (EDITABLE.includes(col)) {
+        if (EDITABLE.includes(col) && !r._merged) {
           td.contentEditable = "true";
           td.addEventListener("blur", () => {
             const v = td.textContent.trim();
@@ -633,7 +664,7 @@ function buildView(container, getRecords, key) {
       }
     }
   }
-  [selCountry, selSkill, selPlatform, selContact].forEach((el) => el.addEventListener("change", render));
+  [selCountry, selSkill, selPlatform, selContact, mergeCb].forEach((el) => el.addEventListener("change", render));
   roleIn.addEventListener("input", render);
 
   btnCsv.onclick = () => {
@@ -833,7 +864,8 @@ function imSettings(main, intent, planQueries) {
     min_score: Number($("imMin").value) || 0, use_llm: $("extraction").value !== "rules", save_to_candidates: true,
     reprocess: $("imReprocess").checked, intent: intent || "", extraction: $("extraction").value,
     only_interested: $("onlyInterested").checked, enrich: $("useLeadDb").checked, require_both: $("requireBoth").checked,
-    classic: (m.mode || $("searchMode").value) === "combined", plan_queries: planQueries || [] };
+    classic: (m.mode || $("searchMode").value) === "combined", plan_queries: planQueries || [],
+    verify_fit: true, strict_requirements: $("strictReq").checked, expand_related: $("expandRelated").checked };
 }
 function esc(t) { const d = document.createElement("div"); d.textContent = t == null ? "" : String(t); return d.innerHTML; }
 function imRenderSpec(spec) {
@@ -997,10 +1029,12 @@ async function runCombined(intent, totals, rounds, mode) {
     const hits = new Map();
     let fatal = null;
     // searches run 3 at a time (Maps / directories are one search per city, so this saves minutes)
-    await pool(queries, 3, async (q) => {
+    const related = new Set(), ran = new Set(queries.map((q) => q.toLowerCase()));
+    const runQuery = async (q) => {
       if (state.stop || fatal) return;
       try {
         const r = await api("/api/im/discover", { spec, source: src, query: q, settings });
+        (r.related || []).forEach((x) => { if (!ran.has(x.toLowerCase())) related.add(x); });
         let added = 0;
         for (const h of r.hits) if (!hits.has(h.url) && !seen.has(h.url)) { hits.set(h.url, h); added++; }
         logEv("query", `${r.hits.length} results (+${added} new) ← ${q}` + (r.error ? `  ⚠️ ${r.error.slice(0, 120)}` : ""), name);
@@ -1008,7 +1042,15 @@ async function runCombined(intent, totals, rounds, mode) {
         if (e.status === 401 || e.status === 503) fatal = e;
         else logEv("warning", `Search failed (${e.message.slice(0, 120)}): ${q}`, name);
       }
-    });
+    };
+    await pool(queries, 3, runQuery);
+    // Google's own "related searches" for these queries: more pages for the same intent
+    const extra = settings.expand_related ? [...related].slice(0, Math.min(6, queries.length)) : [];
+    if (extra.length) {
+      logEv("plan", `+${extra.length} related searches Google suggested: ${extra.join(" · ")}`, name);
+      extra.forEach((x) => ran.add(x.toLowerCase()));
+      await pool(extra, 3, runQuery);
+    }
     if (fatal) throw fatal;
     stats.found = hits.size;
     const urls = [...hits.keys()];

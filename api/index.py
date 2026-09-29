@@ -529,6 +529,9 @@ class IMSettings(BaseModel):
     classic: bool = True
     plan_queries: List[str] = Field(default_factory=list, max_length=300)
     wave_tag: str = Field("IM", max_length=60)
+    verify_fit: bool = True                 # AI + rules check that each business fits the command
+    strict_requirements: bool = False       # drop businesses whose required registration is not shown
+    expand_related: bool = True             # also run Google's related searches
 
 
 class IMUnderstandIn(BaseModel):

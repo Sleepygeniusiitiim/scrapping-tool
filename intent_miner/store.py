@@ -208,6 +208,40 @@ def _norm_name(n: Optional[str]) -> str:
     return re.sub(r"[^a-z ]+", " ", (n or "").lower()).strip()
 
 
+def _same_org(L: dict) -> Optional[str]:
+    """An already-saved business with (nearly) the same name — "Rolex Travels" / "Rolex Travel Services Pvt Ltd" —
+    and no conflicting location or website. Fuzzy name search in SQL, then the name matcher decides."""
+    import gov_registry
+    name = L["display_name"]
+    toks = gov_registry._rare_tokens(name, True)
+    if not toks:
+        return None
+    # any distinctive word, with a plural "s" dropped ("Travels" finds "Travel Services")
+    pats = list(dict.fromkeys(f"%{t[:-1] if len(t) > 4 and t.endswith('s') else t}%" for t in toks))
+    rows = _q("""SELECT lead_key, display_name, origin, website, phone FROM im_leads
+                 WHERE lead_key LIKE 'org:%%' AND lead_key <> %s AND lower(display_name) LIKE ANY(%s) LIMIT 80""",
+              (L["lead_key"], pats), "all")
+    best, best_sim = None, 0.0
+    for r in rows:
+        sim = gov_registry.name_similarity(name, r["display_name"] or "", True)
+        if sim < 0.88:
+            continue
+        a, b = (L.get("origin") or "").lower(), (r["origin"] or "").lower()
+        if a and b and a.split(",")[0].strip() not in b and b.split(",")[0].strip() not in a:
+            continue                          # same name, different city: a different business / branch
+        wa, wb = _host(L.get("website")), _host(r["website"])
+        if wa and wb and wa != wb:
+            continue
+        if sim > best_sim:
+            best, best_sim = r["lead_key"], sim
+    return best
+
+
+def _host(u: Optional[str]) -> str:
+    from urllib.parse import urlparse
+    return (urlparse(u).hostname or "").removeprefix("www.") if u else ""
+
+
 def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
     """Insert or merge leads. Same key → same lead; same email / phone → merged into the existing lead;
     same name on another platform → recorded as a *possible* match needing verification (never merged)."""
@@ -220,6 +254,8 @@ def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
                                   OR (%s <> '' AND right(regexp_replace(COALESCE(phone,''), '\\D', '', 'g'), 10) = %s)
                                   LIMIT 1""", (L.get("email") or "", L.get("email") or "", digits, digits), "one")
         key = contact_match["lead_key"] if contact_match else L["lead_key"]
+        if not contact_match and key.startswith("org:") and L.get("display_name"):
+            key = _same_org(L) or key
         possible = []
         if L.get("display_name") and not contact_match:
             rows = _q("""SELECT lead_key, display_name, platform FROM im_leads

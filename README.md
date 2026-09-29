@@ -170,6 +170,25 @@ gave leads or have several posts / comments — with the current intent and sett
 hash has not changed are skipped without any AI cost; changed pages are scored again, so new comments
 become new leads while existing people are merged, not duplicated.
 
+## Accuracy: fit check, one lead per business, full Google results
+
+* **Fit check** (`intent_miner/verify.py`) for business searches: rules first — the target region's cities / states
+  against the lead's address, text and landline area code (022 = Mumbai, 0161 = Ludhiana …); a business plainly
+  abroad (Dubai) or in another region is removed — then the AI judges the rest against the command and its hard
+  requirements (type of business, place, registrations such as the MEA / eMigrate recruiting-agent licence, which
+  is also recognised in page text: "B-1234/DEL/PER/…"). Removed businesses are listed with the reason; a
+  requirement not shown is marked "⚠ Unverified" (or removed with **Strict**). For MEA-registered agents, import
+  the eMigrate list of registered recruiting agents under 🏛️ Government lists for an exact check.
+* **One lead per business:** the same name from a directory, LinkedIn, Maps and its own site is one lead; near-
+  identical names ("Rolex Travels Pvt Ltd" / "Rolex Travel Services") in the same city are merged; the results
+  table merges duplicate rows too (switch "Merge duplicates").
+* **Own website for every business:** likely domains are checked directly (Gill Smart Group → gillsmartgroup.com,
+  .in, .co.in — every distinctive word of the name must be on the page), a website linked on its LinkedIn /
+  directory page is used, then search; businesses without a phone are crawled first.
+* **Full Google results (SerpApi / Serper):** besides the 10 blue links — the **local pack** (businesses with phone,
+  website, address), the **knowledge panel** (phone, website, founders / CEO), **People also ask** answer pages,
+  **related searches** (run as extra queries), and up to `SEARCH_MAX_PAGES` result pages per query.
+
 ## Enterprise architecture: gateway + workers, hybrid AI, headless browser, pgvector
 
 | Component | How it works now |

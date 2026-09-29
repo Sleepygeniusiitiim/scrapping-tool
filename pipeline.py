@@ -377,6 +377,7 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
     google_apis = integrations.search_available(keys)
     sources, errors, rate_limited = [], [], False
     hits: Dict[str, dict] = {}
+    extras: dict = {"entities": [], "questions": [], "related": []}
 
     def add(outcome, label):
         nonlocal rate_limited
@@ -404,7 +405,7 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
                 outcome = google_search_scrapedo(query, token, max_results=max_results, region=region)
             else:
                 found, err, limited = integrations.web_search(name, keys, query, max_results, region,
-                                                              max_age_months)
+                                                              max_age_months, extras)
                 outcome = _Outcome(found, err, limited)
             add(outcome, name)
             if not outcome.error:
@@ -420,7 +421,19 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
         "sources": sources,
         "google_missing": backend in ("auto", "google") and not google_apis,
         "hits": list(hits.values())[:max_results * 2],
+        **_dedupe_extras(extras),
     }
+
+
+def _dedupe_extras(extras: dict) -> dict:
+    seen, ents = set(), []
+    for e in extras.get("entities", []):
+        k = re.sub(r"\W+", "", e.get("name", "").lower())
+        if k and k not in seen:
+            seen.add(k)
+            ents.append(e)
+    return {"entities": ents, "related": list(dict.fromkeys(q for q in extras.get("related", []) if q))[:8],
+            "questions": [q for q in extras.get("questions", []) if q.get("question")][:8]}
 
 
 def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max_age_months: int) -> dict:
@@ -432,6 +445,7 @@ def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max
     if token:
         keys = {**keys, "scrapedo": token}
     engines = ["ddg"] + integrations.search_available(keys)
+    extras: dict = {"entities": [], "questions": [], "related": []}
 
     def one(name: str):
         if name == "ddg":
@@ -442,7 +456,7 @@ def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max
         if name == "scrapedo":
             r = google_search_scrapedo(query, token, max_results=max_results, region=region)
             return name, [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in r.hits], r.error
-        found, err, _ = integrations.web_search(name, keys, query, max_results, region, max_age_months)
+        found, err, _ = integrations.web_search(name, keys, query, max_results, region, max_age_months, extras)
         o = _Outcome(found, err, False)
         return name, [{"url": h.url, "title": h.title, "snippet": h.snippet, "date": getattr(h, "date", None)}
                       for h in o.hits], err
@@ -464,7 +478,8 @@ def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max
             cur["date"] = cur.get("date") or h.get("date") or _hit_date(h)
     ranked = sorted(fused.values(), key=lambda h: -score[h["url"]])
     return {"query": query, "error": "; ".join(errors) if errors and not ranked else None, "rate_limited": False,
-            "sources": sources, "google_missing": len(engines) == 1, "hits": ranked[:max_results * 3]}
+            "sources": sources, "google_missing": len(engines) == 1, "hits": ranked[:max_results * 3],
+            **_dedupe_extras(extras)}
 
 
 def _safe_engine(fn, name):

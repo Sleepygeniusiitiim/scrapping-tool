@@ -59,6 +59,12 @@ Return JSON with:
   command (weight 0-100, one-line reason naming what it yields, e.g. "phone numbers of each driving school").
   Businesses in named places → Google Maps listings and directories first; individuals showing intent →
   comment sections (Facebook / LinkedIn / YouTube / blogs) and forums first.
+- requirements: hard conditions EVERY result must meet that public information can confirm, in plain words —
+  licences / registrations ("registered with the Ministry of External Affairs (MEA) as a Recruiting Agent — eMigrate
+  RA licence number"), the kind of business ("an overseas recruitment agency, not an employer or a travel agent"),
+  the location ("based in North India"). Empty when the command has none.
+  For MEA / eMigrate / "registered recruiting agent" commands add queries for site:emigrate.gov.in and for
+  "RA licence" / "registration no" pages of the agencies.
 - places: when the command names a region ("North India", "Punjab", "Gulf"), list its main cities / districts
   (up to 25) to search one by one; for named cities, those cities.
   Query sources may also be "maps" (plain "<business type> in <city>", no site:) and "directories"
