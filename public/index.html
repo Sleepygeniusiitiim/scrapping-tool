@@ -1827,6 +1827,12 @@ async function runPipeline(intent, totals, rounds) {
             "comments. Skipped pages are retried by later runs.", name);
         }
         r.warnings.forEach((w) => logEv("warning", w, name));
+        if (r.ai_off && settings.extraction !== "rules") {
+          logEv("warning", `Every AI provider is out of credits or limits (${r.ai_off.slice(0, 160)}). Continuing with ` +
+            "rule-based page reading (no AI) so the run still finds people; those pages are re-read by AI in a later run. " +
+            "Add a free key (Cerebras, Gemini, Groq…) under ⚙️ Settings for better reading.", name);
+          settings.extraction = "rules";
+        }
         if (r.quota_error) {
           logEv("error", r.quota_error + " Stopping — pages not yet read are kept and retried by the next run.", name);
           state.stop = true;

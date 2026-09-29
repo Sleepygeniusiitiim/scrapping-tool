@@ -301,6 +301,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     # ---- Scores, evidence, leads ------------------------------------------------------------------
     leads, events, candidates = [], [], []
     cand_lead: Dict[str, dict] = {}
+    origin = rule_extractor.origin_of(settings.get("intent") or spec.summary or "")
     for d, i, u, parts, why, lang in passed:
         r = llm.get((d.url, i))
         if r is not None:
@@ -328,6 +329,14 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         if t == "NONE" or score < min_score:
             events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
             continue
+        if not orgs and origin:
+            # "Indian candidates": drop a person whose own text / profile shows another home country
+            mine = f"{(r.origin or '') if r else ''} {u.text} " + \
+                   (d.title if u.kind in ("snippet", "profile") or i == 0 else "")
+            if rule_extractor.other_origin(mine, origin):
+                stats["off_origin"] = stats.get("off_origin", 0) + 1
+                events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
+                continue
         stats[t.lower()] += 1
         evidence = (r.evidence if r and r.evidence else [rule_extractor._evidence(u.text, rule_extractor._INTEREST)])
         why_list = _why(why, parts, r, fresh, u.date or d.date, d, orgs)
@@ -382,6 +391,10 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             cand = _candidate(lead, d, i, u)
             cand_lead[cand.source_url] = lead
             candidates.append(cand)
+
+    if stats.get("off_origin"):
+        warnings.append(f"{stats['off_origin']} people skipped: their profile / text shows another home country "
+                        f"(the command asks for {origin} candidates).")
 
     # ---- Businesses: do they fit the command (type, place, required registrations)? --------------------
     if orgs and leads and settings.get("verify_fit", True):

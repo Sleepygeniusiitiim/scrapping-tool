@@ -72,9 +72,12 @@ def mentions_any(text: str, places: List[str]) -> bool:
         pl = place.strip()
         if not pl:
             continue
-        if pl.lower() in ("india", "north india", "south india") and (_INDIA_RE.search(text or "") or
-                                                                     _FROM_INDIA.search(text or "")):
-            return True                                # an Indian city / state counts as India
+        if pl.lower() in ("india", "north india", "south india"):
+            found = {m.lower() for m in _INDIA_RE.findall(text or "")}
+            if _FROM_INDIA.search(text or "") or found - _AMBIGUOUS_INDIA or \
+                    (found and not OTHER_ORIGINS["Pakistan"].search(text or "")):
+                return True                            # an Indian city / state counts as India ("Punjab" only
+                                                       # when nothing says Pakistan)
         rx = _TARGET_RE.get(pl) or next((r for k, r in _TARGET_RE.items() if k.lower() == pl.lower()), None)
         if rx is not None and rx.search(text or ""):
             return True
@@ -128,6 +131,43 @@ INDIAN_PLACES = [
 ]
 _INDIA_RE = re.compile(r"\b(?:" + "|".join(re.escape(p) for p in INDIAN_PLACES) + r")\b", re.IGNORECASE)
 _FROM_INDIA = re.compile(r"\b(?:from|in|based in|located in|living in|experience in) india\b", re.IGNORECASE)
+# Indian place names that are also in Pakistan (Punjab; Hyderabad in Sindh): alone they don't prove India.
+_AMBIGUOUS_INDIA = {"punjab", "hyderabad"}
+_INDIA_STRONG = re.compile(r"\bindia\b|\bindian\b|\bbharat\b|(?<!\d)(?:\+|00)91[\s-]?[6-9]\d{4}", re.IGNORECASE)
+# Home-country markers of the countries whose candidates are most often mixed up with Indian ones.
+OTHER_ORIGINS = {
+    "Pakistan": re.compile(r"\bpakistan(?:i|is)?\b|\blahore\b|\bkarachi\b|\bislamabad\b|\brawalpindi\b|"
+                           r"\bfaisalabad\b|\bmultan\b|\bpeshawar\b|\bsialkot\b|\bgujranwala\b|\bquetta\b|"
+                           r"\bsargodha\b|\bbahawalpur\b|\bsukkur\b|\bkhyber\b|\bbalochistan\b|\bmardan\b|"
+                           r"\bazad kashmir\b|\bmirpur\b|(?<!\d)(?:\+|00)92[\s-]?3\d|\.pk\b", re.IGNORECASE),
+    "Bangladesh": re.compile(r"\bbangladesh(?:i)?\b|\bdhaka\b|\bchittagong\b|\bchattogram\b|\bsylhet\b|"
+                             r"\bkhulna\b|(?<!\d)(?:\+|00)880", re.IGNORECASE),
+    "Nepal": re.compile(r"\bnepal(?:i|ese)?\b|\bkathmandu\b|\bpokhara\b|(?<!\d)(?:\+|00)977", re.IGNORECASE),
+    "Sri Lanka": re.compile(r"\bsri lanka(?:n)?\b|\bcolombo\b|(?<!\d)(?:\+|00)94[\s-]?7", re.IGNORECASE),
+    "Philippines": re.compile(r"\bphilippines\b|\bfilipino\b|\bpinoy\b|\bmanila\b|\bcebu\b|"
+                              r"(?<!\d)(?:\+|00)63[\s-]?9", re.IGNORECASE),
+}
+_WANTS_INDIAN = re.compile(r"\bindians?\b|\bfrom india\b|\bin india\b|\bindia[- ]based\b|\bacross india\b|"
+                           r"\b(?:north|south|east|west)(?:ern)? india\b", re.IGNORECASE)
+
+
+def origin_of(intent: str) -> Optional[str]:
+    """The candidates' home country when the intent names one ("Indian welders…" → India)."""
+    return "India" if _WANTS_INDIAN.search(intent or "") else None
+
+
+def other_origin(text: str, origin: str = "India") -> Optional[str]:
+    """Another home country this person's own text / phone shows (Lahore, +92, "Pakistani"…), unless the text
+    also clearly says India. None when nothing points elsewhere."""
+    if not text or origin != "India":
+        return None
+    strong = _INDIA_STRONG.search(text) or any(m.lower() not in _AMBIGUOUS_INDIA for m in _INDIA_RE.findall(text))
+    for country, rx in OTHER_ORIGINS.items():
+        if rx.search(text):
+            return None if strong and not re.search(r"(?:\+|00)(?:92|880|977)", text) else country
+    return None
+
+
 _NAME_SAID = re.compile(r"\b(?:my name is|i am|i'm|this is|name\s*[:\-])\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})")
 _POSTED_BY = re.compile(r"\b(?:posted by|asked by|answered by|reply from|comment by)\s+@?([\w.-]{3,40})", re.IGNORECASE)
 # Common trade skills, machines, controllers and software (added to the plan's own keywords).

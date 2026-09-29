@@ -518,7 +518,7 @@ A provider that ran out is skipped for 30 minutes (3 hours for daily quotas) by 
 “Test connections” re-checks all of them.
 
 Token use is kept down by: sending each page's start plus only the lines with contact details or
-interest signals (`LLM_PAGE_CHARS`, default 12,000 characters ≈ 3,000 tokens), and capping each reply at
+interest signals (`LLM_PAGE_CHARS`, default 20,000 characters ≈ 5,000 tokens; lines naming the role are kept too), and capping each reply at
 `AI_MAX_OUTPUT_TOKENS` (default 3,000; a cut-off reply is retried once with 8,000). Only when every provider is exhausted
 does the run stop; unread pages are retried next run. "Test connections" checks every provider in the chain.
 

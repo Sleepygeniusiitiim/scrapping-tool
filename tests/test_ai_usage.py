@@ -88,3 +88,35 @@ def test_openrouter_uses_leftover_credit(monkeypatch):
     c = openrouter_client.OpenRouter("k", provider="openrouter")
     assert asyncio.run(c.generate_structured("p", _Out)).ok
     assert sent == [3000, 2000]
+
+
+def test_indian_intent_drops_pakistani_profiles():
+    import rule_extractor as rx
+    assert rx.origin_of("Find Indian candidates interested in abroad jobs as welders") == "India"
+    assert rx.other_origin("TIG Welder · Lahore, Punjab, Pakistan · 6 years at Descon") == "Pakistan"
+    assert rx.other_origin("Welder, whatsapp +92 301 2345678") == "Pakistan"
+    assert rx.other_origin("Pipe welder from Ludhiana, Punjab, 5 years at L&T") is None
+    assert rx.other_origin("Indian welder, 3 yrs in Hyderabad") is None
+    assert not rx.mentions_any("Lahore, Punjab, Pakistan", ["India"])
+    assert rx.mentions_any("Ludhiana, Punjab", ["India"])
+
+
+def test_rules_fallback_when_every_ai_is_out(monkeypatch):
+    class OutAI:
+        async def generate_structured(self, *a, **k):
+            raise GeminiQuotaError("Every AI provider is out of credits")
+
+    page = ("POST by Hiring Agency: Welders needed for Saudi, send CV\n"
+            "COMMENT by Ravi Kumar: Interested sir, TIG welder 6 years experience at L&T, from Chennai. "
+            "whatsapp 9876543210\n")
+    recs, dropped, used_ai, off = asyncio.run(pipeline._extract_page(
+        OutAI(), "Indian welders interested in abroad jobs", "https://example.com/post", page, False, "rules",
+        ["welder"]))
+    assert not used_ai
+    try:
+        asyncio.run(pipeline._extract_page(OutAI(), "Indian welders", "https://example.com/post", page, False, "ai",
+                                           ["welder"]))
+        raised = False
+    except GeminiQuotaError:
+        raised = True
+    assert raised          # process_batch catches this and re-reads the page with the rules

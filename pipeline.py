@@ -32,7 +32,7 @@ from search_module import google_search_scrapedo, platform_from_url, search_quer
 
 # Page text sent to the AI per page. Long pages are cut down to their start plus the lines that carry contact
 # details or "interested / CV / looking for a job" signals (see _focus), which is where candidates are.
-MAX_CONTENT_CHARS_FOR_LLM = int(os.getenv("LLM_PAGE_CHARS", "12000") or 12000)
+MAX_CONTENT_CHARS_FOR_LLM = int(os.getenv("LLM_PAGE_CHARS", "20000") or 20000)
 GROUNDING_MIN_OVERLAP = 0.6   # share of evidence words that must appear on the page
 
 
@@ -117,7 +117,14 @@ Return every INDIVIDUAL PERSON on the page who matches the sourcing intent exact
   asking how to apply) counts as relevance to that role, even if they don't restate their profession.
 - shows_interest: true only if THIS person says they are interested, keen, looking / seeking / open to
   work, ready or willing to join / relocate, shares their CV, or asks how to apply. False otherwise.
-- Do NOT infer nationality or location from a person's name. Fill current_location only if stated.
+- Do NOT infer nationality or location from a person's name. Fill current_location only if stated
+  (city and country as written, e.g. "Lahore, Pakistan").
+- If the intent names the candidates' nationality / home country (e.g. "Indian candidates"), EXCLUDE people
+  whose page states another nationality, home country or home city (e.g. Pakistani, Lahore, Dhaka, Nepal,
+  a +92 / +880 / +977 number).
+- If the intent asks for experienced people ("with experience", "experienced", "X years", "worked in
+  companies"), include only people whose page shows work experience: years, past / current employers,
+  projects or sites.
 - evidence_snippet: copy a VERBATIM sentence from the page — preferably the person's own words — that
   proves the match (max ~300 characters). Do not paraphrase. Do not invent.
 - email / phone: ONLY a contact detail that THIS SAME PERSON wrote in their own comment, post or profile
@@ -152,13 +159,14 @@ def _plan_prompt(intent: str, num_waves: int, queries_per_wave: int, round_no: i
     return "\n".join(lines)
 
 
-def _extract_prompt(intent: str, url: str, platform: str, content: str, snippet_only: bool) -> str:
+def _extract_prompt(intent: str, url: str, platform: str, content: str, snippet_only: bool,
+                    keywords: Optional[List[str]] = None) -> str:
     note = ("NOTE: The page could not be opened (login wall / blocked). The content below is ONLY the "
             "search-engine title and snippet for this URL. Extract only what it explicitly states.\n\n"
             if snippet_only else "")
     return (f"Sourcing intent: {intent.strip()}\n"
             f"Page URL: {url}\nPlatform: {platform}\n\n{note}"
-            f"----- PAGE CONTENT -----\n{_focus(content, MAX_CONTENT_CHARS_FOR_LLM)}\n"
+            f"----- PAGE CONTENT -----\n{_focus(content, MAX_CONTENT_CHARS_FOR_LLM, keywords)}\n"
             f"----- END -----")
 
 
@@ -173,16 +181,18 @@ _CANDIDATE_SIGNAL = re.compile(
     re.IGNORECASE)
 
 
-def _focus(content: str, budget: int) -> str:
+def _focus(content: str, budget: int, keywords: Optional[List[str]] = None) -> str:
     """The page start plus every line (with its neighbours) that looks like a person, a contact or an intent
     signal, in page order, within `budget` characters — instead of blindly cutting long pages."""
     if len(content) <= budget:
         return content
     head = min(2500, budget // 4)
     lines = content[head:].split("\n")
+    kw = [k.lower() for k in keywords or [] if len(k) > 2]
     keep = set()
     for i, line in enumerate(lines):
-        if _CANDIDATE_SIGNAL.search(line):
+        low = line.lower()
+        if _CANDIDATE_SIGNAL.search(line) or any(k in low for k in kw):
             keep.update((i - 1, i, i + 1))
     out, used = [content[:head], "\n[…]"], head + 5
     last = -2
@@ -315,6 +325,7 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
                         mode: str = "ai", keywords: Optional[List[str]] = None,
                         hit_date: Optional[str] = None, locations: Optional[List[str]] = None
                         ) -> tuple[List[CandidateRecord], int, bool, int]:
+    origin = rule_extractor.origin_of(intent)
     """Returns (valid records, number dropped as ungrounded/invalid, whether the AI was called,
     number dropped because they are not in / not heading to the intent's locations).
 
@@ -330,7 +341,7 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
         found = rule_extractor.extract_people(content, url, keywords or [], snippet_only)
     if mode == "ai" or (mode == "hybrid" and not found and _CANDIDATE_SIGNAL.search(content)):
         result = await gemini.generate_structured(
-            _extract_prompt(intent, url, platform, content, snippet_only),
+            _extract_prompt(intent, url, platform, content, snippet_only, keywords),
             PageExtraction, system_instruction=EXTRACT_SYSTEM, temperature=0.1,
             max_retries=3,
         )
@@ -355,6 +366,12 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
         # Interest: the AI's judgement or the person's own words ("interested", "looking for a job", …).
         said = own or d.get("evidence_snippet") or ""
         d["shows_interest"] = bool(d.get("shows_interest")) or rule_extractor.shows_interest(said)
+        if origin:
+            mine = " ".join([said, d.get("evidence_snippet") or "", d.get("current_location") or "",
+                             d.get("phone") or "", content[:3000] if d.get("profile_url") == url else ""])
+            if rule_extractor.other_origin(mine, origin):
+                off_target += 1
+                continue
         if locations:
             where = " ".join([said, d.get("evidence_snippet") or "", d.get("current_location") or "",
                               " ".join(d.get("target_countries") or []), post_text,
@@ -856,12 +873,26 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
           for (u, c, snip) in jobs),
         return_exceptions=True,
     )
+    # Every AI provider out of credits: read those pages with the rules instead of dropping them (the AI
+    # re-reads them in a later run — their status stays "quota").
+    ai_off = next((str(r) for r in results if isinstance(r, GeminiQuotaError)), None)
+    if ai_off:
+        redo = [i for i, r in enumerate(results) if isinstance(r, GeminiQuotaError)]
+        again = await asyncio.gather(
+            *(_extract_page(gemini, intent, jobs[i][0], jobs[i][1], jobs[i][2], "rules", keywords,
+                            _hit_date(hits.get(jobs[i][0], {})), locations) for i in redo),
+            return_exceptions=True)
+        for i, r in zip(redo, again):
+            results[i] = r
+        quota_hit_rules = {jobs[i][0] for i in redo}
+    else:
+        quota_hit_rules = set()
     ai_pages = too_old = off_target = not_interested = 0
     records: List[CandidateRecord] = []
     warnings: List[str] = []
     dropped = 0
     quota_error: Optional[str] = None
-    extracted, quota_hit = set(), set()
+    extracted, quota_hit = set(), set(quota_hit_rules)
     for (u, _, _), r in zip(jobs, results):
         if isinstance(r, GeminiQuotaError):
             quota_error = str(r)
@@ -929,4 +960,5 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
         "block_reasons": reasons,
         "warnings": warnings,
         "quota_error": quota_error,
+        "ai_off": ai_off,
     }
