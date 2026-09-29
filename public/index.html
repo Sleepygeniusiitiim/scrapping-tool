@@ -260,6 +260,14 @@
   <div class="view hidden" data-view="leads">
   <h2>🧠 Qualified leads <span style="font-size:13px;color:var(--muted);font-weight:400">— intent-scored
     leads with evidence from the same run</span></h2>
+  <section class="panel" id="storagePanel">
+    <p class="status" id="storageInfo" style="margin-top:0">💾 Checking what is saved in the database…</p>
+    <div class="row">
+      <button id="showAllSaved" title="Every lead from every run, any score (nothing is hidden by the run or the minimum score)">📚 Show everything saved</button>
+      <button id="backupAll" title="Downloads every saved contact and every intent lead from all runs as two CSV files">💾 Download everything (backup)</button>
+      <span class="status" id="backupOut"></span>
+    </div>
+  </section>
   <section class="panel" id="imPanel">
     <p class="status" style="margin-top:0">Runs with 🚀 Start above (Search mode “Combined” or “Intent Miner only”) and uses the
       same settings: sources, time window (“Only leads active in the last…”), interested-only, page reading, lead databases.</p>
@@ -500,8 +508,11 @@
             <option value="claude-sonnet-5-5">cheaper</option><option value="claude-haiku-4-5">cheapest</option></datalist>
         </div>
       </div>
-      <p style="color:var(--muted);font-size:13px;margin:6px 0 0">Claude never reads or analyses pages — that stays on the
-        provider above. If Claude fails or runs out of credit, planning falls back to the provider above.</p>
+      <label style="margin-top:8px" title="Claude then also reads every page, judges comments and checks fit. Much better reading, but it costs per page — pick claude-sonnet-5-5 or claude-haiku-4-5 above to spend less.">
+        <input id="claudeReading" type="checkbox">Also use Claude for web scraping — reading pages, finding people, fit checks (costs more)</label>
+      <p style="color:var(--muted);font-size:13px;margin:6px 0 0">Unticked (default): Claude only plans; pages are read by the
+        provider above, as before. Ticked: Claude plans and reads. Either way, if Claude fails or runs out of credit the
+        provider above takes over.</p>
     </details>
     <p style="color:var(--muted);font-size:13px;margin:10px 0 0">Automatic fallback: enter keys for as many providers as you like (pick each one in
       “AI provider” and paste its key — every key is remembered). The chosen provider is used first; when it
@@ -636,6 +647,8 @@ $("claudeKey").value = load("csa_claude_key") || "";
 $("claudeModel").value = load("csa_claude_model") || "";
 $("claudeKey").addEventListener("change", () => store("csa_claude_key", $("claudeKey").value.trim()));
 $("claudeModel").addEventListener("change", () => store("csa_claude_model", $("claudeModel").value.trim()));
+$("claudeReading").checked = load("csa_claude_reading") === "1";
+$("claudeReading").addEventListener("change", () => store("csa_claude_reading", $("claudeReading").checked ? "1" : "0"));
 if (load("csa_extraction")) $("extraction").value = load("csa_extraction");
 if (load("csa_search_mode")) $("searchMode").value = load("csa_search_mode");
 $("searchMode").addEventListener("change", () => store("csa_search_mode", $("searchMode").value));
@@ -667,6 +680,7 @@ async function api(path, body) {
   const ck = $("claudeKey").value.trim(), cm = $("claudeModel").value.trim();
   if (ck) headers["X-Claude-Key"] = ck;
   if (cm) headers["X-Claude-Model"] = cm;
+  if ($("claudeReading").checked) headers["X-Claude-Reading"] = "1";
   headers["X-Integrations"] = integrationKeys();
   const res = await fetch(url, {
     method: body === undefined ? "GET" : "POST",
@@ -1999,7 +2013,59 @@ $("obDraft").onclick = async () => {
 renderStats(); renderRun(); refreshNextBtn();
 
 // ---------- app shell: views ----------
+// ---------- everything saved: counts, show all, full backup ----------
+async function showStorage() {
+  try {
+    const s = await api("/api/storage"), i = s.intent || {}, d = (x) => (x || "").slice(0, 10) || "—";
+    $("storageInfo").textContent = `💾 Database ${s.database} on ${s.host}: ${s.candidates} contacts saved ` +
+      `(${s.with_contact} with phone / email, ${d(s.first)} → ${d(s.last)}) · ${i.leads ?? "?"} intent leads from ` +
+      `${i.runs ?? "?"} runs (${d(i.first)} → ${d(i.last)}). Nothing is deleted automatically — if these numbers are ` +
+      "lower than before, the app is connected to a different database (check DATABASE_URL in Vercel).";
+  } catch (e) { $("storageInfo").textContent = "💾 Database: " + e.message; }
+}
+async function allIntentLeads() {
+  const out = [];
+  for (let off = 0; ; off += 2000) {
+    const r = await api(`/api/im/leads?min_score=0&limit=2000&offset=${off}`);
+    out.push(...r.leads);
+    $("backupOut").textContent = `${out.length} intent leads loaded…`;
+    if (r.leads.length < 2000) return out;
+  }
+}
+function toCsv(rows) {
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  const cell = (v) => { const t = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  return "\ufeff" + [cols.join(",")].concat(rows.map((r) => cols.map((c) => cell(r[c])).join(","))).join("\n");
+}
+function saveFile(text, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/csv" })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+$("showAllSaved").onclick = async () => {
+  try {
+    const leads = await allIntentLeads();
+    im.leads.clear(); leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
+    $("imMin").value = 0; imRenderLeads();
+    $("backupOut").textContent = `Showing all ${leads.length} intent leads (every run, any score).`;
+    document.querySelector('[data-tab="db"]').click(); $("loadDb").onclick();
+  } catch (e) { $("backupOut").textContent = "❌ " + e.message; }
+};
+$("backupAll").onclick = async () => {
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  try {
+    $("backupOut").textContent = "Loading every saved contact…";
+    const cands = (await api("/api/candidates")).candidates;
+    saveFile(toCsv(cands), `all_contacts_${stamp}.csv`);
+    const leads = await allIntentLeads();
+    saveFile(toCsv(leads), `all_intent_leads_${stamp}.csv`);
+    $("backupOut").textContent = `Downloaded ${cands.length} contacts and ${leads.length} intent leads.`;
+  } catch (e) { $("backupOut").textContent = "❌ " + e.message; }
+};
+
 function showView(name) {
+  if (name === "leads" && $("pw").value.trim()) showStorage();
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("hidden", v.dataset.view !== name));
   document.querySelectorAll("#nav button").forEach((b) => b.toggleAttribute("aria-current", b.dataset.view === name));
   store("csa_view", name);
@@ -2038,7 +2104,7 @@ $("dncAdd").onclick = async () => {
   try {
     const r = await api("/api/privacy/suppress", { phone: $("dncPhone").value.trim() || null, email: $("dncEmail").value.trim() || null,
       profile: $("dncProfile").value.trim() || null, reason: "added in Settings" });
-    $("dncOut").textContent = `Added. ${r.erased} saved record(s) erased.`;
+    $("dncOut").textContent = `Added. Phone / email erased from ${r.erased} saved record(s) (the records themselves are kept).`;
     ["dncPhone", "dncEmail", "dncProfile"].forEach((id) => $(id).value = "");
   } catch (e) { $("dncOut").textContent = "❌ " + e.message; }
 };

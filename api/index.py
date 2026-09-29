@@ -189,6 +189,15 @@ def _thinker(gemini=Depends(_gemini), x_claude_key: Optional[str] = Header(defau
     return ai_router.reasoning(gemini, (x_claude_key or "").strip(), (x_claude_model or "").strip())
 
 
+def _reader(gemini=Depends(_gemini), x_claude_reading: Optional[str] = Header(default=None),
+            x_claude_key: Optional[str] = Header(default=None), x_claude_model: Optional[str] = Header(default=None)):
+    """The AI for reading pages / classifying / fit checks: the usual chain, or Claude first when the page's
+    “Use Claude for reading” box is ticked."""
+    if (x_claude_reading or "").strip() == "1":
+        return ai_router.reasoning(gemini, (x_claude_key or "").strip(), (x_claude_model or "").strip())
+    return gemini
+
+
 def _keys(x_integrations: Optional[str] = Header(default=None)) -> dict:
     """Third-party service keys (search, unblock, enrichment) from the page, falling back to env vars."""
     return integrations.resolve_keys(_json_header_raw(x_integrations))
@@ -417,7 +426,7 @@ def dedup(body: DedupIn, x_database_url: Optional[str] = Header(default=None)):
 @router.post("/process")
 async def process(
     body: BatchIn,
-    gemini = Depends(_gemini),
+    gemini = Depends(_reader),
     keys: dict = Depends(_keys),
     x_database_url: Optional[str] = Header(default=None),
 ):
@@ -676,7 +685,7 @@ async def im_discover_ep(body: IMDiscoverIn, keys: dict = Depends(_keys)):
 
 
 @router.post("/im/process")
-async def im_process_ep(body: IMProcessIn, gemini=Depends(_gemini), keys: dict = Depends(_keys),
+async def im_process_ep(body: IMProcessIn, gemini=Depends(_reader), keys: dict = Depends(_keys),
                         x_llm_keys: Optional[str] = Header(default=None),
                         x_gemini_key: Optional[str] = Header(default=None)):
     _db()
@@ -697,9 +706,24 @@ async def im_process_ep(body: IMProcessIn, gemini=Depends(_gemini), keys: dict =
 
 
 @router.get("/im/leads")
-def im_leads_ep(min_score: int = 0, run_id: str = ""):
+def im_leads_ep(min_score: int = 0, run_id: str = "", offset: int = 0, limit: int = 2000):
     _db()
-    return {"leads": _im_db(im_store.list_leads, min_score, 2000, run_id)}
+    return {"leads": _im_db(im_store.list_leads, min_score, max(1, min(limit, 5000)), run_id, max(0, offset))}
+
+
+@router.get("/storage")
+def storage_ep(x_database_url: Optional[str] = Header(default=None)):
+    """Which database the app uses and how much it holds (candidates, leads, runs, date range)."""
+    _db(x_database_url)
+    try:
+        out = db.storage_summary()
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+    try:
+        out["intent"] = _im_db(im_store.counts)
+    except HTTPException:
+        out["intent"] = {}
+    return out
 
 
 @router.post("/im/export")
@@ -993,11 +1017,13 @@ class JobIn(BaseModel):
 def job_create(body: JobIn, x_integrations: Optional[str] = Header(default=None),
                x_llm_keys: Optional[str] = Header(default=None), x_gemini_key: Optional[str] = Header(default=None),
                x_llm_provider: Optional[str] = Header(default=None),
-               x_claude_key: Optional[str] = Header(default=None)):
+               x_claude_key: Optional[str] = Header(default=None),
+               x_claude_reading: Optional[str] = Header(default=None)):
     import jobs
     _db()
     opts = body.model_dump(exclude={"command", "use_page_keys"})
     opts["llm_provider"] = (x_llm_provider or "").strip()
+    opts["claude_reading"] = (x_claude_reading or "").strip() == "1"
     if body.use_page_keys:        # stored with the job only until it finishes (then erased)
         opts["keys"] = _json_header_raw(x_integrations)
         opts["llm_keys"] = {**_json_header(x_llm_keys), **({"gemini": x_gemini_key.strip()} if x_gemini_key else {}),

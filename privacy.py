@@ -3,7 +3,7 @@ Privacy controls for personal contact data.
 
 * Do-not-contact list: phone numbers / emails / profile links of people who opted out (a STOP reply to the
   auto-reply, the 🚫 button on a lead, or added by hand). Saving checks it: a suppressed person is never saved
-  again, and adding someone removes their saved contact details everywhere.
+  again, and adding someone erases their saved phone / email everywhere (the rows themselves are kept).
 * Retention: `purge(days)` erases the phone / email / guessed email of *individuals* (not businesses) saved more
   than `days` ago — run it from ⚙️ Settings, or on a schedule by a worker (PRIVACY_RETENTION_DAYS).
 
@@ -111,9 +111,13 @@ def add(phone: Optional[str] = None, email: Optional[str] = None, profile: Optio
         conds.append("lower(rtrim(profile_url, '/')) = %s")
         params.append(pr)
     where = " OR ".join(conds)
-    for table in ("candidates", "im_leads"):
+    # The row stays (history is never deleted); only this person's contact details are erased and the row is
+    # marked, so outreach skips it.
+    for table, sets in (("candidates", "phone = NULL, email = NULL, email_guess = NULL, email_status = NULL, "
+                                       "outreach_status = 'do_not_contact'"),
+                        ("im_leads", "phone = NULL, email = NULL, status = 'DO_NOT_CONTACT'")):
         try:
-            r = _q(f"WITH d AS (DELETE FROM {table} WHERE {where} RETURNING 1) SELECT COUNT(*) AS n FROM d",
+            r = _q(f"WITH d AS (UPDATE {table} SET {sets} WHERE {where} RETURNING 1) SELECT COUNT(*) AS n FROM d",
                    params, "one")
             erased += int(r["n"])
         except Exception:

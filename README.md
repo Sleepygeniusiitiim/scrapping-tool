@@ -502,13 +502,23 @@ Fetching pages never uses AI — it is plain HTTP (`fetcher.py`). Reading them i
 
 In rules mode the only AI call is the search plan (once per round).
 
+## Everything is kept
+
+Nothing is deleted automatically: every contact and every intent lead from every run stays in Neon. The
+Leads view shows what the connected database holds (“💾 Database … N contacts … M intent leads”), “📚 Show
+everything saved” lists all of it (every run, any score) and “💾 Download everything” saves two CSV backups.
+A 🚫 Do-not-contact opt-out erases only that person's phone / email; the record stays. If the counts drop,
+the app is pointed at another database — check `DATABASE_URL` in Vercel.
+
 ## Claude for planning only
 
 Set `ANTHROPIC_API_KEY` in Vercel (or paste the key under ⚙️ Settings → “Claude key”). Claude then does
 only the thinking steps — understanding the command and planning the searches — and nothing else: page
 reading, comment classification and fit checks stay on the provider chain below. If Claude fails or runs
 out of credit, planning falls back to that chain. Optional: `CLAUDE_MODEL` (default `claude-opus-5-5`;
-`claude-sonnet-5-5` is cheaper), `CLAUDE_EFFORT` (`low` | `medium` | `high`, default `medium`). A request
+`claude-sonnet-5-5` is cheaper), `CLAUDE_EFFORT` (`low` | `medium` | `high`, default `medium`).
+Tick “Also use Claude for web scraping” in the same box to let Claude read pages, find people and run fit
+checks too (better reading, billed per page); unticked, everything works as before. A request
 Claude declines is re-run on another Claude model automatically (server-side fallback).
 
 ## AI providers and automatic fallback

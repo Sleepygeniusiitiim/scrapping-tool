@@ -318,13 +318,14 @@ def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
     return out
 
 
-def list_leads(min_score: int = 0, limit: int = 1000, run_id: str = "") -> List[dict]:
+def list_leads(min_score: int = 0, limit: int = 1000, run_id: str = "", offset: int = 0) -> List[dict]:
     rows = _q(f"""SELECT l.*, COALESCE((SELECT jsonb_agg(jsonb_build_object('url', s.url, 'source', s.source,
                           'kind', s.unit_kind, 'date', s.activity_date, 'score', s.score) ORDER BY s.score DESC)
                           FROM im_lead_sources s WHERE s.lead_key = l.lead_key), '[]'::jsonb) AS sources
                   FROM im_leads l WHERE l.lead_score >= %s {"AND l.run_id::text = ANY(%s)" if run_id else ""}
-                  ORDER BY l.lead_score DESC, l.last_activity DESC NULLS LAST LIMIT %s""",
-              (min_score, [x for x in run_id.split(",") if x], limit) if run_id else (min_score, limit), "all")
+                  ORDER BY l.lead_score DESC, l.last_activity DESC NULLS LAST, l.lead_key LIMIT %s OFFSET %s""",
+              (min_score, [x for x in run_id.split(",") if x], limit, offset) if run_id else (min_score, limit, offset),
+              "all")
     return [db._serialize_row(dict(r)) for r in rows]
 
 
@@ -355,3 +356,11 @@ def provider_health() -> List[dict]:
                     SELECT *, row_number() OVER (PARTITION BY provider ORDER BY at DESC) AS rn
                     FROM im_provider_health) x WHERE rn = 1 ORDER BY provider""", fetch="all")
     return [db._serialize_row(dict(r)) for r in rows]
+
+
+def counts() -> dict:
+    """How much is stored: leads, runs and the date range (to see at a glance that nothing was lost)."""
+    r = _q("""SELECT (SELECT COUNT(*) FROM im_leads) AS leads, (SELECT COUNT(*) FROM im_search_runs) AS runs,
+                     (SELECT MIN(first_seen) FROM im_leads) AS first, (SELECT MAX(last_seen) FROM im_leads) AS last""",
+           fetch="one")
+    return db._serialize_row(dict(r))

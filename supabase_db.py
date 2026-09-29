@@ -581,6 +581,26 @@ def update_candidate(candidate_id: str, fields: dict) -> dict:
     return _serialize_row(dict(row))
 
 
+def storage_summary() -> dict:
+    """What this app is connected to and how much it holds — so a run against a different / new database is
+    obvious (the password is never returned)."""
+    from urllib.parse import urlparse
+    _ensure_schema()
+    u = urlparse(_resolve_database_url(_database_url))
+
+    def _count():
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""SELECT COUNT(*) AS candidates, MIN(discovered_at) AS first, MAX(discovered_at) AS last,
+                                       COUNT(*) FILTER (WHERE phone IS NOT NULL OR email IS NOT NULL) AS with_contact
+                                FROM {CANDIDATES_TABLE}""")
+                return dict(cur.fetchone())
+
+    out = _serialize_row(_with_retry(_count, "Counting saved candidates"))
+    out.update(host=u.hostname, database=(u.path or "/").lstrip("/"), user=u.username)
+    return out
+
+
 def count_scraped_urls() -> int:
     """Total URLs in the ledger (for the UI header)."""
     _ensure_schema()

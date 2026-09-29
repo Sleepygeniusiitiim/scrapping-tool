@@ -72,3 +72,18 @@ def test_no_claude_key_leaves_the_chain_alone(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     chain = ai_chain.AIChain([("Other", object)])
     assert ai_router.reasoning(chain, "") is chain
+
+
+def test_claude_reads_pages_only_when_ticked(monkeypatch):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("idx", Path(__file__).resolve().parent.parent / "api" / "index.py")
+    idx = importlib.util.module_from_spec(spec)
+    sys.modules["idx"] = idx
+    spec.loader.exec_module(idx)
+    base = ai_chain.AIChain([("Other", object)])
+    assert idx._reader(base, None, "sk-ant-test", None) is base                 # unticked: as before
+    ticked = idx._reader(base, "1", "sk-ant-test", None)
+    assert ticked.labels == ["Claude", "Other"]

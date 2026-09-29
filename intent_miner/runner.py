@@ -30,7 +30,10 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
 
     emit("Understanding the command and choosing sources…")
     import ai_router
-    thinker = ai_router.reasoning(ai, (options.get("llm_keys") or {}).get("claude", ""))   # Claude plans only
+    claude_key = (options.get("llm_keys") or {}).get("claude", "")
+    thinker = ai_router.reasoning(ai, claude_key)                     # Claude plans (when it has a key)
+    if options.get("claude_reading"):
+        ai = thinker                                                  # …and reads pages, when ticked
     spec: QuerySpec = await understand(thinker, command, sources, options.get("max_age_days"),
                                        int(options.get("num_queries") or 16), options.get("exclude_queries") or [],
                                        auto)
