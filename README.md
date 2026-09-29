@@ -510,6 +510,14 @@ everything saved” lists all of it (every run, any score) and “💾 Download 
 A 🚫 Do-not-contact opt-out erases only that person's phone / email; the record stays. If the counts drop,
 the app is pointed at another database — check `DATABASE_URL` in Vercel.
 
+## 💡 Suggested sites
+
+A page a run reads that lists many phone numbers / emails (3 or more) but gives few or no leads for that search
+— a Gulf walk-in list, a recruiters' directory — is kept as a suggestion with the contacts found on it, across
+runs. The run log flags it as it happens; Leads → 💡 Suggested sites lists them (link, counts, the search that
+found it, how often it was seen), copies a site's contacts, downloads all of them as CSV, and hides the ones you
+don't need.
+
 ## Claude for planning only
 
 Set `ANTHROPIC_API_KEY` in Vercel (or paste the key under ⚙️ Settings → “Claude key”). Claude then does

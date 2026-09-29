@@ -115,6 +115,8 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
             emit(f"[{src}] batch {b // batch + 1}: {st.get('fetched', 0)} read, {st.get('blocked', 0)} blocked → "
                  f"{st.get('leads', 0)} leads, {st.get('records', 0)} contacts saved "
                  f"({st.get('with_phone', 0)} phone, {st.get('with_email', 0)} email)")
+            for x in res.get("suggested") or []:
+                emit(f"[{src}]   💡 suggested site ({x['n_contacts']} contacts, not a match for this search): {x['url']}")
             for w in res.get("warnings", [])[:4]:
                 emit(f"[{src}]   {w[:300]}")
             if on_stats:

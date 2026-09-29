@@ -120,3 +120,15 @@ def test_rules_fallback_when_every_ai_is_out(monkeypatch):
     except GeminiQuotaError:
         raised = True
     assert raised          # process_batch catches this and re-reads the page with the rules
+
+
+def test_contact_rich_page_that_did_not_match_is_suggested():
+    import suggestions
+    page = ("Free recruitment Kuwait — walk-in interviews. Send CV: hr@gulfjobs-kw.com, jobs@alnasr-kw.com, "
+            "recruit@kwt-manpower.com. Call +965 5555 1234, +965 6666 2345, +91 98765 43210")
+    rows = suggestions.pick([{"url": "https://jobsatgulf.org/free-recruitment-kuwait/", "title": "Kuwait walk-ins",
+                              "text": page, "matched": 0},
+                             {"url": "https://example.com/thread", "title": "t", "text": page, "matched": 5},
+                             {"url": "https://example.com/few", "title": "f", "text": "mail a@b.co", "matched": 0}])
+    assert [r["url"] for r in rows] == ["https://jobsatgulf.org/free-recruitment-kuwait/"]
+    assert rows[0]["domain"] == "jobsatgulf.org" and rows[0]["n_contacts"] >= 5

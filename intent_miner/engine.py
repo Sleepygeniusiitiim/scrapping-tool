@@ -485,12 +485,28 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
                     "walled" if d.status == "blocked" else "failed") for d in docs})
     except db.SupabaseError:
         pass
+    # Pages with many contacts but (almost) no leads for this search → 💡 Suggested sites.
+    import suggestions
+    per_page: Dict[str, int] = {}
+    for L in leads:
+        for src in L.get("sources") or []:
+            if isinstance(src, dict) and src.get("url"):
+                per_page[src["url"]] = per_page.get(src["url"], 0) + 1
+    for c in candidates:
+        base = (c.source_url or "").split("#")[0]
+        per_page[base] = per_page.get(base, 0) + 1
+    suggested = await asyncio.to_thread(suggestions.record, [
+        {"url": d.url, "title": d.title, "matched": per_page.get(d.url, 0),
+         "text": "\n".join(u.text for u in d.units) + " " + " ".join(str(v) for v in d.metadata.values())}
+        for d in docs if d.status == "ok" and d.via != "snippet"], settings.get("intent") or spec.summary or "")
+    stats["suggested"] = len(suggested)
     stats["classic"] = stats.get("classic_added", 0)
     stats["records"] = len(candidates)
     stats["with_phone"] = sum(1 for c in candidates if c.phone)
     stats["with_email"] = sum(1 for c in candidates if c.email)
     return {"stats": stats, "leads": saved, "warnings": warnings, "health": health,
             "records": [c.model_dump() for c in candidates],
+            "suggested": [{k: r[k] for k in ("url", "title", "n_contacts", "matched")} for r in suggested],
             "failed": [{"url": d.url, "status": d.status, "error": d.error} for d in docs if d.status != "ok"]}
 
 

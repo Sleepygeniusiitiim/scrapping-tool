@@ -268,6 +268,18 @@
       <span class="status" id="backupOut"></span>
     </div>
   </section>
+  <section class="panel" id="sugPanel">
+    <h3 class="sec" style="margin-top:0">💡 Suggested sites</h3>
+    <p class="status" style="margin-top:0">Pages a run read that list many phone numbers / emails but gave few or no leads
+      for that search (e.g. Gulf walk-in lists, recruiter directories). Kept across runs with the contacts found on them.</p>
+    <div class="row">
+      <button id="sugLoad">💡 Show suggested sites</button>
+      <button id="sugCsv">⬇️ Download their contacts (CSV)</button>
+      <label><input id="sugHidden" type="checkbox">include hidden</label>
+      <span class="status" id="sugOut"></span>
+    </div>
+    <div id="sugList"></div>
+  </section>
   <section class="panel" id="imPanel">
     <p class="status" style="margin-top:0">Runs with 🚀 Start above (Search mode “Combined” or “Intent Miner only”) and uses the
       same settings: sources, time window (“Only leads active in the last…”), interested-only, page reading, lead databases.</p>
@@ -1275,7 +1287,7 @@ async function runCombined(intent, totals, rounds, mode) {
         stats.crawled += st.fetched; stats.blocked += st.blocked; stats.failed += st.failed; stats.records += st.records;
         totals.crawled += st.fetched; totals.records += st.records;
         r.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads();
-        addRunRecords(r.records || []); renderStats(); renderRun();
+        addRunRecords(r.records || []); renderStats(); renderRun(); noteSuggested(r.suggested, name);
         logEv("crawl", `Batch ${b / batch + 1}: ${st.fetched} read, ${st.blocked} blocked, ${st.failed} failed · ` +
           `${st.units} posts/comments → keyword ${st.stage1} → semantic ${st.stage2} → AI ${st.llm_units}`, name);
         logEv("saved", `Batch ${b / batch + 1}: ${st.leads} intent leads (${st.high} high, ${st.medium} medium) · ` +
@@ -1753,7 +1765,7 @@ async function startRun(nextRound) {
   const intent = $("intent").value.trim();
   if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
   store("csa_pw", $("pw").value);
-  Object.assign(state, { stop: false, robotsHinted: false, googleHinted: false, engineWarned: new Set(), runRecords: [], waveStats: {}, logLines: [] });
+  Object.assign(state, { stop: false, robotsHinted: false, googleHinted: false, engineWarned: new Set(), suggested: new Set(), runRecords: [], waveStats: {}, logLines: [] });
   $("progress").classList.remove("hidden"); $("planBox").classList.add("hidden");
   if (!(await preflight())) { state.stop = true; return; }
   renderStats(); renderRun(); setRunning(true);
@@ -1866,6 +1878,7 @@ async function runPipeline(intent, totals, rounds) {
             "comments. Skipped pages are retried by later runs.", name);
         }
         r.warnings.forEach((w) => logEv("warning", w, name));
+        noteSuggested(r.suggested, name);
         if (r.ai_off && settings.extraction !== "rules") {
           logEv("warning", `Every AI provider is out of credits or limits (${r.ai_off.slice(0, 160)}). Continuing with ` +
             "rule-based page reading (no AI) so the run still finds people; those pages are re-read by AI in a later run. " +
@@ -2064,8 +2077,54 @@ $("backupAll").onclick = async () => {
   } catch (e) { $("backupOut").textContent = "❌ " + e.message; }
 };
 
+// ---------- 💡 suggested sites ----------
+let sugSites = [];
+async function loadSuggestions() {
+  try {
+    sugSites = (await api(`/api/suggestions?include_dismissed=${$("sugHidden").checked}`)).sites;
+    $("sugOut").textContent = sugSites.length ? `${sugSites.length} sites` : "None yet — they appear after runs.";
+    $("sugList").replaceChildren(...sugSites.map((x) => {
+      const div = document.createElement("div");
+      div.className = "im-card"; div.style.padding = "8px 12px";
+      const sample = [...(x.phones || []).slice(0, 3), ...(x.emails || []).slice(0, 3)].join(" · ");
+      if (!/^https?:\/\//i.test(x.url)) return div;
+      div.innerHTML = `<b><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title || x.domain)}</a></b>
+        <span class="status" style="margin:0"> ${esc(x.domain)} · ${x.n_contacts} contacts (${(x.phones || []).length} phones,
+        ${(x.emails || []).length} emails) · ${x.matched} matched · seen ${x.times_seen}× · last ${esc((x.last_seen || "").slice(0, 10))}</span>
+        <div class="status" style="margin:4px 0 0">Found while searching: ${esc((x.command || "").slice(0, 140))}</div>
+        <div style="font-size:13px;margin-top:4px">${esc(sample)}${x.n_contacts > 6 ? " …" : ""}</div>
+        <div class="row" style="margin-top:6px"><button data-copy style="padding:2px 10px">📋 Copy contacts</button>
+        <button data-hide style="padding:2px 10px">${x.dismissed ? "↩️ Show again" : "🙈 Hide"}</button></div>`;
+      div.querySelector("[data-copy]").onclick = () => navigator.clipboard.writeText(
+        [...(x.phones || []), ...(x.emails || [])].join("\n")).then(() => { $("sugOut").textContent = "Copied."; });
+      div.querySelector("[data-hide]").onclick = async () => {
+        await api("/api/suggestions/dismiss", { url: x.url, dismissed: !x.dismissed }); loadSuggestions(); };
+      return div;
+    }));
+  } catch (e) { $("sugOut").textContent = "❌ " + e.message; }
+}
+$("sugLoad").onclick = loadSuggestions;
+$("sugHidden").onchange = loadSuggestions;
+$("sugCsv").onclick = async () => {
+  if (!sugSites.length) await loadSuggestions();
+  const rows = sugSites.flatMap((x) => [...(x.phones || []).map((p) => ({ type: "phone", contact: p })),
+    ...(x.emails || []).map((e) => ({ type: "email", contact: e }))].map((c) => ({ ...c, site: x.url, title: x.title,
+    found_while_searching: x.command, last_seen: x.last_seen })));
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  saveFile(toCsv(rows), `suggested_site_contacts_${stamp}.csv`);
+  $("sugOut").textContent = `Downloaded ${rows.length} contacts from ${sugSites.length} sites.`;
+};
+function noteSuggested(list, wave) {
+  for (const x of list || []) {
+    state.suggested = state.suggested || new Set();
+    if (state.suggested.has(x.url)) continue;
+    state.suggested.add(x.url);
+    logEv("warning", `💡 Suggested site (not a match for this search, but ${x.n_contacts} contacts): ${x.title || ""} ${x.url} — see Leads → 💡 Suggested sites`, wave);
+  }
+}
+
 function showView(name) {
-  if (name === "leads" && $("pw").value.trim()) showStorage();
+  if (name === "leads" && $("pw").value.trim()) { showStorage(); loadSuggestions(); }
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("hidden", v.dataset.view !== name));
   document.querySelectorAll("#nav button").forEach((b) => b.toggleAttribute("aria-current", b.dataset.view === name));
   store("csa_view", name);

@@ -362,6 +362,25 @@ def privacy_remove(body: dict):
     return {"ok": True}
 
 
+@router.get("/suggestions")
+def suggestions_ep(include_dismissed: bool = False, limit: int = 200):
+    """💡 Pages with many contacts that did not match their search (kept across runs, with the contacts)."""
+    import suggestions
+    _db()
+    return {"sites": _im_db(suggestions.listing, max(1, min(limit, 1000)), include_dismissed)}
+
+
+@router.post("/suggestions/dismiss")
+def suggestions_dismiss_ep(body: dict):
+    import suggestions
+    _db()
+    url = str(body.get("url") or "")
+    if not url:
+        raise HTTPException(400, "url is required")
+    _im_db(suggestions.dismiss, url, bool(body.get("dismissed", True)))
+    return {"ok": True}
+
+
 @router.post("/privacy/purge")
 def privacy_purge(body: dict):
     """Erase individuals' contact details older than N days (businesses are kept)."""

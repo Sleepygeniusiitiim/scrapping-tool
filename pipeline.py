@@ -924,6 +924,16 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
     if records:
         await asyncio.to_thread(db.save_candidates, records)
 
+    # Pages with many contacts but (almost) no candidates for this search → 💡 Suggested sites.
+    import suggestions
+    per_page: Dict[str, int] = {}
+    for rec in records:
+        base = (rec.source_url or "").split("#candidate-")[0]
+        per_page[base] = per_page.get(base, 0) + 1
+    suggested = await asyncio.to_thread(suggestions.record, [
+        {"url": o.url, "title": (hits.get(o.url) or {}).get("title") or "", "text": o.markdown,
+         "matched": per_page.get(o.url, 0)} for o in outcomes if o.ok], intent)
+
     # How each URL ended. robots / quota are retried by later runs (see supabase_db).
     statuses = {}
     for o in outcomes:
@@ -961,4 +971,5 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
         "warnings": warnings,
         "quota_error": quota_error,
         "ai_off": ai_off,
+        "suggested": [{k: r[k] for k in ("url", "title", "n_contacts", "matched")} for r in suggested],
     }
