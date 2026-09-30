@@ -686,6 +686,13 @@ def _im_db(fn, *a):
         raise HTTPException(502, str(exc))
 
 
+@router.post("/command-kind")
+def command_kind_ep(body: dict):
+    """Cheap, no-AI check: does the command ask for the hiring side (employers / HR / management)?"""
+    from intent_miner.understand import hiring_side
+    return {"hiring_side": hiring_side(str(body.get("command") or ""))}
+
+
 @router.post("/im/understand")
 async def im_understand_ep(body: IMUnderstandIn, gemini=Depends(_thinker)):
     _db()

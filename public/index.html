@@ -1821,8 +1821,18 @@ async function startRun(nextRound) {
   try {
     const mode = $("searchMode").value;
     $("doctor").innerHTML = "";
-    if (mode === "classic") await runPipeline(intent, totals, rounds);
-    else await runCombined(intent, totals, rounds, mode);
+    let useMode = mode;
+    if (mode === "classic") {
+      // The classic reader finds job seekers; a command for employers / HR / management goes to the business search
+      const k = await api("/api/command-kind", { command: intent }).catch(() => ({}));
+      if (k.hiring_side) {
+        logEv("warning", "This command asks for employers / HR / management who are hiring — the classic reader only " +
+          "finds job seekers, so this run uses the Intent Miner's business (B2B) search instead.");
+        useMode = "intent";
+      }
+    }
+    if (useMode === "classic") await runPipeline(intent, totals, rounds);
+    else await runCombined(intent, totals, rounds, useMode);
     logEv("done", `${state.stop ? "Stopped by user." : "All waves complete."} ${totals.records} candidates saved from ${totals.crawled} scraped pages.`);
   } catch (e) {
     logEv("error", e.message);

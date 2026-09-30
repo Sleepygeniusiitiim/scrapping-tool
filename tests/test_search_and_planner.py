@@ -70,3 +70,19 @@ def test_scrapedo_search_and_fallback(monkeypatch):
     hits, err, _ = integrations.web_search("scrapedo", {"scrapedo": "dead"}, "q", 10, "in-en")
     assert not hits and "scrapedo" in integrations.exhausted()
     integrations._EXHAUSTED.clear()
+
+
+def test_hiring_side_commands_are_business_searches():
+    from intent_miner.understand import hiring_side
+    assert hiring_side("profile of Top Management & HRs from outside India & foreign companies, where people "
+                       "are interested for hiring of Indian Candidates")
+    assert hiring_side("Find foreign companies whose HR managers are hiring Indian welders")
+    assert not hiring_side("Find Indian candidates who are interested for abroad opportunities as welders")
+    assert not hiring_side("Truck or Bus Driving Centers in North India")
+
+
+def test_freelance_bid_pages_are_skipped():
+    from search_module import is_useful_url
+    assert not is_useful_url("https://www.freelancer.in/projects/internet-marketing/website-optimization-seo-fix-county")
+    assert not is_useful_url("https://www.upwork.com/freelance-jobs/apply/SEO_123")
+    assert is_useful_url("https://www.linkedin.com/posts/acme_hiring-from-india-activity-1")

@@ -100,6 +100,9 @@ async def discover(spec: QuerySpec, source: str, query: str, keys: Dict[str, str
         url = canonicalize_url(h.get("url") or "")
         if not url:
             continue
+        from search_module import FREELANCE_MARKETPLACES
+        if any(m in url.lower() for m in FREELANCE_MARKETPLACES):
+            continue                          # freelancers' bids: never a candidate or an employer
         doc = h.get("doc")
         item = {"url": url, "title": h.get("title", ""), "snippet": h.get("snippet", ""),
                 "date": h.get("date"), "source": doc.source if isinstance(doc, RawDocument) else source_of(url)}

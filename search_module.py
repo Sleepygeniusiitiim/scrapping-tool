@@ -45,10 +45,16 @@ _TRACKING_PARAMS = {
 _TRACKING_PREFIXES = ("utm_", "pk_", "hsa_", "mtm_", "at_")
 
 # Result domains that are never useful as sources.
+# Freelance marketplaces: bid pages full of "I can help you…" proposals — never candidates or employers.
+FREELANCE_MARKETPLACES = (
+    "freelancer.com/projects", "freelancer.in/projects", "freelancer.com/jobs", "freelancer.in/jobs",
+    "freelancer.co.uk/projects", "upwork.com/freelance-jobs", "upwork.com/jobs", "upwork.com/nx", "fiverr.com",
+    "peopleperhour.com", "guru.com/d/jobs", "truelancer.com", "workana.com",
+)
 _JUNK_DOMAINS = (
     "duckduckgo.com", "google.com/search", "bing.com/search", "youtube.com", "youtu.be",
     "facebook.com/login", "accounts.google.com", "play.google.com", "apps.apple.com",
-)
+) + FREELANCE_MARKETPLACES
 _HTTPS_ONLY = ("linkedin.com", "reddit.com", "quora.com", "facebook.com", "x.com", "twitter.com",
                "naukri.com", "indeed.com", "github.com", "medium.com")
 _JUNK_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".mp4", ".zip", ".exe")

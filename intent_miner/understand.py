@@ -16,8 +16,10 @@ Return JSON with:
 - summary: one sentence restating the request.
 - target: "organizations" when the user wants businesses / institutes / schools / training centres /
   agencies / companies or their owners, directors or contact persons (B2B leads: find WHO they are and
-  their public business contact details); "people" when the user wants individuals who show a need or
-  interest (job seekers, buyers, students, …).
+  their public business contact details) — INCLUDING employers and their HR managers, recruiters, talent
+  acquisition heads, CEOs / directors / top management who are HIRING (e.g. "HRs of foreign companies hiring
+  Indian candidates" = organizations: the employers, with their decision makers). "people" only when the user
+  wants individuals who show a need or interest for themselves (job seekers, buyers, students, …).
 - intent_type: one of {", ".join(INTENT_TYPES)}.
 - industry, professions (job titles / products / services plus real-world synonyms, local-language forms
   and qualifications, e.g. nursing → "staff nurse", "GNM", "BSc Nursing", "Pflegefachkraft").
@@ -55,6 +57,16 @@ Return JSON with:
   "courses", "owner", "director", "founder"); queries target business directories and listings
   (justdial.com, indiamart.com, sulekha.com, tradeindia.com, yellow pages, Google-indexed business sites,
   "contact us" pages, LinkedIn company / founder posts) in the places named.
+  EMPLOYERS WHO ARE HIRING (a recruitment agency looking for client companies): professions = the employer
+  types / industries and the roles they hire; high_intent_terms = hiring phrases that name the candidates'
+  country, e.g. "hiring from India", "Indian candidates", "Indian nationals", "recruitment from India",
+  "manpower from India", "Indian workers", "we are hiring", "urgent requirement", "HR manager", "talent
+  acquisition"; negative_terms add "freelancer", "upwork", "fiverr", "bid", "proposal", "course", "training";
+  queries = hiring posts and job ads by the employers themselves: site:linkedin.com/posts "hiring" "from India"
+  <country>, site:linkedin.com/posts "Indian candidates" <industry> <country>, site:linkedin.com/in "HR Manager"
+  <country> "India", site:facebook.com "hiring" "from India" <country>, naukrigulf.com / bayt.com /
+  gulftalent.com / indeed <country> "Indian", "recruitment agency in India" <industry> <country> — never
+  freelance marketplaces.
 - source_plan: rank EVERY source id of the catalog below by how likely it gives what the user wants for THIS
   command (weight 0-100, one-line reason naming what it yields, e.g. "phone numbers of each driving school").
   Businesses in named places → Google Maps listings and directories first; individuals showing intent →
@@ -94,6 +106,23 @@ def prompt(command: str, sources: List[str], max_age_days: Optional[int], num_qu
     return "\n".join(lines)
 
 
+_HIRING_SIDE = re.compile(
+    r"\b(?:hrs?|human resources?|recruiters?|talent acquisition|hiring managers?|top management|management|"
+    r"ceos?|cxos?|directors?|founders?|owners?|decision[- ]makers?|employers?|compan(?:y|ies)|firms?|"
+    r"organi[sz]ations?|businesses)\b", re.IGNORECASE)
+_WANTS_TO_HIRE = re.compile(
+    r"\b(?:hiring|recruit(?:ing|ment)?|interested (?:in|for) hiring|looking (?:for|to hire)|want(?:s)? to hire|"
+    r"need(?:s)? (?:\w+ ){0,2}(?:candidates|workers|staff|manpower))\b", re.IGNORECASE)
+_JOB_SEEKER = re.compile(r"\b(?:job ?seekers?|looking for (?:a )?jobs?|want(?:s)? (?:a )?jobs?|"
+                         r"interested (?:in|for) (?:jobs?|work|abroad opportunit\w*))\b", re.IGNORECASE)
+
+
+def hiring_side(command: str) -> bool:
+    """The command asks for the employers / HR / management who hire — not the candidates."""
+    return bool(_HIRING_SIDE.search(command or "") and _WANTS_TO_HIRE.search(command or "")
+                and not _JOB_SEEKER.search(command or ""))
+
+
 async def understand(ai, command: str, sources: List[str], max_age_days: Optional[int], num_queries: int = 16,
                      exclude: Optional[List[str]] = None, auto_sources: bool = False) -> QuerySpec:
     spec = await ai.generate_structured(prompt(command, sources, max_age_days, num_queries, exclude, auto_sources),
@@ -102,6 +131,9 @@ async def understand(ai, command: str, sources: List[str], max_age_days: Optiona
                                         max_retries=3)
     if max_age_days:
         spec.max_age_days = max_age_days
+    if spec.target != "organizations" and hiring_side(command):
+        # "HRs / top management of companies hiring …": the employers are the leads, not job seekers
+        spec.target = "organizations"
     # "abroad / overseas" is a wish, not a place: keep it as an intent phrase, not a location filter
     vague = [p for p in spec.destination + spec.origin if p not in concrete_places([p])]
     spec.destination, spec.origin = concrete_places(spec.destination), concrete_places(spec.origin)
