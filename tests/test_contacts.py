@@ -40,3 +40,33 @@ def test_site_ownership_and_own_emails():
 def test_domain_guesses_never_single_generic_word():
     assert "rolex.com" not in cc.guess_domains("Rolex Travel Services Pvt Ltd")
     assert "gillsmartgroup.com" in cc.guess_domains("Gill Smart Group")
+
+
+def test_linkedin_post_embed_fallback(monkeypatch):
+    import asyncio
+    import fetcher
+
+    class Resp:
+        def __init__(self, code, url, text):
+            self.status_code, self.url, self.text = code, url, text
+
+    class Client:
+        def __init__(self, code):
+            self.code, self.calls = code, []
+
+        async def get(self, url, timeout=None):
+            self.calls.append(url)
+            html = ("<html><body><div class='post'><a href='/in/ahmed-hr'>Ahmed Khan · HR Manager at Gulf Build LLC</a>"
+                    "<p>We are hiring 20 TIG welders from India for Dubai. Send CV to hr@gulfbuild.ae</p></div></body></html>")
+            return Resp(self.code, url, html)
+
+    url = "https://www.linkedin.com/posts/ahmed-hr_hiring-welders-activity-7117159826738434048-AbCd"
+    ok = Client(200)
+    out = asyncio.run(fetcher._linkedin_embed(ok, url, 10))
+    assert out.ok and out.via == "linkedin-embed" and "hr@gulfbuild.ae" in out.markdown
+    assert ok.calls == ["https://www.linkedin.com/embed/feed/update/urn:li:activity:7117159826738434048"]
+    assert asyncio.run(fetcher._linkedin_embed(ok, "https://www.linkedin.com/in/ahmed", 10)) is None
+    monkeypatch.setattr(fetcher.random, "uniform", lambda a, b: 0)     # no real wait in the retry
+    limited = Client(999)
+    out = asyncio.run(fetcher._linkedin_embed(limited, url, 10))
+    assert not out.ok and out.blocked and len(limited.calls) == 2      # one slower retry, then reported

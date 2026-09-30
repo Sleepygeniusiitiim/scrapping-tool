@@ -466,6 +466,47 @@ async def _paced_direct(client: primp.AsyncClient, sems: Dict[str, asyncio.Semap
 
 MAX_UNBLOCK_TRIES = 2     # unblocker services tried per page (keeps a batch inside the function time limit)
 
+# LinkedIn posts have a public embed page (the one websites use to embed a post): it shows the post's author and
+# text without a login and is served far more reliably than the post page itself.
+_LI_POST_ID = re.compile(r"(?:[-_:](activity|ugcPost|share)[-:](\d{15,22}))", re.IGNORECASE)
+
+
+def linkedin_embed_url(url: str) -> Optional[str]:
+    """https://www.linkedin.com/embed/feed/update/urn:li:<kind>:<id> for a LinkedIn post URL, else None."""
+    low = url.lower()
+    if "linkedin.com" not in low or not any(p in low for p in ("/posts/", "/feed/update/", "/pulse/")):
+        return None
+    m = _LI_POST_ID.search(url)
+    if not m:
+        return None
+    kind = {"activity": "activity", "ugcpost": "ugcPost", "share": "share"}[m.group(1).lower()]
+    return f"https://www.linkedin.com/embed/feed/update/urn:li:{kind}:{m.group(2)}"
+
+
+async def _linkedin_embed(client: primp.AsyncClient, url: str, timeout_s: float) -> Optional[CrawlOutcome]:
+    embed = linkedin_embed_url(url)
+    if not embed:
+        return None
+    for attempt in range(2):
+        try:
+            r = await asyncio.wait_for(client.get(embed, timeout=timeout_s), timeout=timeout_s + 3)
+        except Exception as exc:
+            return CrawlOutcome(url=url, error=f"LinkedIn embed: {type(exc).__name__}", via="linkedin-embed")
+        if r.status_code in (429, 999) and attempt == 0:
+            await asyncio.sleep(random.uniform(4.0, 7.0))       # rate-limited: one slower retry
+            continue
+        break
+    if r.status_code >= 400 or _WALL_URL.search(urlparse(str(r.url)).path or ""):
+        return CrawlOutcome(url=url, blocked=r.status_code in (403, 429, 999), error=f"LinkedIn embed HTTP {r.status_code}",
+                            via="linkedin-embed")
+    try:
+        text = html_to_text(r.text)
+    except Exception as exc:
+        return CrawlOutcome(url=url, error=f"LinkedIn embed parse: {exc}", via="linkedin-embed")
+    if len(text) < 80:                 # an embed is short by nature; below this there is no post text
+        return CrawlOutcome(url=url, markdown=text, blocked=True, error="LinkedIn embed: empty", via="linkedin-embed")
+    return CrawlOutcome(url=url, markdown=text, ok=True, via="linkedin-embed")
+
 
 async def _unblock(name: str, keys: dict, proxy_client: Optional[primp.AsyncClient], url: str) -> CrawlOutcome:
     if name == "scrapedo":
@@ -508,8 +549,14 @@ async def _fetch_one(client: primp.AsyncClient, proxy_client: Optional[primp.Asy
     outcome = await _paced_direct(client, sems, url, timeout_s)
     if outcome.ok or (outcome.error or "").startswith(("HTTP 404", "HTTP 410")):
         return outcome
-    # Blocked, walled or failed directly → a real headless browser (workers), then the unblocker services.
+    # Blocked, walled or failed directly → LinkedIn's public post embed, a real headless browser (workers),
+    # then the unblocker services.
     errors = [outcome.error or "failed"]
+    embed = await _linkedin_embed(client, url, timeout_s)
+    if embed is not None:
+        if embed.ok:
+            return embed
+        errors.append(embed.error or "LinkedIn embed failed")
     browser = await _via_browser(url)
     if browser is not None:
         if browser.ok:

@@ -283,6 +283,8 @@
       <span class="status" id="catInfo" style="align-self:flex-end"></span>
     </div>
     <div id="catSearches"></div>
+    <div id="pinBar" class="row hidden" style="margin:6px 0"><span class="status" id="pinText" style="margin:0"></span>
+      <button id="unpinBtn" style="padding:2px 10px">↩ Back to the live run</button></div>
     <div class="row">
       <button id="showAllSaved" title="Every lead from every run, any score (nothing is hidden by the run or the minimum score)">📚 Show everything saved</button>
       <button id="lastRunBtn" title="Saved contacts from the most recent run or batch job (use “Found in” in the table to pick another run)">🆕 Contacts from the last run</button>
@@ -934,11 +936,32 @@ function markRunEnd() {
   store("csa_run_windows", JSON.stringify(all.slice(0, 20)));
   state.runWindow = null;
 }
+function pinView(label) {
+  state.viewPinned = label;
+  $("pinText").textContent = `📌 Showing: ${label} — live runs keep saving in the background but won't replace this list.`;
+  $("pinBar").classList.remove("hidden");
+}
+function unpinView() { state.viewPinned = ""; $("pinBar").classList.add("hidden"); }
+function markBatch(from, rounds, intent) {
+  if (rounds < 2) return;
+  const all = loadRunWindows();
+  all.unshift({ from, to: new Date().toISOString(), label: (intent || "").slice(0, 50), kind: "batch", rounds });
+  store("csa_run_windows", JSON.stringify(all.slice(0, 20)));
+}
 function runWindows() {
   const fmt = (t) => new Date(t).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
   const out = [];
   if (state.runWindow) out.push({ label: `▶ Current run (${state.runWindow.label})`, from: state.runWindow.from, to: null });
-  loadRunWindows().forEach((w, i) => out.push({ label: `${i === 0 ? "Last run" : "Run"} · ${fmt(w.from)} · ${w.label}`, from: w.from, to: w.to }));
+  let firstBatch = true, firstRun = true;
+  loadRunWindows().forEach((w) => {
+    if (w.kind === "batch") {
+      out.push({ label: `${firstBatch ? "Last batch" : "Batch"} (${w.rounds} rounds) · ${fmt(w.from)} · ${w.label}`, from: w.from, to: w.to, kind: "batch" });
+      firstBatch = false;
+    } else {
+      out.push({ label: `${firstRun ? "Last run" : "Run"} · ${fmt(w.from)} · ${w.label}`, from: w.from, to: w.to });
+      firstRun = false;
+    }
+  });
   (state.jobWindows || []).forEach((j, i) => out.push({ label: `${i === 0 ? "Last batch job" : "Batch job"} · ${fmt(j.from)} · ${j.label}`, from: j.from, to: j.to }));
   const now = Date.now();
   out.push({ label: "Last 24 hours", from: new Date(now - 864e5).toISOString(), to: null });
@@ -1292,7 +1315,7 @@ async function runCombined(intent, totals, rounds, mode) {
   if (auto) logEv("plan", "AI source plan: " + (spec.source_plan || []).filter((c) => c.weight >= 50).slice(0, 6)
     .map((c) => `${SOURCE_LABEL[c.source] || c.source} ${c.weight} (${c.reason})`).join(" · ") +
     ((spec.places || []).length ? ` · ${spec.places.length} places: ${spec.places.slice(0, 12).join(", ")}${spec.places.length > 12 ? "…" : ""}` : ""));
-  im.runId = u.run_id; im.leads.clear(); imRenderLeads(); imRenderSpec(spec); $("imSpec").dataset.spec = JSON.stringify(spec);
+  im.runId = u.run_id; if (!state.viewPinned) { im.leads.clear(); imRenderLeads(); } imRenderSpec(spec); $("imSpec").dataset.spec = JSON.stringify(spec);
   (u.warnings || []).forEach((w) => logEv("warning", w));
   saveRounds(intent, { round: roundNo, queries: rounds.queries.concat(spec.queries.map((q) => q.query)) });
   refreshNextBtn();
@@ -1363,7 +1386,7 @@ async function runCombined(intent, totals, rounds, mode) {
         const st = r.stats;
         stats.crawled += st.fetched; stats.blocked += st.blocked; stats.failed += st.failed; stats.records += st.records;
         totals.crawled += st.fetched; totals.records += st.records;
-        r.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads();
+        if (!state.viewPinned) { r.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads(); }
         addRunRecords(r.records || []); renderStats(); renderRun(); noteSuggested(r.suggested, name);
         logEv("crawl", `Batch ${b / batch + 1}: ${st.fetched} read, ${st.blocked} blocked, ${st.failed} failed · ` +
           `${st.units} posts/comments → keyword ${st.stage1} → semantic ${st.stage2} → AI ${st.llm_units}`, name);
@@ -1579,7 +1602,7 @@ $("imLoad").onclick = async () => {
   try {
     const r = await api(`/api/im/leads?min_score=${Number($("imMin").value) || 0}&category=${encodeURIComponent(state.catFilter || "")}`);
     im.leads.clear(); r.leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
-    imRenderLeads();
+    imRenderLeads(); pinView(state.catFilter ? `saved intent leads in “${state.catFilter}”` : "saved intent leads");
   } catch (e) { alert(e.message); }
 };
 $("imExport").querySelectorAll("button[data-f]").forEach((btn) => btn.onclick = async () => {
@@ -1727,6 +1750,8 @@ function addRunRecords(recs) {
 $("startBtn").onclick = async () => {
   if ($("bgRun").checked) return startJob();
   const n = Number($("roundsN").value) || 1, pause = Number($("roundPause").value) || 0;
+  const batchFrom = new Date().toISOString();
+  unpinView();
   state.roundsLeft = n;
   for (let r = 0; r < n; r++) {
     await startRun(r > 0);
@@ -1743,6 +1768,7 @@ $("startBtn").onclick = async () => {
     }
   }
   state.roundsLeft = 0;
+  markBatch(batchFrom, n, $("intent").value.trim());
   if (n > 1 && "Notification" in window && Notification.permission === "granted")
     new Notification("Sourcing Agent", { body: `${n} rounds finished — ${state.runRecords.length} contacts in the last round.` });
 };
@@ -1795,7 +1821,7 @@ function watchJob(id) {
       if (runs.length) {
         const ids = [...new Set(runs)].join(",");
         const L = await api(`/api/im/leads?run_id=${encodeURIComponent(ids)}`);
-        im.runId = ids; im.leads.clear(); L.leads.forEach((x) => im.leads.set(x.id, x)); imRenderLeads();
+        if (!state.viewPinned) { im.runId = ids; im.leads.clear(); L.leads.forEach((x) => im.leads.set(x.id, x)); imRenderLeads(); }
       }
       if (st.rounds > 1) $("runStatus").textContent += ` · round ${Math.min((st.rounds_done || 0) + (j.status === "running" ? 1 : 0), st.rounds)} of ${st.rounds}`;
       if (["done", "failed", "cancelled"].includes(j.status)) clearInterval(jobView.timer);
@@ -2152,6 +2178,7 @@ $("showAllSaved").onclick = async () => {
     const leads = await allIntentLeads();
     im.leads.clear(); leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
     $("imMin").value = 0; imRenderLeads();
+    pinView(state.catFilter ? `everything saved in category “${state.catFilter}” (all runs)` : "everything saved (all runs, any score)");
     $("backupOut").textContent = `Showing all ${leads.length} intent leads (every run, any score` +
       (state.catFilter ? `, category “${state.catFilter}”)` : ")") + ".";
     state.runFilter = ""; document.querySelector('[data-tab="db"]').click(); $("loadDb").onclick();
@@ -2160,13 +2187,16 @@ $("showAllSaved").onclick = async () => {
 $("lastRunBtn").onclick = async () => {
   await loadJobWindows();
   // the newest of: the last run on this page, the last batch job
+  // the most recently FINISHED run: a batch of rounds (or a background batch job) covers all its rounds
+  const end = (x) => x.to ? Date.parse(x.to) : Date.now();
   const w = runWindows().filter((x) => !x.label.startsWith("Last 24") && !x.label.startsWith("Last 7"))
-    .sort((a, b) => Date.parse(b.from) - Date.parse(a.from))[0];
+    .sort((a, b) => (end(b) - end(a)) || (Date.parse(a.from) - Date.parse(b.from)))[0];
   if (!w) { $("backupOut").textContent = "No run recorded yet — start one on the Search page."; return; }
   state.runFilter = w.label;
   document.querySelector('[data-tab="db"]').click();
   await $("loadDb").onclick();
   $("backupOut").textContent = `Showing contacts found in: ${w.label}`;
+  pinView(`contacts from ${w.label}`);
   $("tab-db").scrollIntoView({ behavior: "smooth" });
 };
 $("backupAll").onclick = async () => {
@@ -2260,6 +2290,7 @@ async function showCategory() {
   if (name) $("showAllSaved").onclick();
 }
 $("catFilter").onchange = showCategory;
+$("unpinBtn").onclick = () => { unpinView(); state.catFilter = ""; $("catFilter").value = ""; showCategory(); };
 $("catInput").value = load("csa_category") || "";
 $("catInput").addEventListener("change", () => store("csa_category", runCategory()));
 $("lookingFor").value = load("csa_looking_for") || "";

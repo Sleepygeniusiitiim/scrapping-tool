@@ -561,6 +561,15 @@ hiring”) tags every contact and lead the search saves, for page runs, classic 
 In Leads, **📁 Category** filters everything to one category — its searches (with command, type and date), its
 contacts, its leads, “Show everything saved” and the CSV downloads.
 
+## LinkedIn pages
+
+LinkedIn refuses most logged-out, automated visits. The app tries, in order: the page itself (paced one at a time,
+one slower retry), LinkedIn's public **post embed** page (the one websites use to embed a post — author and text,
+no login; posts only), the worker's headless browser, then your unblockers (Scrape.do with residential proxies,
+Jina). Profiles (`/in/…`) have no embed; when every route is refused, the search snippet is read instead
+(“Use search snippet when a page is walled”). “Respect robots.txt” must be unticked for LinkedIn to be read at all.
+The app never logs in to LinkedIn.
+
 ## 💡 Suggested sites
 
 A page a run reads that lists many phone numbers / emails (3 or more) but gives few or no leads for that search
