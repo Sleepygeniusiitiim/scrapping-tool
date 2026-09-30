@@ -524,6 +524,34 @@ Leads → 🆕 Contacts from the last run shows the saved contacts found (or fou
 background batch job. In the saved-contacts table, “Found in” picks any recent run on this page, any recent
 batch job, the last 24 hours or the last 7 days.
 
+## Free search with SearXNG (no Serper / Scrape.do needed)
+
+[SearXNG](https://github.com/searxng/searxng) is a free, open-source meta-search engine you run yourself: one query
+goes to DuckDuckGo, Brave, Mojeek, Qwant, Startpage, Google and others, and the combined results come back — no
+API keys, no credits. The app uses it as a search engine like Serper (before any paid one that has credits).
+
+**On the worker machine** (simplest — background jobs use it): `docker compose -f worker/docker-compose.yml up -d`
+now also starts SearXNG, and the worker finds it at `http://searxng:8080` automatically.
+
+**On its own** (an office PC or a small VPS):
+
+```bash
+export SEARXNG_SECRET=$(openssl rand -hex 32)
+docker compose -f searxng/docker-compose.yml up -d        # → http://localhost:8888
+```
+
+`searxng/settings.yml` turns on JSON output (required) and turns off the public-instance bot limiter.
+
+**For searches started on the website (Vercel)** SearXNG must be reachable from the internet — Vercel can't reach
+`localhost`. Free way: `cloudflared tunnel --url http://localhost:8888` prints an `https://….trycloudflare.com`
+address; put it in ⚙️ Settings → Google search → “SearXNG URL” (or `SEARXNG_URL` in Vercel). Anyone who has
+that address can use your instance, so don't publish it; for a permanent setup put SearXNG behind a reverse
+proxy with a password and use `https://user:password@your-host` as the URL.
+
+Expect fewer and less precise results than Google through Serper (the engines behind it rate-limit heavy use,
+and some block cloud servers — running it on an office / home connection works best). If SearXNG is down, the
+app skips it for 30 minutes and says so in the log.
+
 ## 📁 Categories and “Looking for”
 
 On the Search page, **Looking for** tells the AI what kind of search this is — 👤 candidates (people interested

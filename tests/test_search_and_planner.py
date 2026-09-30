@@ -105,3 +105,56 @@ def test_page_choice_of_target_wins(monkeypatch):
     assert spec.target == "organizations"            # no choice made: the hiring-side check corrects the AI
     spec = asyncio.run(u.understand(AI(), "HR managers hiring welders", [], None, 4, target="people"))
     assert spec.target == "people"                   # the page's choice wins
+
+
+def _searx_client(monkeypatch, handler):
+    import httpx
+    import integrations
+    real = httpx.Client
+    monkeypatch.setattr(integrations.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler)))
+
+
+def test_searxng_results(monkeypatch):
+    import integrations
+    integrations._EXHAUSTED.clear()
+    seen = []
+
+    def handler(request):
+        seen.append(dict(request.url.params))
+        return __import__("httpx").Response(200, json={
+            "results": [{"url": "https://www.linkedin.com/posts/acme_hiring-from-india", "title": "Acme hiring",
+                         "content": "We are hiring welders from India", "publishedDate": "2026-09-01T00:00:00"}],
+            "suggestions": ["welders hiring from India Dubai"], "infoboxes": []})
+
+    _searx_client(monkeypatch, handler)
+    hits, err, limited = integrations.web_search("searxng", {"searxng": "localhost:8888"}, "welders hiring India",
+                                                 10, "in-en", 1, extras := {})
+    assert err is None and hits[0]["url"].startswith("https://www.linkedin.com/posts/")
+    assert hits[0]["date"] == "2026-09-01" and extras["related"] == ["welders hiring from India Dubai"]
+    assert seen[0]["format"] == "json" and seen[0]["language"] == "en-IN" and seen[0]["time_range"] == "month"
+    assert "searxng" in integrations.search_available({"searxng": "http://x"})
+
+
+def test_searxng_down_is_skipped(monkeypatch):
+    import httpx
+    import integrations
+    integrations._EXHAUSTED.clear()
+
+    def handler(request):
+        raise httpx.ConnectError("refused")
+
+    _searx_client(monkeypatch, handler)
+    hits, err, _ = integrations.web_search("searxng", {"searxng": "http://localhost:8888"}, "q", 10, "in-en")
+    assert not hits and "not reachable" in err
+    assert "searxng" not in integrations.search_available({"searxng": "http://localhost:8888"})
+    integrations._EXHAUSTED.clear()
+
+
+def test_searxng_without_json_explains(monkeypatch):
+    import httpx
+    import integrations
+    integrations._EXHAUSTED.clear()
+    _searx_client(monkeypatch, lambda request: httpx.Response(403, text="Forbidden"))
+    hits, err, _ = integrations.web_search("searxng", {"searxng": "http://x"}, "q", 10, "in-en")
+    assert not hits and "search.formats" in err
+    integrations._EXHAUSTED.clear()

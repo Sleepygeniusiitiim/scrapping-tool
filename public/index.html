@@ -992,6 +992,7 @@ const INTEGRATIONS = [
   ["serpapi", "SerpApi key", "Google results · serpapi.com", "Google search"],
   ["google_cse_key", "Google Programmable Search API key", "100 free searches/day · developers.google.com/custom-search", "Google search"],
   ["google_cse_cx", "Google Programmable Search engine ID (cx)", "programmablesearchengine.google.com", "Google search"],
+  ["searxng", "SearXNG URL — free, self-hosted meta-search (no key)", "e.g. https://search.yourdomain.com · see README “Free search with SearXNG”", "Google search"],
   ["brave", "Brave Search API key", "api-dashboard.search.brave.com", "Google search"],
   ["scrapedo", "Scrape.do token", "scrape.do → Dashboard → API token · Google results AND unblocking of sites that refuse the crawler (one token for both)", "Google search"],
 
@@ -1915,7 +1916,7 @@ async function runPipeline(intent, totals, rounds) {
         if (r.google_missing && !state.googleHinted) {
           state.googleHinted = true;
           logEv("warning", "Google search is not configured, so only DuckDuckGo is used and many pages are missed. " +
-            "Add a Serper.dev, SerpApi, Google Programmable Search, Brave or Scrape.do key under " +
+            "Add a Serper.dev, SerpApi, Google Programmable Search, Brave or Scrape.do key, or your free SearXNG URL, under " +
             "“🔑 Lead databases & search API keys” (Serper.dev has a free starter allowance).", name);
         }
         // why an engine shows ✗ — once per engine and run, so a bad key or an API that is not enabled is visible

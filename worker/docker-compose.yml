@@ -11,7 +11,8 @@ services:
       LOCAL_LLM_URL: http://ollama:11434/v1/chat/completions
       LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen2.5:3b-instruct}
       LOCAL_EMBED_MODEL: ${LOCAL_EMBED_MODEL:-nomic-embed-text}
-    depends_on: [ollama]
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}      # free meta-search next to the worker
+    depends_on: [ollama, searxng]
     restart: unless-stopped
     deploy:
       replicas: ${WORKERS:-1}
@@ -22,6 +23,14 @@ services:
     restart: unless-stopped
     # pulls the bulk-parsing and embedding models on first start
     entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull ${LOCAL_LLM_MODEL:-qwen2.5:3b-instruct} && ollama pull ${LOCAL_EMBED_MODEL:-nomic-embed-text} && wait"]
+
+  searxng:
+    image: searxng/searxng:latest
+    volumes:
+      - ../searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-please-change-me}
+    restart: unless-stopped
 
 volumes:
   ollama:

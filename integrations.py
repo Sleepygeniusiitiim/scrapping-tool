@@ -31,6 +31,7 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
     "google_cse_key": ("GOOGLE_CSE_KEY", "Google Programmable Search key", "search"),
     "google_cse_cx": ("GOOGLE_CSE_CX", "Google Programmable Search engine ID (cx)", "search"),
     "brave": ("BRAVE_API_KEY", "Brave Search", "search"),
+    "searxng": ("SEARXNG_URL", "SearXNG — your own free meta-search (URL, e.g. http://localhost:8888)", "search"),
     "scrapedo": ("SCRAPEDO_TOKEN", "Scrape.do", "unblock"),
     "scraperapi": ("SCRAPERAPI_KEY", "ScraperAPI", "unblock"),
     "zenrows": ("ZENROWS_API_KEY", "ZenRows", "unblock"),
@@ -51,7 +52,7 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
     "salesforce_instance_url": ("SALESFORCE_INSTANCE_URL", "Salesforce instance URL", "crm"),
     "salesforce_token": ("SALESFORCE_ACCESS_TOKEN", "Salesforce access token", "crm"),
 }
-SEARCH_ORDER = ["serper", "google_cse", "serpapi", "scrapedo", "brave"]
+SEARCH_ORDER = ["serper", "google_cse", "serpapi", "searxng", "scrapedo", "brave"]   # free SearXNG before paid credits
 UNBLOCK_ORDER = ["scrapedo", "scraperapi", "zenrows", "scrapingbee", "jina"]
 ENRICH_ORDER = ["contactout", "lusha", "rocketreach", "apollo", "hunter"]
 
@@ -237,6 +238,8 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
                 items = [(i.get("url"), i.get("title"), re.sub(r"<[^>]+>", "", i.get("description") or ""),
                           i.get("page_age") or i.get("age"))
                          for i in (_ok(r).get("web") or {}).get("results", [])]
+            elif name == "searxng":
+                items = _searxng(c, keys["searxng"], query, pages, region, max_age_months, ex)
             else:
                 return [], f"unknown search service {name}", False
     except _HTTPFail as exc:
@@ -245,10 +248,46 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
             mark_exhausted(name, str(exc))
         return [], f"{SERVICES.get(name, (0, name))[1]} {exc}", exc.code == 429
     except Exception as exc:
+        if name == "searxng" and isinstance(exc, httpx.TransportError):
+            mark_exhausted(name, str(exc))      # server down / unreachable: don't wait on it for every query
+            return [], (f"SearXNG at {keys.get('searxng')} is not reachable ({type(exc).__name__}) — is it running, "
+                        "and reachable from where the app runs? (Vercel can't reach localhost.)"), False
         return [], f"{name} {type(exc).__name__}: {str(exc)[:120]}", False
     hits = [{"url": u, "title": (t or "").strip(), "snippet": (s or "").strip(), "date": dates.parse(d)}
             for u, t, s, d in items if u]
     return hits[:n], None, False
+
+
+def _searxng(c: httpx.Client, base: str, query: str, pages: int, region: str, max_age_months: int,
+             ex: dict) -> list:
+    """SearXNG (self-hosted meta-search: DuckDuckGo, Brave, Mojeek, Qwant, Startpage… in one query, no keys).
+    Needs `json` in the instance's search.formats (the bundled searxng/settings.yml has it)."""
+    base = base.strip().rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        base = "http://" + base
+    lang = {"in": "en-IN", "us": "en-US", "uk": "en-GB", "gb": "en-GB", "ae": "en-AE", "de": "de-DE"}.get(
+        _gl(region), "all")
+    items = []
+    for page in range(1, pages + 1):
+        r = c.get(f"{base}/search", params={
+            "q": query, "format": "json", "pageno": page, "language": lang, "safesearch": 0,
+            **({"time_range": "month" if max_age_months <= 1 else "year"} if max_age_months else {})},
+            headers={"Accept": "application/json"})
+        if r.status_code == 403:
+            raise _HTTPFail(403, "the instance refuses JSON — add `json` to search.formats in its settings.yml")
+        data = _ok(r)
+        got = [(i.get("url"), i.get("title"), i.get("content"), i.get("publishedDate"))
+               for i in data.get("results") or [] if i.get("url")]
+        items += got
+        if page == 1:
+            ex["related"] += [q for q in data.get("suggestions") or [] if isinstance(q, str)]
+            for box in data.get("infoboxes") or []:
+                urls = [u.get("url") for u in box.get("urls") or [] if u.get("url")]
+                ex["entities"].append(_entity("knowledge_panel", box.get("infobox"), None, urls[0] if urls else None,
+                                              None, None, link=box.get("id") or ""))
+        if len(got) < 8:
+            break
+    return items
 
 
 def _cse_date(item: dict) -> Optional[str]:

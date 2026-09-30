@@ -1,0 +1,20 @@
+# SearXNG for the lead-sourcing app: free meta-search (no API keys). Only what differs from SearXNG's defaults.
+use_default_settings: true
+
+server:
+  # overridden by the SEARXNG_SECRET environment variable (docker-compose sets it)
+  secret_key: "change-me-set-SEARXNG_SECRET"
+  limiter: false          # the app is the only client; the bot limiter would block it
+  image_proxy: false
+  public_instance: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json                # the app reads results as JSON
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
