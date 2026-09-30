@@ -151,6 +151,8 @@ async def check(ai, spec: QuerySpec, command: str, leads: List[dict], texts: Dic
                 strict: bool = False) -> Tuple[List[dict], List[Tuple[dict, str]]]:
     """(kept leads, [(rejected lead, reason)])."""
     places = targets(spec, command)
+    # "Companies abroad hiring Indians": the target places are abroad, so a company named after one is a match
+    places_abroad = any(rx.search(p) for p in places for rx in rule_extractor._TARGET_RE.values())
     needs_mea = any(_MEA_WORDS.search(r) for r in spec.requirements) or bool(_MEA_WORDS.search(command))
     kept, rejected, ask = [], [], []
     for L in leads:
@@ -158,7 +160,7 @@ async def check(ai, spec: QuerySpec, command: str, leads: List[dict], texts: Dic
                f"{texts.get(L['lead_key'], '')}"
         name = L.get("display_name") or ""
         abroad_name = [k for k, rx in rule_extractor._TARGET_RE.items() if rx.search(name) and k not in ("Europe", "Gulf")]
-        if places and abroad_name and not rule_extractor._INDIA_RE.search(name) and \
+        if places and abroad_name and not places_abroad and not rule_extractor._INDIA_RE.search(name) and \
                 not re.search(r"\b(?:overseas|manpower|recruit|placement|consultan|travels?|agency|agencies)\b", name, re.I):
             # "Dubai DUTCO Construction Co. LLC": a company abroad, whatever city its post mentions
             rejected.append((L, f"a company in {abroad_name[0]} (named so), not a business in the target region"))
