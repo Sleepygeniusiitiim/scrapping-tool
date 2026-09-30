@@ -124,14 +124,25 @@ def hiring_side(command: str) -> bool:
 
 
 async def understand(ai, command: str, sources: List[str], max_age_days: Optional[int], num_queries: int = 16,
-                     exclude: Optional[List[str]] = None, auto_sources: bool = False) -> QuerySpec:
-    spec = await ai.generate_structured(prompt(command, sources, max_age_days, num_queries, exclude, auto_sources),
+                     exclude: Optional[List[str]] = None, auto_sources: bool = False,
+                     target: str = "") -> QuerySpec:
+    """target: "people" / "organizations" chosen on the page ("Looking for"), or "" to let the AI decide."""
+    ask = prompt(command, sources, max_age_days, num_queries, exclude, auto_sources)
+    if target == "organizations":
+        ask += ("\n\nThe user chose: LOOKING FOR ORGANIZATIONS (employers / businesses and their decision makers, "
+                "HR, management) — target must be \"organizations\"; plan queries for them, not for job seekers.")
+    elif target == "people":
+        ask += ("\n\nThe user chose: LOOKING FOR PEOPLE (individual candidates showing interest) — target must be "
+                "\"people\"; plan queries where such people write in their own words.")
+    spec = await ai.generate_structured(ask,
                                         QuerySpec,
                                         system_instruction=SYSTEM, temperature=0.4, thinking_budget=512,
                                         max_retries=3)
     if max_age_days:
         spec.max_age_days = max_age_days
-    if spec.target != "organizations" and hiring_side(command):
+    if target in ("people", "organizations"):
+        spec.target = target                  # the page's choice wins
+    elif spec.target != "organizations" and hiring_side(command):
         # "HRs / top management of companies hiring …": the employers are the leads, not job seekers
         spec.target = "organizations"
     # "abroad / overseas" is a wish, not a place: keep it as an intent phrase, not a location filter

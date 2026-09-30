@@ -318,14 +318,23 @@ def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
     return out
 
 
-def list_leads(min_score: int = 0, limit: int = 1000, run_id: str = "", offset: int = 0) -> List[dict]:
+def list_leads(min_score: int = 0, limit: int = 1000, run_id: str = "", offset: int = 0,
+               category: str = "") -> List[dict]:
+    where, params = ["l.lead_score >= %s"], [min_score]
+    if run_id:
+        where.append("l.run_id::text = ANY(%s)")
+        params.append([x for x in run_id.split(",") if x])
+    if category:
+        import categories
+        categories._q("SELECT 1")                          # makes sure the categories column exists
+        where.append("%s = ANY(COALESCE(l.categories, '{}'))")
+        params.append(category)
     rows = _q(f"""SELECT l.*, COALESCE((SELECT jsonb_agg(jsonb_build_object('url', s.url, 'source', s.source,
                           'kind', s.unit_kind, 'date', s.activity_date, 'score', s.score) ORDER BY s.score DESC)
                           FROM im_lead_sources s WHERE s.lead_key = l.lead_key), '[]'::jsonb) AS sources
-                  FROM im_leads l WHERE l.lead_score >= %s {"AND l.run_id::text = ANY(%s)" if run_id else ""}
+                  FROM im_leads l WHERE {" AND ".join(where)}
                   ORDER BY l.lead_score DESC, l.last_activity DESC NULLS LAST, l.lead_key LIMIT %s OFFSET %s""",
-              (min_score, [x for x in run_id.split(",") if x], limit, offset) if run_id else (min_score, limit, offset),
-              "all")
+              tuple(params + [limit, offset]), "all")
     return [db._serialize_row(dict(r)) for r in rows]
 
 

@@ -859,8 +859,9 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
                         extraction: str = "rules", plan_queries: Optional[List[str]] = None,
                         keys: Optional[dict] = None, max_age_months: int = 0,
                         role_keywords: Optional[List[str]] = None, locations: Optional[List[str]] = None,
-                        only_interested: bool = False, enrich: bool = False, require_both: bool = True) -> dict:
-    """items: [{url, title, snippet}] — record, fetch, extract, save."""
+                        only_interested: bool = False, enrich: bool = False, require_both: bool = True,
+                        category: str = "") -> dict:
+    """items: [{url, title, snippet}] — record, fetch, extract, save (tagged with `category` when given)."""
     urls = [i["url"] for i in items]
     hits: Dict[str, dict] = {i["url"]: i for i in items}
     # Record right before crawling so a stopped run leaves unreached URLs unmarked.
@@ -940,6 +941,9 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
 
     if records:
         await asyncio.to_thread(db.save_candidates, records)
+        if category:
+            import categories
+            await asyncio.to_thread(categories.tag_candidates, [r.source_url for r in records], category)
 
     # Pages with many contacts but (almost) no candidates for this search → 💡 Suggested sites.
     import suggestions

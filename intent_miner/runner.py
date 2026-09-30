@@ -23,6 +23,8 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
               emit: Callable[[str], None], stopped: Callable[[], bool],
               on_stats: Optional[Callable[[dict], None]] = None) -> dict:
     settings = dict(options.get("settings") or {})
+    if options.get("category"):
+        settings["category"] = options["category"]           # everything this job saves is tagged with it
     sources = options.get("sources") or []
     auto = bool(options.get("auto_sources", True))
     totals = {"pages": 0, "leads": 0, "records": 0, "with_phone": 0, "with_email": 0, "blocked": 0, "failed": 0,
@@ -36,7 +38,7 @@ async def run(ai, command: str, options: dict, keys: Dict[str, str],
         ai = thinker                                                  # …and reads pages, when ticked
     spec: QuerySpec = await understand(thinker, command, sources, options.get("max_age_days"),
                                        int(options.get("num_queries") or 16), options.get("exclude_queries") or [],
-                                       auto)
+                                       auto, options.get("target") or "")
     run_id = await asyncio.to_thread(store.create_run, command, spec.model_dump())
     totals["run_id"] = run_id
     totals["queries"] = [q.query for q in spec.queries]

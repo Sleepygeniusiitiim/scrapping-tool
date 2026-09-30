@@ -86,3 +86,22 @@ def test_freelance_bid_pages_are_skipped():
     assert not is_useful_url("https://www.freelancer.in/projects/internet-marketing/website-optimization-seo-fix-county")
     assert not is_useful_url("https://www.upwork.com/freelance-jobs/apply/SEO_123")
     assert is_useful_url("https://www.linkedin.com/posts/acme_hiring-from-india-activity-1")
+
+
+def test_page_choice_of_target_wins(monkeypatch):
+    import asyncio
+    from intent_miner import understand as u
+    from intent_miner.models import QuerySpec
+
+    class AI:
+        async def generate_structured(self, prompt, schema, **k):
+            AI.prompt = prompt
+            return QuerySpec.model_validate({"summary": "s", "target": "people", "queries": []})
+
+    monkeypatch.setattr(u.planner, "finalize", lambda spec, *a, **k: spec)
+    spec = asyncio.run(u.understand(AI(), "Find welders in Dubai", [], None, 4, target="organizations"))
+    assert spec.target == "organizations" and "LOOKING FOR ORGANIZATIONS" in AI.prompt
+    spec = asyncio.run(u.understand(AI(), "HR managers of companies hiring Indian welders", [], None, 4))
+    assert spec.target == "organizations"            # no choice made: the hiring-side check corrects the AI
+    spec = asyncio.run(u.understand(AI(), "HR managers hiring welders", [], None, 4, target="people"))
+    assert spec.target == "people"                   # the page's choice wins

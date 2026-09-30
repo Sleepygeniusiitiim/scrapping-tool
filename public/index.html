@@ -163,6 +163,21 @@
     </div>
     <label for="intent">Describe it in your own words — who, where, what contact details</label>
     <textarea id="intent">Find Indian candidates who are interested for abroad opportunities in CNC</textarea>
+    <div class="row" style="margin-top:8px">
+      <div style="flex:1;min-width:200px">
+        <label for="lookingFor">Looking for</label>
+        <select id="lookingFor">
+          <option value="">🤖 Let the AI decide from the command</option>
+          <option value="people">👤 Candidates — people interested in jobs</option>
+          <option value="organizations">🏢 Employers &amp; businesses — companies, HR, management (B2B)</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:200px">
+        <label for="catInput">Category (optional) — tags everything this search saves</label>
+        <input id="catInput" list="catList" autocomplete="off" maxlength="60" placeholder="e.g. Foreign employers hiring">
+        <datalist id="catList"></datalist>
+      </div>
+    </div>
     <details class="adv" id="advBox"><summary>⚙️ Search settings — sources, mode, depth, filters</summary>
     <div class="row" style="margin-top:8px" id="imSources">
       <span class="status" style="margin:0">Sources:</span>
@@ -262,6 +277,12 @@
     leads with evidence from the same run</span></h2>
   <section class="panel" id="storagePanel">
     <p class="status" id="storageInfo" style="margin-top:0">💾 Checking what is saved in the database…</p>
+    <div class="row" style="margin-bottom:8px">
+      <div style="min-width:240px"><label for="catFilter">📁 Category</label>
+        <select id="catFilter"><option value="">All categories</option></select></div>
+      <span class="status" id="catInfo" style="align-self:flex-end"></span>
+    </div>
+    <div id="catSearches"></div>
     <div class="row">
       <button id="showAllSaved" title="Every lead from every run, any score (nothing is hidden by the run or the minimum score)">📚 Show everything saved</button>
       <button id="lastRunBtn" title="Saved contacts from the most recent run or batch job (use “Found in” in the table to pick another run)">🆕 Contacts from the last run</button>
@@ -830,7 +851,9 @@ function buildView(container, getRecords, key) {
     const c = selCountry.value.toLowerCase(), s = selSkill.value.toLowerCase(),
           role = roleIn.value.trim().toLowerCase(), p = selPlatform.value;
     const win = windows.find((w) => w.label === selWhen.value);
+    const cat = key === "db" ? state.catFilter : "";
     return getRecords().filter((r) =>
+      (!cat || asList(r.categories).includes(cat)) &&
       (!win || inWindow(r.discovered_at, win)) &&
       (!c || asList(r.target_countries).some((x) => x.toLowerCase() === c)) &&
       (!s || asList(r.skills).some((x) => x.toLowerCase() === s)) &&
@@ -1115,8 +1138,10 @@ function imSettings(main, intent, planQueries) {
     reprocess: $("imReprocess").checked, intent: intent || "", extraction: $("extraction").value,
     only_interested: $("onlyInterested").checked, enrich: $("useLeadDb").checked, require_both: $("requireBoth").checked,
     classic: (m.mode || $("searchMode").value) === "combined", plan_queries: planQueries || [],
-    verify_fit: true, strict_requirements: $("strictReq").checked, expand_related: $("expandRelated").checked };
+    verify_fit: true, strict_requirements: $("strictReq").checked, expand_related: $("expandRelated").checked,
+    category: runCategory() };
 }
+function runCategory() { return $("catInput").value.trim().slice(0, 60); }
 function esc(t) { const d = document.createElement("div"); d.textContent = t == null ? "" : String(t); return d.innerHTML; }
 function imRenderSpec(spec) {
   const li = (a) => (a || []).map((x) => `<code>${esc(x)}</code>`).join(" ") || "—";
@@ -1257,8 +1282,12 @@ async function runCombined(intent, totals, rounds, mode) {
   logEv("info", roundNo > 1 ? `Round ${roundNo}: understanding the command again, avoiding ${rounds.queries.length} queries already used…`
                             : "Understanding the command and planning searches…");
   const u = await api("/api/im/understand", { command: intent, sources, max_age_days: months ? Math.round(months * 30.5) : null,
-    num_queries: numQueries, exclude_queries: rounds.queries, auto_sources: auto });
+    num_queries: numQueries, exclude_queries: rounds.queries, auto_sources: auto,
+    target: $("lookingFor").value, category: roundNo === 1 ? runCategory() : "", mode });
   const spec = u.spec;
+  logEv("plan", `Searching for: ${spec.target === "organizations" ? "🏢 employers & businesses (B2B) — their HR, management and contacts"
+    : "👤 candidates — people who say they are interested"}${$("lookingFor").value ? " (your choice)" : " (AI's reading of the command — change it under “Looking for”)"}` +
+    (runCategory() ? ` · 📁 category “${runCategory()}”` : ""));
   if (auto) logEv("plan", "AI source plan: " + (spec.source_plan || []).filter((c) => c.weight >= 50).slice(0, 6)
     .map((c) => `${SOURCE_LABEL[c.source] || c.source} ${c.weight} (${c.reason})`).join(" · ") +
     ((spec.places || []).length ? ` · ${spec.places.length} places: ${spec.places.slice(0, 12).join(", ")}${spec.places.length > 12 ? "…" : ""}` : ""));
@@ -1547,7 +1576,7 @@ $("govMatchBtn").onclick = async () => {
 
 $("imLoad").onclick = async () => {
   try {
-    const r = await api(`/api/im/leads?min_score=${Number($("imMin").value) || 0}`);
+    const r = await api(`/api/im/leads?min_score=${Number($("imMin").value) || 0}&category=${encodeURIComponent(state.catFilter || "")}`);
     im.leads.clear(); r.leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
     imRenderLeads();
   } catch (e) { alert(e.message); }
@@ -1740,7 +1769,8 @@ async function startJob() {
       num_queries: Math.max(4, Math.min(60, num("numWaves") * num("qpw"))), max_urls: Math.max(num("maxUrls") || 30, 60),
       batch: Math.min(8, num("batch") || 5), settings: imSettings({ mode: "combined" }, intent, []),
       use_page_keys: $("bgKeys").checked, rounds: Number($("roundsN").value) || 1,
-      pause_minutes: Number($("roundPause").value) || 0, repeat_hours: Number($("repeatEvery").value) || 0 });
+      pause_minutes: Number($("roundPause").value) || 0, repeat_hours: Number($("repeatEvery").value) || 0,
+      target: $("lookingFor").value, category: runCategory() });
     $("runStatus").textContent = r.workers.length ? `Queued — ${r.workers.length} worker(s) online.` :
       "Queued, but no worker is online: start worker/worker.py (see README) and it will pick this up.";
     watchJob(r.job.id);
@@ -1824,7 +1854,8 @@ async function startRun(nextRound) {
     let useMode = mode;
     if (mode === "classic") {
       // The classic reader finds job seekers; a command for employers / HR / management goes to the business search
-      const k = await api("/api/command-kind", { command: intent }).catch(() => ({}));
+      const k = $("lookingFor").value === "organizations" ? { hiring_side: true }
+        : $("lookingFor").value === "people" ? {} : await api("/api/command-kind", { command: intent }).catch(() => ({}));
       if (k.hiring_side) {
         logEv("warning", "This command asks for employers / HR / management who are hiring — the classic reader only " +
           "finds job seekers, so this run uses the Intent Miner's business (B2B) search instead.");
@@ -1837,7 +1868,7 @@ async function startRun(nextRound) {
   } catch (e) {
     logEv("error", e.message);
   } finally {
-    markRunEnd(); setRunning(false); renderRun();
+    markRunEnd(); setRunning(false); renderRun(); if (runCategory()) loadCategories();
     let spec = null; try { spec = JSON.parse($("imSpec").dataset.spec || "null"); } catch (_) {}
     runDoctor(spec);
   }
@@ -1853,7 +1884,7 @@ async function runPipeline(intent, totals, rounds) {
   const roundNo = rounds.round + 1;
   if (roundNo > 1) logEv("info", `Round ${roundNo}: planning new searches that avoid ${rounds.queries.length} queries already used.`);
   const plan = await api("/api/plan", { intent, num_waves: settings.numWaves, queries_per_wave: settings.qpw,
-    round: roundNo, exclude_queries: rounds.queries, respect_robots: settings.robots });
+    round: roundNo, exclude_queries: rounds.queries, respect_robots: settings.robots, category: runCategory() });
   const waves = plan.waves;
   (plan.warnings || []).forEach((w) => logEv("warning", w));
   if ((plan.role_keywords || []).length || (plan.locations || []).length)
@@ -1922,7 +1953,8 @@ async function runPipeline(intent, totals, rounds) {
           respect_robots: settings.robots, snippet_fallback: settings.snippet,
           extraction: settings.extraction, plan_queries: waves.flatMap((w) => w.queries),
           max_age_months: settings.maxAge, role_keywords: plan.role_keywords || [], locations: plan.locations || [],
-          only_interested: settings.onlyInterested, enrich: settings.useLeadDb, require_both: settings.requireBoth });
+          only_interested: settings.onlyInterested, enrich: settings.useLeadDb, require_both: settings.requireBoth,
+          category: runCategory() });
         for (const k of ["crawled", "blocked", "failed", "records", "dropped"]) stats[k] += r.stats[k];
         totals.crawled += r.stats.crawled; totals.records += r.stats.records;
         const why = Object.entries(r.block_reasons || {}).map(([k, n]) => `${n}× ${k}`).join(", ");
@@ -2097,7 +2129,7 @@ async function showStorage() {
 async function allIntentLeads() {
   const out = [];
   for (let off = 0; ; off += 2000) {
-    const r = await api(`/api/im/leads?min_score=0&limit=2000&offset=${off}`);
+    const r = await api(`/api/im/leads?min_score=0&limit=2000&offset=${off}&category=${encodeURIComponent(state.catFilter || "")}`);
     out.push(...r.leads);
     $("backupOut").textContent = `${out.length} intent leads loaded…`;
     if (r.leads.length < 2000) return out;
@@ -2119,7 +2151,8 @@ $("showAllSaved").onclick = async () => {
     const leads = await allIntentLeads();
     im.leads.clear(); leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
     $("imMin").value = 0; imRenderLeads();
-    $("backupOut").textContent = `Showing all ${leads.length} intent leads (every run, any score).`;
+    $("backupOut").textContent = `Showing all ${leads.length} intent leads (every run, any score` +
+      (state.catFilter ? `, category “${state.catFilter}”)` : ")") + ".";
     state.runFilter = ""; document.querySelector('[data-tab="db"]').click(); $("loadDb").onclick();
   } catch (e) { $("backupOut").textContent = "❌ " + e.message; }
 };
@@ -2139,10 +2172,12 @@ $("backupAll").onclick = async () => {
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
   try {
     $("backupOut").textContent = "Loading every saved contact…";
-    const cands = (await api("/api/candidates")).candidates;
-    saveFile(toCsv(cands), `all_contacts_${stamp}.csv`);
+    const cat = state.catFilter || "";
+    const tag = cat ? "_" + cat.replace(/[^\w-]+/g, "_").slice(0, 40) : "";
+    const cands = (await api("/api/candidates")).candidates.filter((r) => !cat || asList(r.categories).includes(cat));
+    saveFile(toCsv(cands), `${cat ? "contacts" : "all_contacts"}${tag}_${stamp}.csv`);
     const leads = await allIntentLeads();
-    saveFile(toCsv(leads), `all_intent_leads_${stamp}.csv`);
+    saveFile(toCsv(leads), `${cat ? "intent_leads" : "all_intent_leads"}${tag}_${stamp}.csv`);
     $("backupOut").textContent = `Downloaded ${cands.length} contacts and ${leads.length} intent leads.`;
   } catch (e) { $("backupOut").textContent = "❌ " + e.message; }
 };
@@ -2193,8 +2228,45 @@ function noteSuggested(list, wave) {
   }
 }
 
+// ---------- 📁 categories ----------
+async function loadCategories() {
+  try {
+    const cats = (await api("/api/categories")).categories || [];
+    $("catList").replaceChildren(...cats.map((c) => new Option(c.name, c.name)));
+    const keep = $("catFilter").value;
+    $("catFilter").replaceChildren(new Option("All categories", ""), ...cats.map((c) =>
+      new Option(`${c.name} — ${c.searches} searches · ${c.contacts} contacts · ${c.leads} leads`, c.name)));
+    if (cats.some((c) => c.name === keep)) $("catFilter").value = keep;
+    return cats;
+  } catch (_) { return []; }
+}
+async function showCategory() {
+  const name = $("catFilter").value;
+  state.catFilter = name;
+  $("catSearches").replaceChildren();
+  $("catInfo").textContent = name ? "Contacts, leads, “Show everything”, downloads and the saved-contacts table now show only this category." : "";
+  if (name) {
+    try {
+      const list = (await api(`/api/categories/searches?name=${encodeURIComponent(name)}`)).searches || [];
+      const box = document.createElement("div"); box.className = "im-card"; box.style.padding = "8px 12px";
+      box.innerHTML = `<b>Searches in “${esc(name)}” (${list.length})</b>` + list.slice(0, 50).map((x) =>
+        `<div style="font-size:13px;margin-top:4px">${esc((x.started_at || "").slice(0, 16).replace("T", " "))} · ` +
+        `${x.target === "organizations" ? "🏢" : x.target === "people" ? "👤" : "🤖"} ${esc(x.mode || "")} · ${esc((x.command || "").slice(0, 160))}</div>`).join("");
+      $("catSearches").appendChild(box);
+    } catch (e) { $("catInfo").textContent = "❌ " + e.message; }
+  }
+  if (state.dbRecords) buildView($("dbView"), () => state.dbRecords, "db");
+  if (name) $("showAllSaved").onclick();
+}
+$("catFilter").onchange = showCategory;
+$("catInput").value = load("csa_category") || "";
+$("catInput").addEventListener("change", () => store("csa_category", runCategory()));
+$("lookingFor").value = load("csa_looking_for") || "";
+$("lookingFor").addEventListener("change", () => store("csa_looking_for", $("lookingFor").value));
+$("catInput").addEventListener("focus", () => { if (!$("catList").children.length && $("pw").value.trim()) loadCategories(); }, { once: true });
+
 function showView(name) {
-  if (name === "leads" && $("pw").value.trim()) { showStorage(); loadSuggestions(); }
+  if (name === "leads" && $("pw").value.trim()) { showStorage(); loadSuggestions(); loadCategories(); }
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("hidden", v.dataset.view !== name));
   document.querySelectorAll("#nav button").forEach((b) => b.toggleAttribute("aria-current", b.dataset.view === name));
   store("csa_view", name);

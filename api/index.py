@@ -235,6 +235,7 @@ class PlanIn(BaseModel):
     round: int = Field(1, ge=1, le=100)
     exclude_queries: List[str] = Field(default_factory=list, max_length=500)
     respect_robots: bool = False
+    category: str = Field("", max_length=60)
 
 
 class QueryIn(BaseModel):
@@ -271,6 +272,7 @@ class BatchIn(BaseModel):
     only_interested: bool = False
     enrich: bool = False
     require_both: bool = True
+    category: str = Field("", max_length=60)
 
 
 class SaveIn(BaseModel):
@@ -423,6 +425,9 @@ async def plan(
         raise HTTPException(502, f"Planning failed: {exc}")
     if not result["waves"]:
         raise HTTPException(422, "Gemini returned an empty plan — try rephrasing the intent.")
+    if body.category and body.round == 1:
+        import categories
+        await run_in_threadpool(_im_db, categories.log_search, body.category, body.intent, "people", "classic")
     result["warnings"] = gemini.notices
     return result
 
@@ -468,6 +473,7 @@ async def process(
             body.only_interested,
             body.enrich,
             body.require_both,
+            body.category,
         )
         result["warnings"] = gemini.notices + result.get("warnings", [])
         return result
@@ -630,6 +636,7 @@ class IMSettings(BaseModel):
     verify_fit: bool = True                 # AI + rules check that each business fits the command
     strict_requirements: bool = False       # drop businesses whose required registration is not shown
     expand_related: bool = True             # also run Google's related searches
+    category: str = Field("", max_length=60)  # everything this search saves is tagged with it
 
 
 class IMUnderstandIn(BaseModel):
@@ -639,6 +646,9 @@ class IMUnderstandIn(BaseModel):
     num_queries: int = Field(16, ge=4, le=60)
     exclude_queries: List[str] = Field(default_factory=list, max_length=500)
     auto_sources: bool = False
+    target: str = Field("", pattern="^(|people|organizations)$")   # "" = let the AI decide
+    category: str = Field("", max_length=60)
+    mode: str = Field("", max_length=20)
 
 
 class IMDiscoverIn(BaseModel):
@@ -686,6 +696,21 @@ def _im_db(fn, *a):
         raise HTTPException(502, str(exc))
 
 
+@router.get("/categories")
+def categories_ep():
+    """Every category with its number of searches, contacts and leads."""
+    import categories
+    _db()
+    return {"categories": _im_db(categories.listing)}
+
+
+@router.get("/categories/searches")
+def category_searches_ep(name: str):
+    import categories
+    _db()
+    return {"searches": _im_db(categories.searches, name)}
+
+
 @router.post("/command-kind")
 def command_kind_ep(body: dict):
     """Cheap, no-AI check: does the command ask for the hiring side (employers / HR / management)?"""
@@ -698,10 +723,14 @@ async def im_understand_ep(body: IMUnderstandIn, gemini=Depends(_thinker)):
     _db()
     try:
         spec = await im_understand(gemini, body.command, body.sources, body.max_age_days, body.num_queries,
-                                   body.exclude_queries, body.auto_sources)
+                                   body.exclude_queries, body.auto_sources, body.target)
     except GeminiError as exc:
         raise HTTPException(502, f"Understanding the command failed: {exc}")
     run_id = await run_in_threadpool(_im_db, im_store.create_run, body.command, spec.model_dump())
+    if body.category:
+        import categories
+        await run_in_threadpool(_im_db, categories.log_search, body.category, body.command, spec.target,
+                                body.mode or "intent", run_id)
     return {"spec": spec.model_dump(), "run_id": run_id, "warnings": getattr(gemini, "notices", [])}
 
 
@@ -732,9 +761,10 @@ async def im_process_ep(body: IMProcessIn, gemini=Depends(_reader), keys: dict =
 
 
 @router.get("/im/leads")
-def im_leads_ep(min_score: int = 0, run_id: str = "", offset: int = 0, limit: int = 2000):
+def im_leads_ep(min_score: int = 0, run_id: str = "", offset: int = 0, limit: int = 2000, category: str = ""):
     _db()
-    return {"leads": _im_db(im_store.list_leads, min_score, max(1, min(limit, 5000)), run_id, max(0, offset))}
+    return {"leads": _im_db(im_store.list_leads, min_score, max(1, min(limit, 5000)), run_id, max(0, offset),
+                            category)}
 
 
 @router.get("/storage")
@@ -1037,6 +1067,8 @@ class JobIn(BaseModel):
     rounds: int = Field(1, ge=1, le=20)              # automatic rounds, each with new searches
     pause_minutes: float = Field(0, ge=0, le=720)    # wait between rounds
     repeat_hours: float = Field(0, ge=0, le=720)     # run the whole job again every N hours (0 = once)
+    target: str = Field("", pattern="^(|people|organizations)$")
+    category: str = Field("", max_length=60)
 
 
 @router.post("/jobs")
@@ -1055,6 +1087,9 @@ def job_create(body: JobIn, x_integrations: Optional[str] = Header(default=None)
         opts["llm_keys"] = {**_json_header(x_llm_keys), **({"gemini": x_gemini_key.strip()} if x_gemini_key else {}),
                             **({"claude": x_claude_key.strip()} if x_claude_key else {})}
     job = _im_db(jobs.enqueue, "run", body.command, opts)
+    if body.category:
+        import categories
+        _im_db(categories.log_search, body.category, body.command, body.target, "background job", str(job["id"]))
     return {"job": {k: job[k] for k in ("id", "status", "created_at")}, "workers": _im_db(jobs.workers)}
 
 

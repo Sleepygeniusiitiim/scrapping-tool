@@ -487,6 +487,10 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         except db.SupabaseError as exc:
             warnings.append(f"Could not copy leads to the candidates table: {exc}")
     stats["leads"] = len(saved)
+    if settings.get("category"):
+        import categories
+        await asyncio.to_thread(categories.tag_candidates, [c.source_url for c in candidates], settings["category"])
+        await asyncio.to_thread(categories.tag_leads, [L.get("lead_key") for L in saved], settings["category"])
     health = _health(provs)
     await asyncio.to_thread(store.add_run_stats, run_id, stats)
     await asyncio.to_thread(store.save_health, run_id, health)

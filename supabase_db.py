@@ -97,6 +97,7 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS outreach_status TEXT DEFAULT 'ne
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS outreach_message TEXT;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS outreach_sent_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS reply_text TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS categories TEXT[] DEFAULT '{}';
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP WITH TIME ZONE;
 -- The candidate's own profile link (LinkedIn /in/…), used for contact enrichment (Apollo, Lusha, …).
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profile_url TEXT;
@@ -489,7 +490,7 @@ def fetch_all_candidates() -> List[dict]:
                            platform, discovered_at, contact_source, contact_shared_at,
                            COALESCE(outreach_status, 'new') AS outreach_status, outreach_message,
                            outreach_sent_at, reply_text, replied_at, profile_url, activity_date, shows_interest,
-                           email_guess, email_status
+                           email_guess, email_status, COALESCE(categories, '{{}}') AS categories
                     FROM {CANDIDATES_TABLE}
                     ORDER BY activity_date DESC NULLS LAST, discovered_at DESC;
                     """

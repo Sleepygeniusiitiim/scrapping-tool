@@ -524,6 +524,15 @@ Leads → 🆕 Contacts from the last run shows the saved contacts found (or fou
 background batch job. In the saved-contacts table, “Found in” picks any recent run on this page, any recent
 batch job, the last 24 hours or the last 7 days.
 
+## 📁 Categories and “Looking for”
+
+On the Search page, **Looking for** tells the AI what kind of search this is — 👤 candidates (people interested
+in jobs), 🏢 employers & businesses (companies, HR, management — B2B), or let the AI decide (commands about HR /
+management / companies that are hiring are always treated as B2B). **Category** (optional, e.g. “Foreign employers
+hiring”) tags every contact and lead the search saves, for page runs, classic runs and background jobs alike.
+In Leads, **📁 Category** filters everything to one category — its searches (with command, type and date), its
+contacts, its leads, “Show everything saved” and the CSV downloads.
+
 ## 💡 Suggested sites
 
 A page a run reads that lists many phone numbers / emails (3 or more) but gives few or no leads for that search
