@@ -60,8 +60,53 @@ _INTEREST = re.compile(
 
 
 def shows_interest(text: str) -> bool:
-    """The person says they are interested / keen / looking for work (not a recruiter's ad)."""
-    return bool(text and _INTEREST.search(text))
+    """The person says they are interested / keen / looking for work (not a recruiter's ad: "Interested
+    candidates send CV" contains "interested" but is the recruiter talking)."""
+    return bool(text and _INTEREST.search(text) and not is_recruiter(text))
+
+
+# Phrases only the hiring side writes (an ad, an HR post, an agency).
+_RECRUITER_TALK = re.compile(
+    r"\b(?:interested (?:candidates?|applicants?|persons?|people|ones)|(?:send|share|mail|email|forward|whatsapp|"
+    r"submit|drop) (?:your |ur |the )?(?:updated )?(?:cv|resume|cvs|resumes|bio-?data|profiles?)|"
+    r"we (?:are|'re) (?:hiring|recruiting|looking for)|hiring (?:for|now|urgently)|now hiring|urgent(?:ly)? "
+    r"(?:requirement|required|hiring|need(?:ed)?)|requirement (?:for|of)|vacanc(?:y|ies)|walk[- ]?in (?:interview|drive)|"
+    r"apply (?:now|here|at|via|through)|job (?:opening|openings|vacancy|code|id)|immediate joiners? (?:required|preferred|needed)|"
+    r"(?:contact|call|reach) (?:our )?(?:hr|recruitment|office)|free recruitment|no (?:service )?charges?|"
+    r"salary (?:\d|upto|up to|range|package|negotiable)|(?:food|accommodation|visa|ticket)s? (?:provided|free|by company)|"
+    r"limited (?:seats|vacancies|positions)|client (?:company|interview)|positions? available|join our team|"
+    r"comment (?:\"|')?interested|dm (?:us |me )?for (?:details|more))\b", re.IGNORECASE)
+# The person speaking about themselves (a candidate), not describing a job.
+_FIRST_PERSON = re.compile(
+    r"\b(?:i am|i'm|iam|im a|i have|i've|i was|i worked|i work|i can|my (?:name|cv|resume|bio-?data|number|"
+    r"whatsapp|experience|profile|contact|mobile)|please consider me|consider me|hire me|interested (?:sir|mam|"
+    r"ma'am|madam|bro|brother|bhai|ji)|i (?:want|need|would like) (?:a |this |the )?(?:job|to apply|to join|to work))\b",
+    re.IGNORECASE)
+_ORG_NAME = re.compile(
+    r"\b(?:consultan\w*|manpower|recruit\w*|placements?|overseas|agenc(?:y|ies)|hr (?:team|dept|department)|"
+    r"pvt|private limited|ltd|llc|llp|inc|solutions|enterprises?|services|careers|jobs|hiring|staffing|"
+    r"talent|international|group|associates|travels?|immigration)\b", re.IGNORECASE)
+_BARE_INTEREST = re.compile(r"^\W*(?:interested|intrested|intersted|yes interested|i am interested)\W*$", re.IGNORECASE)
+# HR / recruiters talking about themselves ("I am hiring…", "my client is looking for…").
+_HR_SELF = re.compile(
+    r"\b(?:i am|i'm|iam|we are|we're|am) (?:hiring|recruiting|looking for (?:\w+ ){0,3}(?:candidates|staff|workers|"
+    r"people|profiles|manpower|applicants))|\bmy client|\bour client|\b(?:hr|talent acquisition|recruitment) "
+    r"(?:manager|executive|specialist|partner|lead|consultant|team)\b|\btalent acquisition\b|\brecruiter at\b",
+    re.IGNORECASE)
+
+
+def is_recruiter(text: str, name: str = "") -> bool:
+    """True when this text / name is the hiring side (HR, agency, company, a job ad), not a candidate.
+    A bare "Interested" reply, or someone speaking about themselves, is a candidate."""
+    text = text or ""
+    if _BARE_INTEREST.match(text.strip()):
+        return False
+    if _HR_SELF.search(text) or (name and _HR_SELF.search(name)):
+        return True
+    me = bool(_FIRST_PERSON.search(text))
+    if name and _ORG_NAME.search(name) and not me:
+        return True
+    return bool(_RECRUITER_TALK.search(text)) and not me
 
 
 def mentions_any(text: str, places: List[str]) -> bool:

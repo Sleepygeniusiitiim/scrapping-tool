@@ -510,6 +510,20 @@ everything saved” lists all of it (every run, any score) and “💾 Download 
 A 🚫 Do-not-contact opt-out erases only that person's phone / email; the record stays. If the counts drop,
 the app is pointed at another database — check `DATABASE_URL` in Vercel.
 
+## Candidates only — HR, recruiters and job ads are left out
+
+Every person the page reader finds is checked: the AI labels each one candidate / recruiter, and rules catch
+the hiring side even without AI (“interested candidates send CV…”, “urgent requirement”, “walk-in interview”,
+“I am hiring”, HR / Talent Acquisition headlines, agency / consultancy names). Recruiters' posts are still read
+— the candidates replying to them are kept — but the recruiter never becomes a lead, and “Interested
+candidates…” no longer counts as interest. The run log shows how many were left out.
+
+## Contacts from one run
+
+Leads → 🆕 Contacts from the last run shows the saved contacts found (or found again) by the most recent run or
+background batch job. In the saved-contacts table, “Found in” picks any recent run on this page, any recent
+batch job, the last 24 hours or the last 7 days.
+
 ## 💡 Suggested sites
 
 A page a run reads that lists many phone numbers / emails (3 or more) but gives few or no leads for that search

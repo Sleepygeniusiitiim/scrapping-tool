@@ -321,6 +321,12 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         t = scoring.tier(score)
         stats["relevant"] += 1
         # the author's own interest: first person or a reply comment ("Interested"), not an article's "nurses who want…"
+        if not orgs and (rule_extractor.is_recruiter(u.text, u.author or "") or
+                         (u.kind in ("snippet", "profile") and rule_extractor._HR_SELF.search(d.title or ""))):
+            # HR / agency / job ad: the post is where candidates reply, not a candidate itself
+            stats["recruiters"] = stats.get("recruiters", 0) + 1
+            events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
+            continue
         interested = (r is not None and r.explicit_need) or parts["explicit"] >= 100
         if settings.get("only_interested") and not interested and not orgs:
             stats["not_interested"] = stats.get("not_interested", 0) + 1
@@ -392,6 +398,9 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
             cand_lead[cand.source_url] = lead
             candidates.append(cand)
 
+    if stats.get("recruiters"):
+        warnings.append(f"{stats['recruiters']} HR / recruiter / job-ad posts left out — only candidates are kept "
+                        "(their posts are still read for the candidates replying to them).")
     if stats.get("off_origin"):
         warnings.append(f"{stats['off_origin']} people skipped: their profile / text shows another home country "
                         f"(the command asks for {origin} candidates).")
@@ -778,7 +787,7 @@ async def _classic(ai, spec: QuerySpec, docs: List[RawDocument], hits: Dict[str,
         hit = hits.get(d.url, {})
         text = (f"Title: {hit.get('title') or d.title}\nSnippet: {d.text}" if snippet_only else _markdown(d))
         jobs.append((d, pipeline._extract_page(ai, intent, d.url, text, snippet_only, mode, keywords,
-                                               d.date or pipeline._hit_date(hit), places)))
+                                               d.date or pipeline._hit_date(hit), places, stats)))
     results = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
     out, ai_calls = [], 0
     for (d, _), r in zip(jobs, results):

@@ -117,6 +117,11 @@ Return every INDIVIDUAL PERSON on the page who matches the sourcing intent exact
   asking how to apply) counts as relevance to that role, even if they don't restate their profession.
 - shows_interest: true only if THIS person says they are interested, keen, looking / seeking / open to
   work, ready or willing to join / relocate, shares their CV, or asks how to apply. False otherwise.
+  "Interested candidates send CV to …" is the RECRUITER speaking — never interest.
+- person_type: "candidate" for a job seeker; "recruiter" for HR, recruiters, agencies, consultancies,
+  employers or anyone posting / advertising the job (their profile headline says HR / Talent Acquisition /
+  Recruiter / hiring, or they ask others to send CVs); "other" for anyone else. If unsure whether someone is a
+  recruiter, prefer "recruiter" when their own words describe a job rather than themselves.
 - Do NOT infer nationality or location from a person's name. Fill current_location only if stated
   (city and country as written, e.g. "Lahore, Pakistan").
 - If the intent names the candidates' nationality / home country (e.g. "Indian candidates"), EXCLUDE people
@@ -323,17 +328,19 @@ def _assign_source_urls(url: str, people: List[dict]) -> List[dict]:
 
 async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, snippet_only: bool,
                         mode: str = "ai", keywords: Optional[List[str]] = None,
-                        hit_date: Optional[str] = None, locations: Optional[List[str]] = None
+                        hit_date: Optional[str] = None, locations: Optional[List[str]] = None,
+                        counts: Optional[Dict[str, int]] = None
                         ) -> tuple[List[CandidateRecord], int, bool, int]:
-    origin = rule_extractor.origin_of(intent)
     """Returns (valid records, number dropped as ungrounded/invalid, whether the AI was called,
     number dropped because they are not in / not heading to the intent's locations).
+    `counts["recruiters"]` (when given) is raised for every HR / recruiter / job ad left out.
 
     mode: "rules" — regex/keyword extraction only, no AI tokens;
           "hybrid" — rules first, the AI only for pages where rules find nobody but the page
                      looks like it has candidates (contacts or candidate phrases);
           "ai" — the AI reads every page.
     """
+    origin = rule_extractor.origin_of(intent)
     platform = platform_from_url(url)
     found: List[dict] = []
     used_ai = False
@@ -365,6 +372,14 @@ async def _extract_page(gemini: Gemini, intent: str, url: str, content: str, sni
         d["activity_date"] = d.get("activity_date") or _activity_date(url, content, d.get("name"), hit_date)
         # Interest: the AI's judgement or the person's own words ("interested", "looking for a job", …).
         said = own or d.get("evidence_snippet") or ""
+        # Candidate or hiring side? The AI's person_type, or the person's own words / name / profile headline.
+        headline = content[:600] if d.get("profile_url") == url else ""
+        if d.pop("person_type", "candidate") == "recruiter" or \
+                rule_extractor.is_recruiter(said, d.get("name") or "") or \
+                (headline and rule_extractor._HR_SELF.search(headline)):
+            if counts is not None:
+                counts["recruiters"] = counts.get("recruiters", 0) + 1
+            continue                                  # HR / agency / job ad: a source of candidates, not one
         d["shows_interest"] = bool(d.get("shows_interest")) or rule_extractor.shows_interest(said)
         if origin:
             mine = " ".join([said, d.get("evidence_snippet") or "", d.get("current_location") or "",
@@ -868,8 +883,10 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
 
     keywords = list(dict.fromkeys([k.lower() for k in role_keywords or [] if k.strip()] +
                                   rule_extractor.keywords_from(intent, plan_queries or [])))
+    counts: Dict[str, int] = {}
     results = await asyncio.gather(
-        *(_extract_page(gemini, intent, u, c, snip, extraction, keywords, _hit_date(hits.get(u, {})), locations)
+        *(_extract_page(gemini, intent, u, c, snip, extraction, keywords, _hit_date(hits.get(u, {})), locations,
+                        counts)
           for (u, c, snip) in jobs),
         return_exceptions=True,
     )
@@ -880,7 +897,7 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
         redo = [i for i, r in enumerate(results) if isinstance(r, GeminiQuotaError)]
         again = await asyncio.gather(
             *(_extract_page(gemini, intent, jobs[i][0], jobs[i][1], jobs[i][2], "rules", keywords,
-                            _hit_date(hits.get(jobs[i][0], {})), locations) for i in redo),
+                            _hit_date(hits.get(jobs[i][0], {})), locations, counts) for i in redo),
             return_exceptions=True)
         for i, r in zip(redo, again):
             results[i] = r
@@ -958,6 +975,7 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
     return {
         "stats": {**stats, "records": len(records), "dropped": dropped, "sent_to_gemini": ai_pages, "pages_read": len(jobs), "too_old": too_old,
                   "off_target": off_target, "not_interested": not_interested, "enriched": enriched,
+                  "recruiters": counts.get("recruiters", 0),
                   "interested": sum(1 for r in records if r.shows_interest),
                   "dated": sum(1 for r in records if r.activity_date),
                   "with_phone": sum(1 for r in records if r.phone),

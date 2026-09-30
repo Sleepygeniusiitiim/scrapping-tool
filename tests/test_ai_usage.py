@@ -132,3 +132,34 @@ def test_contact_rich_page_that_did_not_match_is_suggested():
                              {"url": "https://example.com/few", "title": "f", "text": "mail a@b.co", "matched": 0}])
     assert [r["url"] for r in rows] == ["https://jobsatgulf.org/free-recruitment-kuwait/"]
     assert rows[0]["domain"] == "jobsatgulf.org" and rows[0]["n_contacts"] >= 5
+
+
+def test_recruiter_posts_are_not_candidates():
+    page = ("POST by Gulf Manpower Consultants: Urgent requirement — 20 TIG welders for Saudi. Interested candidates "
+            "send CV to hr@gulfmanpower.in or whatsapp 9811122233. Salary 1800 SAR, food and accommodation free.\n"
+            "COMMENT by Priya Sharma: We are hiring welders too, share your CV at priya@abcrecruit.com\n"
+            "COMMENT by Ravi Kumar: Interested sir, TIG welder 6 years at L&T, from Chennai. whatsapp 9876543210\n")
+    counts = {}
+    recs, dropped, used_ai, off = asyncio.run(pipeline._extract_page(
+        None, "Indian welders interested in abroad jobs", "https://example.com/post", page, False, "rules",
+        ["welder"], None, None, counts))
+    names = [r.name for r in recs]
+    assert "Ravi Kumar" in names
+    assert not any(n and ("Manpower" in n or "Priya" in n) for n in names)
+    assert all(r.phone != "+919811122233" for r in recs)
+
+
+def test_ai_marked_recruiter_is_dropped():
+    class AI:
+        async def generate_structured(self, *a, **k):
+            from schema import PageExtraction
+            return PageExtraction.model_validate({"candidates": [
+                {"name": "Neha HR", "evidence_snippet": "Hiring welders for Qatar", "person_type": "recruiter",
+                 "shows_interest": True},
+                {"name": "Amit", "evidence_snippet": "I am a welder looking for a job in Qatar", "shows_interest": True}]})
+
+    page = "POST by Neha HR: Hiring welders for Qatar\nCOMMENT by Amit: I am a welder looking for a job in Qatar\n"
+    counts = {}
+    recs, *_ = asyncio.run(pipeline._extract_page(AI(), "welders", "https://example.com/p", page, False, "ai",
+                                                  ["welder"], None, None, counts))
+    assert [r.name for r in recs] == ["Amit"] and counts["recruiters"] == 1

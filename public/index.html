@@ -264,6 +264,7 @@
     <p class="status" id="storageInfo" style="margin-top:0">💾 Checking what is saved in the database…</p>
     <div class="row">
       <button id="showAllSaved" title="Every lead from every run, any score (nothing is hidden by the run or the minimum score)">📚 Show everything saved</button>
+      <button id="lastRunBtn" title="Saved contacts from the most recent run or batch job (use “Found in” in the table to pick another run)">🆕 Contacts from the last run</button>
       <button id="backupAll" title="Downloads every saved contact and every intent lead from all runs as two CSV files">💾 Download everything (backup)</button>
       <span class="status" id="backupOut"></span>
     </div>
@@ -800,6 +801,12 @@ function buildView(container, getRecords, key) {
   const roleIn = document.createElement("input"); roleWrap.append(roleL, roleIn); f.appendChild(roleWrap);
   const selPlatform = mkSelect("Platform", platforms);
   const selContact = mkSelect("Contact", ["has phone or email", "has phone", "has email", "has both", "no contact"]);
+  // Found in: a run on this page, a background (batch) job, or a recent time window — by when a contact was saved.
+  const windows = key === "db" ? runWindows() : [];
+  const selWhen = mkSelect("Found in", windows.map((w) => w.label));
+  if (key === "db" && state.runFilter && windows.some((w) => w.label === state.runFilter)) selWhen.value = state.runFilter;
+  selWhen.addEventListener("change", () => { state.runFilter = selWhen.value; });
+  if (key !== "db") selWhen.parentElement.remove();
   const mergeWrap = document.createElement("div"); const mergeL = document.createElement("label");
   const mergeCb = document.createElement("input"); mergeCb.type = "checkbox"; mergeCb.checked = true;
   mergeL.append(mergeCb, " Merge duplicates (same business / person from several pages)"); mergeWrap.appendChild(mergeL); f.appendChild(mergeWrap);
@@ -822,7 +829,9 @@ function buildView(container, getRecords, key) {
   function filtered() {
     const c = selCountry.value.toLowerCase(), s = selSkill.value.toLowerCase(),
           role = roleIn.value.trim().toLowerCase(), p = selPlatform.value;
+    const win = windows.find((w) => w.label === selWhen.value);
     return getRecords().filter((r) =>
+      (!win || inWindow(r.discovered_at, win)) &&
       (!c || asList(r.target_countries).some((x) => x.toLowerCase() === c)) &&
       (!s || asList(r.skills).some((x) => x.toLowerCase() === s)) &&
       (!role || (r.current_role || "").toLowerCase().includes(role)) &&
@@ -867,7 +876,7 @@ function buildView(container, getRecords, key) {
       }
     }
   }
-  [selCountry, selSkill, selPlatform, selContact, mergeCb].forEach((el) => el.addEventListener("change", render));
+  [selCountry, selSkill, selPlatform, selContact, selWhen, mergeCb].forEach((el) => el.addEventListener("change", render));
   roleIn.addEventListener("input", render);
 
   btnCsv.onclick = () => {
@@ -887,6 +896,43 @@ function buildView(container, getRecords, key) {
     catch (e) { saveMsg.textContent = "Save failed: " + e.message; btnSave.disabled = false; }
   };
   render();
+}
+
+// ---------- run windows: which contacts a run / batch job found (by the time they were saved) ----------
+const RUN_SLACK_MS = 5 * 60 * 1000;
+function loadRunWindows() { try { return JSON.parse(load("csa_run_windows") || "[]"); } catch (_) { return []; } }
+function markRunStart(intent) {
+  state.runWindow = { from: new Date().toISOString(), label: (intent || "").slice(0, 50) };
+}
+function markRunEnd() {
+  if (!state.runWindow) return;
+  const all = loadRunWindows();
+  all.unshift({ ...state.runWindow, to: new Date().toISOString() });
+  store("csa_run_windows", JSON.stringify(all.slice(0, 20)));
+  state.runWindow = null;
+}
+function runWindows() {
+  const fmt = (t) => new Date(t).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  const out = [];
+  if (state.runWindow) out.push({ label: `▶ Current run (${state.runWindow.label})`, from: state.runWindow.from, to: null });
+  loadRunWindows().forEach((w, i) => out.push({ label: `${i === 0 ? "Last run" : "Run"} · ${fmt(w.from)} · ${w.label}`, from: w.from, to: w.to }));
+  (state.jobWindows || []).forEach((j, i) => out.push({ label: `${i === 0 ? "Last batch job" : "Batch job"} · ${fmt(j.from)} · ${j.label}`, from: j.from, to: j.to }));
+  const now = Date.now();
+  out.push({ label: "Last 24 hours", from: new Date(now - 864e5).toISOString(), to: null });
+  out.push({ label: "Last 7 days", from: new Date(now - 7 * 864e5).toISOString(), to: null });
+  return out;
+}
+function inWindow(t, w) {
+  if (!t) return false;
+  const x = Date.parse(t);
+  return x >= Date.parse(w.from) - RUN_SLACK_MS && (!w.to || x <= Date.parse(w.to) + RUN_SLACK_MS);
+}
+async function loadJobWindows() {
+  try {
+    const r = await api("/api/jobs");
+    state.jobWindows = (r.jobs || []).filter((j) => j.started_at).slice(0, 10)
+      .map((j) => ({ from: j.started_at, to: j.finished_at, label: (j.command || "").slice(0, 50) + (j.finished_at ? "" : " (running)") }));
+  } catch (_) { state.jobWindows = []; }
 }
 
 function download(text, mime, ext) {
@@ -911,6 +957,7 @@ $("loadDb").onclick = async () => {
   try {
     const res = await api("/api/candidates");
     state.dbRecords = res.candidates;
+    await loadJobWindows();
     $("dbStatus").textContent = `${res.candidates.length} candidates stored · ${res.scraped_urls} URLs in the dedup ledger`;
     buildView($("dbView"), () => state.dbRecords, "db");
   } catch (e) { $("dbStatus").textContent = e.message; }
@@ -1768,7 +1815,7 @@ async function startRun(nextRound) {
   Object.assign(state, { stop: false, robotsHinted: false, googleHinted: false, engineWarned: new Set(), suggested: new Set(), runRecords: [], waveStats: {}, logLines: [] });
   $("progress").classList.remove("hidden"); $("planBox").classList.add("hidden");
   if (!(await preflight())) { state.stop = true; return; }
-  renderStats(); renderRun(); setRunning(true);
+  renderStats(); renderRun(); setRunning(true); markRunStart(intent);
   const totals = { crawled: 0, records: 0 };
   const rounds = nextRound ? loadRounds(intent) : { round: 0, queries: [] };
   try {
@@ -1780,7 +1827,7 @@ async function startRun(nextRound) {
   } catch (e) {
     logEv("error", e.message);
   } finally {
-    setRunning(false); renderRun();
+    markRunEnd(); setRunning(false); renderRun();
     let spec = null; try { spec = JSON.parse($("imSpec").dataset.spec || "null"); } catch (_) {}
     runDoctor(spec);
   }
@@ -1894,6 +1941,7 @@ async function runPipeline(intent, totals, rounds) {
           (r.stats.too_old ? ` · ${r.stats.too_old} skipped as older than ${settings.maxAge} months` : "") +
           (r.stats.not_interested ? ` · ${r.stats.not_interested} skipped (no interest shown)` : "") +
           (r.stats.off_target ? ` · ${r.stats.off_target} skipped (wrong location)` : "") +
+          (r.stats.recruiters ? ` · ${r.stats.recruiters} HR / recruiters / job ads left out` : "") +
           (r.stats.enriched ? ` · ${r.stats.enriched} contacts from lead databases` : "") +
           (r.stats.via_scrapedo ? ` · unblocked: ${Object.entries(r.stats.via || {}).map(([k, n]) => `${n} via ${k}`).join(", ") || r.stats.via_scrapedo}` : ""), name);
         addRunRecords(r.records);
@@ -2062,8 +2110,20 @@ $("showAllSaved").onclick = async () => {
     im.leads.clear(); leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
     $("imMin").value = 0; imRenderLeads();
     $("backupOut").textContent = `Showing all ${leads.length} intent leads (every run, any score).`;
-    document.querySelector('[data-tab="db"]').click(); $("loadDb").onclick();
+    state.runFilter = ""; document.querySelector('[data-tab="db"]').click(); $("loadDb").onclick();
   } catch (e) { $("backupOut").textContent = "❌ " + e.message; }
+};
+$("lastRunBtn").onclick = async () => {
+  await loadJobWindows();
+  // the newest of: the last run on this page, the last batch job
+  const w = runWindows().filter((x) => !x.label.startsWith("Last 24") && !x.label.startsWith("Last 7"))
+    .sort((a, b) => Date.parse(b.from) - Date.parse(a.from))[0];
+  if (!w) { $("backupOut").textContent = "No run recorded yet — start one on the Search page."; return; }
+  state.runFilter = w.label;
+  document.querySelector('[data-tab="db"]').click();
+  await $("loadDb").onclick();
+  $("backupOut").textContent = `Showing contacts found in: ${w.label}`;
+  $("tab-db").scrollIntoView({ behavior: "smooth" });
 };
 $("backupAll").onclick = async () => {
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");

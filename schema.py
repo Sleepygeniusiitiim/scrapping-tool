@@ -184,6 +184,8 @@ class ExtractedCandidate(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     shows_interest: bool = False
+    person_type: str = Field("candidate", description="candidate (a job seeker) | recruiter (HR, agency, "
+                                                      "employer or anyone posting / advertising the job) | other")
 
 
 class PageExtraction(BaseModel):
