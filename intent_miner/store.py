@@ -319,8 +319,15 @@ def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
 
 
 def list_leads(min_score: int = 0, limit: int = 1000, run_id: str = "", offset: int = 0,
-               category: str = "") -> List[dict]:
+               category: str = "", since: str = "", until: str = "") -> List[dict]:
+    """since / until (ISO times): leads saved — found or found again — in that window (a run or a batch)."""
     where, params = ["l.lead_score >= %s"], [min_score]
+    if since:
+        where.append("l.last_seen >= %s::timestamptz")
+        params.append(since)
+    if until:
+        where.append("l.last_seen <= %s::timestamptz")
+        params.append(until)
     if run_id:
         where.append("l.run_id::text = ANY(%s)")
         params.append([x for x in run_id.split(",") if x])

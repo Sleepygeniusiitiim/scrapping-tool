@@ -304,6 +304,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     # ---- Scores, evidence, leads ------------------------------------------------------------------
     leads, events, candidates = [], [], []
     cand_lead: Dict[str, dict] = {}
+    per_person_docs: set = set()             # pages whose people only the page reader can separate
     origin = rule_extractor.origin_of(settings.get("intent") or spec.summary or "")
     for d, i, u, parts, why, lang in passed:
         r = llm.get((d.url, i))
@@ -350,6 +351,14 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
         evidence = (r.evidence if r and r.evidence else [rule_extractor._evidence(u.text, rule_extractor._INTEREST)])
         why_list = _why(why, parts, r, fresh, u.date or d.date, d, orgs)
         emails, phones = rule_extractor.emails_in(u.text), rule_extractor.phones_in(u.text)
+        if not orgs and u.kind in ("post", "page") and (len(set(phones)) > 1 or len(set(emails)) > 1):
+            # A page that was not split into comments but holds several people's numbers / emails (a job post
+            # with replies): one lead for "the page" would merge everyone under the poster's name. The page
+            # reader extracts each person instead.
+            stats["multi_person_pages"] = stats.get("multi_person_pages", 0) + 1
+            per_person_docs.add(d.url)
+            events.append(_event(d, i, u, {**parts, "intent": intent_score, "lead": score}, r, lang, None))
+            continue
         own_contact = orgs or not (rule_extractor._HIRING.search(u.text) and not rule_extractor.shows_interest(u.text))
         author = u.author if u.author and u.kind != "snippet" or d.source == "quora" else None
         if orgs:
@@ -428,13 +437,19 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
     if settings.get("classic", True) and orgs:
         warnings.append("Organization search: the classic page reader looks for individual candidates, so it "
                         "was skipped for this command.")
-    if settings.get("classic", True) and not orgs:
-        classic_records, classic_ai = await _classic(bulk_ai, spec, docs, hits_by_url(items), settings, stats,
-                                                     warnings)
+    if not orgs and (settings.get("classic", True) or per_person_docs):
+        reader_docs = docs if settings.get("classic", True) else [d for d in docs if d.url in per_person_docs]
+        classic_records, classic_ai = await _classic(bulk_ai, spec, reader_docs, hits_by_url(items), settings,
+                                                     stats, warnings)
         stats["llm_calls"] += classic_ai
         before = len(candidates)
         candidates = _merge_classic(candidates, classic_records)
         stats["classic_added"] = len(candidates) - before
+        # every person the page reader found is also an intent lead (one per person, same views & filters)
+        for c in candidates[before:]:
+            L = _lead_from_record(c, spec)
+            leads.append(L)
+            cand_lead[c.source_url] = L
         for c in candidates:                    # details the page reader found for Intent Miner leads
             L = cand_lead.get(c.source_url)
             if L is not None:
@@ -857,6 +872,33 @@ def _why(why: List[str], parts: dict, r, fresh: int, date: Optional[str], d: Raw
     if d.via == "snippet":
         out.append("Based on the search-result snippet only (page not readable)")
     return ["✓ " + x for x in dict.fromkeys(out)][:10]
+
+
+def _lead_from_record(c: CandidateRecord, spec: QuerySpec) -> dict:
+    """An intent lead for one person the page reader found (their own words, their own contact)."""
+    fresh = scoring.freshness(c.activity_date)
+    intent_score = 80 if c.shows_interest else 55
+    score = scoring.lead_score(intent_score, fresh, SOURCE_QUALITY.get(c.platform or "", 35))
+    contact = (c.phone or c.email or "").lower()
+    name = (c.name or "").strip()
+    key = (f"contact:{contact}" if contact else
+           f"{c.platform or 'web'}:{name.lower()}" if name else f"url:{c.source_url}")
+    ev = [c.evidence_snippet] if c.evidence_snippet else []
+    return {
+        "lead_key": key, "display_name": name or None, "platform": c.platform or "web",
+        "profile_url": c.profile_url, "email": c.email, "phone": c.phone,
+        "profession": c.current_role or (spec.professions[0] if spec.professions else None),
+        "origin": c.current_location, "destination": (c.target_countries or [None])[0], "timeline": None,
+        "intent_type": spec.intent_type, "intent_score": intent_score, "lead_score": score,
+        "tier": scoring.tier(score), "confidence": 0.7 if c.shows_interest else 0.5, "freshness": fresh,
+        "source_quality": SOURCE_QUALITY.get(c.platform or "", 35), "evidence": ev,
+        "why": ["Found by the page reader: the person's own words" + (" — says they are interested"
+                                                                       if c.shows_interest else "")],
+        "status": "QUALIFIED", "last_activity": c.activity_date,
+        "sources": [{"url": c.source_url.split("#")[0], "source": c.platform or "web", "kind": "comment",
+                     "date": c.activity_date, "score": score, "evidence": ev[0] if ev else ""}],
+        "_text": c.evidence_snippet or "",
+    }
 
 
 def _candidate(lead: dict, d: RawDocument, i: int, u: Unit) -> CandidateRecord:

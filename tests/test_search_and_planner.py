@@ -158,3 +158,34 @@ def test_searxng_without_json_explains(monkeypatch):
     hits, err, _ = integrations.web_search("searxng", {"searxng": "http://x"}, "q", 10, "in-en")
     assert not hits and "search.formats" in err
     integrations._EXHAUSTED.clear()
+
+
+def test_routes_with_a_query_string_are_found():
+    """The page sends the endpoint (with its query) in X-Endpoint / __path; the query must not break routing."""
+    import asyncio
+    import importlib.util
+    import sys
+    from pathlib import Path
+    from urllib.parse import quote
+    idx = sys.modules.get("idx")
+    if idx is None:
+        path = Path(__file__).resolve().parent.parent / "api" / "index.py"
+        spec = importlib.util.spec_from_file_location("idx", path)
+        idx = importlib.util.module_from_spec(spec)
+        sys.modules["idx"] = idx
+        spec.loader.exec_module(idx)
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["path"] = scope["path"]
+
+    mw = idx.VercelPathNormalizedMiddleware(app)
+    for header in (b"/api/im/leads?min_score=0&since=2026-10-04T21:00:00.000Z", b"/api/im/leads"):
+        scope = {"type": "http", "path": "/api/index", "headers": [(b"x-endpoint", header)],
+                 "query_string": b"min_score=0&__path=" + quote("im/leads?min_score=0").encode()}
+        asyncio.run(mw(scope, None, None))
+        assert seen["path"] == "/api/im/leads"
+    scope = {"type": "http", "path": "/api/index", "headers": [],
+             "query_string": b"x=1&__path=" + quote("categories/searches?name=A").encode()}
+    asyncio.run(mw(scope, None, None))
+    assert seen["path"] == "/api/categories/searches"

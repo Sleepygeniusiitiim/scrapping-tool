@@ -698,12 +698,13 @@ $("extraction").addEventListener("change", () => store("csa_extraction", $("extr
 
 // ---------- API ----------
 async function api(path, body) {
-  const cleanEndpoint = path.replace(/^\/api\//, "").replace(/^\//, "");
+  const route = path.split("?")[0];          // the route only — the query stays in the URL
+  const cleanEndpoint = route.replace(/^\/api\//, "").replace(/^\//, "");
   const url = `${path}${path.includes("?") ? "&" : "?"}__path=${encodeURIComponent(cleanEndpoint)}`;
   const headers = {
     "Content-Type": "application/json",
     "X-App-Password": $("pw").value,
-    "X-Endpoint": path,
+    "X-Endpoint": route,
   };
   const ok = $("orKey").value.trim(), om = $("orModel").value.trim();
   headers["X-LLM-Provider"] = llmProvider();
@@ -723,6 +724,10 @@ async function api(path, body) {
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  // The server's clock (Date header): run windows are compared with times the server saved, so a wrong PC
+  // clock must not shift them.
+  const sd = Date.parse(res.headers.get("date") || "");
+  if (sd) state.clockOffset = sd - Date.now();
   let data = null;
   try { data = await res.json(); } catch (_) {}
   if (!res.ok) {
@@ -924,15 +929,17 @@ function buildView(container, getRecords, key) {
 }
 
 // ---------- run windows: which contacts a run / batch job found (by the time they were saved) ----------
-const RUN_SLACK_MS = 5 * 60 * 1000;
+const RUN_SLACK_MS = 90 * 1000;          // server-time windows: only request latency / rounding to absorb
+function serverNow() { return new Date(Date.now() + (state.clockOffset || 0)).toISOString(); }
 function loadRunWindows() { try { return JSON.parse(load("csa_run_windows") || "[]"); } catch (_) { return []; } }
 function markRunStart(intent) {
-  state.runWindow = { from: new Date().toISOString(), label: (intent || "").slice(0, 50) };
+  state.runWindow = { from: serverNow(), label: (intent || "").slice(0, 50) };
+  if (!state.batchFrom) state.batchFrom = state.runWindow.from;
 }
 function markRunEnd() {
   if (!state.runWindow) return;
   const all = loadRunWindows();
-  all.unshift({ ...state.runWindow, to: new Date().toISOString() });
+  all.unshift({ ...state.runWindow, to: serverNow() });
   store("csa_run_windows", JSON.stringify(all.slice(0, 20)));
   state.runWindow = null;
 }
@@ -945,7 +952,7 @@ function unpinView() { state.viewPinned = ""; $("pinBar").classList.add("hidden"
 function markBatch(from, rounds, intent) {
   if (rounds < 2) return;
   const all = loadRunWindows();
-  all.unshift({ from, to: new Date().toISOString(), label: (intent || "").slice(0, 50), kind: "batch", rounds });
+  all.unshift({ from, to: serverNow(), label: (intent || "").slice(0, 50), kind: "batch", rounds });
   store("csa_run_windows", JSON.stringify(all.slice(0, 20)));
 }
 function runWindows() {
@@ -963,7 +970,7 @@ function runWindows() {
     }
   });
   (state.jobWindows || []).forEach((j, i) => out.push({ label: `${i === 0 ? "Last batch job" : "Batch job"} · ${fmt(j.from)} · ${j.label}`, from: j.from, to: j.to }));
-  const now = Date.now();
+  const now = Date.now() + (state.clockOffset || 0);
   out.push({ label: "Last 24 hours", from: new Date(now - 864e5).toISOString(), to: null });
   out.push({ label: "Last 7 days", from: new Date(now - 7 * 864e5).toISOString(), to: null });
   return out;
@@ -1750,7 +1757,7 @@ function addRunRecords(recs) {
 $("startBtn").onclick = async () => {
   if ($("bgRun").checked) return startJob();
   const n = Number($("roundsN").value) || 1, pause = Number($("roundPause").value) || 0;
-  const batchFrom = new Date().toISOString();
+  state.batchFrom = null;                  // set by the first round, once the server's clock is known
   unpinView();
   state.roundsLeft = n;
   for (let r = 0; r < n; r++) {
@@ -1768,7 +1775,7 @@ $("startBtn").onclick = async () => {
     }
   }
   state.roundsLeft = 0;
-  markBatch(batchFrom, n, $("intent").value.trim());
+  if (state.batchFrom) markBatch(state.batchFrom, n, $("intent").value.trim());
   if (n > 1 && "Notification" in window && Notification.permission === "granted")
     new Notification("Sourcing Agent", { body: `${n} rounds finished — ${state.runRecords.length} contacts in the last round.` });
 };
@@ -2195,8 +2202,19 @@ $("lastRunBtn").onclick = async () => {
   state.runFilter = w.label;
   document.querySelector('[data-tab="db"]').click();
   await $("loadDb").onclick();
-  $("backupOut").textContent = `Showing contacts found in: ${w.label}`;
-  pinView(`contacts from ${w.label}`);
+  const contacts = (state.dbRecords || []).filter((r) => inWindow(r.discovered_at, w)).length;
+  // the intent leads that batch found or found again (by the time the server saved them)
+  let leads = [];
+  try {
+    const since = new Date(Date.parse(w.from) - RUN_SLACK_MS).toISOString();
+    const until = new Date((w.to ? Date.parse(w.to) : Date.now() + (state.clockOffset || 0)) + RUN_SLACK_MS).toISOString();
+    leads = (await api(`/api/im/leads?min_score=0&limit=5000&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`)).leads;
+    im.leads.clear(); leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
+    $("imMin").value = 0; imRenderLeads();
+  } catch (e) { $("backupOut").textContent = "❌ " + e.message; }
+  $("backupOut").textContent = `${w.label}: ${contacts} contacts and ${leads.length} intent leads.` +
+    (contacts || leads.length ? "" : " Nothing was saved in that time — check the run log for why (no results, blocked pages, filters).");
+  pinView(`results of ${w.label}`);
   $("tab-db").scrollIntoView({ behavior: "smooth" });
 };
 $("backupAll").onclick = async () => {

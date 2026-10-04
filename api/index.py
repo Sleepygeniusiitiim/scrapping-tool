@@ -92,6 +92,9 @@ class VercelPathNormalizedMiddleware:
 
             current_path = scope.get("path", "")
             if target_path:
+                # the endpoint may carry its query ("im/leads?min_score=0"): the query is already in the URL,
+                # only the path part names the route
+                target_path = target_path.split("?", 1)[0].split("#", 1)[0]
                 clean = target_path.lstrip("/")
                 if clean.startswith("api/"):
                     scope["path"] = "/" + clean
@@ -761,10 +764,11 @@ async def im_process_ep(body: IMProcessIn, gemini=Depends(_reader), keys: dict =
 
 
 @router.get("/im/leads")
-def im_leads_ep(min_score: int = 0, run_id: str = "", offset: int = 0, limit: int = 2000, category: str = ""):
+def im_leads_ep(min_score: int = 0, run_id: str = "", offset: int = 0, limit: int = 2000, category: str = "",
+                since: str = "", until: str = ""):
     _db()
     return {"leads": _im_db(im_store.list_leads, min_score, max(1, min(limit, 5000)), run_id, max(0, offset),
-                            category)}
+                            category, since, until)}
 
 
 @router.get("/storage")
