@@ -247,6 +247,7 @@ class QueryIn(BaseModel):
     region: str = "in-en"
     backend: str = "auto"
     max_age_months: int = Field(0, ge=0, le=120)
+    max_age_days: int = Field(0, ge=0, le=3650)   # custom days (wins over months)
 
 
 class DedupIn(BaseModel):
@@ -270,6 +271,7 @@ class BatchIn(BaseModel):
     extraction: str = Field("rules", pattern="^(rules|hybrid|ai)$")
     plan_queries: List[str] = Field(default_factory=list, max_length=200)
     max_age_months: int = Field(0, ge=0, le=120)
+    max_age_days: int = Field(0, ge=0, le=3650)   # custom days (wins over months)
     role_keywords: List[str] = Field(default_factory=list, max_length=60)
     locations: List[str] = Field(default_factory=list, max_length=20)
     only_interested: bool = False
@@ -438,7 +440,8 @@ async def plan(
 @router.post("/search")
 def search(body: QueryIn, keys: dict = Depends(_keys)):
     backend = body.backend if body.backend in ("auto", "duckduckgo", "google") else "auto"
-    return pipeline.run_query(body.query, body.max_results, body.region, backend, keys, body.max_age_months)
+    return pipeline.run_query(body.query, body.max_results, body.region, backend, keys, body.max_age_months,
+                              body.max_age_days)
 
 
 @router.post("/dedup")
@@ -477,6 +480,7 @@ async def process(
             body.enrich,
             body.require_both,
             body.category,
+            body.max_age_days,
         )
         result["warnings"] = gemini.notices + result.get("warnings", [])
         return result
@@ -513,6 +517,7 @@ class EnrichIn(BaseModel):
     providers: List[str] = Field(default_factory=list)
     only_interested: bool = True
     max_age_months: int = Field(0, ge=0, le=120)
+    max_age_days: int = Field(0, ge=0, le=3650)   # custom days (wins over months)
     require_both: bool = True
 
 
@@ -539,7 +544,7 @@ async def enrich(body: EnrichIn, keys: dict = Depends(_keys)):
             return {"id": c["id"], "name": c.get("name"), "skipped": "already has phone and email"}
         if body.only_interested and not c.get("shows_interest"):
             return {"id": c["id"], "name": c.get("name"), "skipped": "has not said they are interested"}
-        if dates.older_than(c.get("activity_date"), body.max_age_months):
+        if dates.older_than(c.get("activity_date"), body.max_age_months, body.max_age_days):
             return {"id": c["id"], "name": c.get("name"), "skipped": "older than the chosen period"}
         li = c.get("profile_url") or ""
         if not li:

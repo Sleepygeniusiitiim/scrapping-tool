@@ -49,10 +49,9 @@ class SearchProvider(BaseProvider):
         self.backend, self.region, self.max_results = backend, region, max_results
 
     async def search(self, query: str, spec: QuerySpec, limit: int) -> List[dict]:
-        months = max(1, round((spec.max_age_days or 0) / 30)) if spec.max_age_days else 0
         async with self.limiter:
             r = await asyncio.to_thread(pipeline.run_query, query, min(limit, self.max_results), self.region,
-                                        self.backend, self.keys, months)
+                                        self.backend, self.keys, 0, int(spec.max_age_days or 0))
         self.note("failed" if r.get("error") and not r["hits"] else "ok")
         self.last_related = r.get("related") or []
         extra = entity_hits(r.get("entities") or [], query)

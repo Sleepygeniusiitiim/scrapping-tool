@@ -96,11 +96,13 @@ def snippet_date(snippet: str) -> Optional[str]:
     return None
 
 
-def older_than(date_iso: Optional[str], months: int) -> bool:
-    if not date_iso or not months:
+def older_than(date_iso: Optional[str], months: float = 0, days: int = 0) -> bool:
+    """Older than the window: `days` when given (custom days), else `months`."""
+    limit = days or (months * 30.5 if months else 0)
+    if not date_iso or not limit:
         return False
     try:
         d = dt.date.fromisoformat(date_iso[:10])
     except ValueError:
         return False
-    return (today() - d).days > months * 30.5
+    return (today() - d).days > limit

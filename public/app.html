@@ -383,7 +383,8 @@
         <div><label for="backend">Search backend</label>
           <select id="backend"><option value="all">all engines at once (DuckDuckGo + every search API key, merged)</option><option value="auto">auto (DuckDuckGo + Google)</option><option value="google">google only (search API)</option><option value="duckduckgo">duckduckgo only</option></select></div>
         <div><label for="maxAge" title="Search only recent pages, and drop leads whose post / comment is older. Leads with no date found are kept.">Only leads active in the last</label>
-          <select id="maxAge"><option value="1">1 month</option><option value="3">3 months</option><option value="6" selected>6 months</option><option value="12">12 months</option><option value="24">2 years</option><option value="0">any time</option></select></div>
+          <select id="maxAge"><option value="1">1 month</option><option value="2">2 months</option><option value="3">3 months</option><option value="6" selected>6 months</option><option value="12">12 months</option><option value="24">2 years</option><option value="0">any time</option><option value="custom">Custom number of days…</option></select>
+          <div class="row hidden" id="maxAgeDaysRow" style="margin-top:6px;flex-wrap:nowrap"><input id="maxAgeDays" type="number" min="1" max="3650" step="1" value="7" style="width:110px"><span class="status" style="margin:0">days</span></div></div>
         <div><label for="extraction" title="How pages are read. Rules find emails, phone numbers, names, roles and countries with pattern matching — no AI tokens. The AI is then only used once per round, to plan the searches.">Page reading</label>
           <select id="extraction"><option value="rules">rules — no AI tokens</option><option value="hybrid">hybrid — AI only when rules find nobody</option><option value="ai">AI reads every page</option></select></div>
       </div>
@@ -892,7 +893,22 @@ if (load("csa_extraction")) $("extraction").value = load("csa_extraction");
 if (load("csa_search_mode")) $("searchMode").value = load("csa_search_mode");
 $("searchMode").addEventListener("change", () => store("csa_search_mode", $("searchMode").value));
 if (load("csa_max_age") !== null && load("csa_max_age") !== "") $("maxAge").value = load("csa_max_age");
-$("maxAge").addEventListener("change", () => store("csa_max_age", $("maxAge").value));
+if (load("csa_max_age_days")) $("maxAgeDays").value = load("csa_max_age_days");
+function showAgeDays() { $("maxAgeDaysRow").classList.toggle("hidden", $("maxAge").value !== "custom"); }
+showAgeDays();
+$("maxAge").addEventListener("change", () => { store("csa_max_age", $("maxAge").value); showAgeDays();
+  if ($("maxAge").value === "custom") $("maxAgeDays").focus(); });
+$("maxAgeDays").addEventListener("change", () => store("csa_max_age_days", $("maxAgeDays").value));
+// "Only leads active in the last…": a preset in months or a custom number of days. 0 = any time.
+function ageDays() {
+  if ($("maxAge").value === "custom") return Math.max(1, Math.min(3650, Math.round(Number($("maxAgeDays").value) || 0))) || 0;
+  const m = Number($("maxAge").value) || 0;
+  return m ? Math.round(m * 30.5) : 0;
+}
+function ageCustom() { return $("maxAge").value === "custom" ? ageDays() : 0; }        // custom days, else 0
+function ageMonths() { return $("maxAge").value === "custom" ? Math.max(1, Math.ceil(ageDays() / 30.5)) : (Number($("maxAge").value) || 0); }
+function ageLabel() { const d = ageDays(); return !d ? "any time" : $("maxAge").value === "custom" ? `${d} day${d === 1 ? "" : "s"}` :
+  `${ageMonths()} month${ageMonths() === 1 ? "" : "s"}`; }
 for (const id of ["onlyInterested", "useLeadDb", "requireBoth"]) {
   const v = load("csa_" + id); if (v === "1" || v === "0") $(id).checked = v === "1";
   $(id).addEventListener("change", () => store("csa_" + id, $(id).checked ? "1" : "0"));
@@ -1287,8 +1303,8 @@ $("enrichBtn").onclick = async () => {
   const btn = $("enrichBtn"); btn.disabled = true;
   try {
     const all = (await api("/api/candidates")).candidates;
-    const months = Number($("maxAge").value), onlyKeen = $("onlyInterested").checked;
-    const cutoff = months ? Date.now() - months * 30.5 * 864e5 : 0;
+    const days = ageDays(), onlyKeen = $("onlyInterested").checked;
+    const cutoff = days ? Date.now() - days * 864e5 : 0;
     const todo = all.filter((c) => (!c.phone || !c.email) && (!onlyKeen || c.shows_interest) &&
       (!cutoff || !c.activity_date || Date.parse(c.activity_date) >= cutoff));
     if (!todo.length) { $("dbStatus").textContent = "No interested, recent candidates are missing a phone or email."; return; }
@@ -1297,7 +1313,7 @@ $("enrichBtn").onclick = async () => {
       const chunk = todo.slice(i, i + 10);
       $("dbStatus").textContent = `Looking up ${done + 1}–${done + chunk.length} of ${todo.length}… (${filled} filled so far)`;
       const r = await api("/api/enrich", { candidate_ids: chunk.map((c) => c.id), only_interested: onlyKeen,
-        max_age_months: months, require_both: $("requireBoth").checked });
+        max_age_months: ageMonths(), max_age_days: ageCustom(), require_both: $("requireBoth").checked });
       for (const x of r.results) {
         if (x.provider) filled++;
         const why = x.skipped || (x.provider ? "" : (x.errors || [])[0] || "not found in any lead database");
@@ -1503,7 +1519,7 @@ async function runDoctor(spec) {
   if ($("useLeadDb").checked && $("requireBoth").checked && /only a phone or only an email/.test(log)) tips.push("Some lookups found only a phone or only an email and were dropped: untick <b>both phone &amp; email</b> to keep them.");
   if ((c.withEmail || c.guessed) && ready && !ready.smtp_remote && !(ready.mailbox_check || []).length) tips.push("Emails are checked by DNS only (Vercel blocks the SMTP port): set <code>SMTP_VERIFY_URL</code> or a Hunter / ZeroBounce / NeverBounce key to confirm mailboxes.");
   if ($("extraction").value === "rules") tips.push("Page reading is “rules only”: choose <b>hybrid</b> for the AI to judge the shortlisted posts (more accurate leads, a few AI calls per batch).");
-  if (/too old/.test(log) && Number($("maxAge").value)) tips.push("Many posts were older than the time window: widen <b>Only leads active in the last</b> to get more.");
+  if (/too old/.test(log) && ageDays()) tips.push("Many posts were older than the time window: widen <b>Only leads active in the last</b> to get more.");
   if (!ws.length) { box.innerHTML = ""; return; }
   box.innerHTML = `<div class="im-card"><h4>📋 Run summary <button data-goto="leads" style="margin-left:auto;padding:4px 12px">See leads →</button></h4>
     <p><b>${c.records}</b> contacts saved · <b>${c.withPhone}</b> with phone · <b>${c.withEmail}</b> with email · ${c.both} with both` +
@@ -1518,12 +1534,11 @@ async function runCombined(intent, totals, rounds, mode) {
   const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
   const auto = $("autoSources").checked;
   if (!sources.length && !auto) throw new Error("Tick at least one source.");
-  const months = Number($("maxAge").value);
   const numQueries = Math.max(4, Math.min(60, num("numWaves") * num("qpw")));
   const roundNo = rounds.round + 1;
   logEv("info", roundNo > 1 ? `Round ${roundNo}: understanding the command again, avoiding ${rounds.queries.length} queries already used…`
                             : "Understanding the command and planning searches…");
-  const u = await api("/api/im/understand", { command: intent, sources, max_age_days: months ? Math.round(months * 30.5) : null,
+  const u = await api("/api/im/understand", { command: intent, sources, max_age_days: ageDays() || null,
     num_queries: numQueries, exclude_queries: rounds.queries, auto_sources: auto,
     target: $("lookingFor").value, category: roundNo === 1 ? runCategory() : "", mode });
   const spec = u.spec;
@@ -1630,8 +1645,7 @@ async function imSpecFor(intent, sources) {
   try { spec = JSON.parse($("imSpec").dataset.spec || "null"); } catch (_) {}
   if (spec) return spec;
   logEv("info", "Understanding the command…");
-  const months = Number($("maxAge").value);
-  const u = await api("/api/im/understand", { command: intent, sources, max_age_days: months ? Math.round(months * 30.5) : null,
+  const u = await api("/api/im/understand", { command: intent, sources, max_age_days: ageDays() || null,
     num_queries: 4 });
   im.runId = u.run_id; imRenderSpec(u.spec); $("imSpec").dataset.spec = JSON.stringify(u.spec);
   return u.spec;
@@ -2009,10 +2023,9 @@ async function startJob() {
   if (!intent) { $("runStatus").textContent = "Enter a discovery intent."; return; }
   if (!(await preflight())) return;
   const sources = [...$("imSources").querySelectorAll("input:checked")].map((x) => x.value);
-  const months = Number($("maxAge").value);
   try {
     const r = await api("/api/jobs", { command: intent, sources, auto_sources: $("autoSources").checked,
-      max_age_days: months ? Math.round(months * 30.5) : null,
+      max_age_days: ageDays() || null,
       num_queries: Math.max(4, Math.min(60, num("numWaves") * num("qpw"))), max_urls: Math.max(num("maxUrls") || 30, 60),
       batch: Math.min(8, num("batch") || 5), settings: imSettings({ mode: "combined" }, intent, []),
       use_page_keys: $("bgKeys").checked, rounds: Number($("roundsN").value) || 1,
@@ -2124,7 +2137,7 @@ async function startRun(nextRound) {
 async function runPipeline(intent, totals, rounds) {
   const settings = { numWaves: num("numWaves"), qpw: num("qpw"), maxRes: num("maxRes"), maxUrls: num("maxUrls"),
     batch: num("batch"), timeout: num("timeout"), region: $("region").value, backend: $("backend").value,
-    robots: $("robots").checked, snippet: $("snippet").checked, extraction: $("extraction").value, maxAge: Number($("maxAge").value),
+    robots: $("robots").checked, snippet: $("snippet").checked, extraction: $("extraction").value, maxAge: ageMonths(), maxAgeDays: ageCustom(),
     onlyInterested: $("onlyInterested").checked, useLeadDb: $("useLeadDb").checked, requireBoth: $("requireBoth").checked };
 
   logEv("info", "Asking Gemini for a multi-wave search plan…");
@@ -2156,7 +2169,7 @@ async function runPipeline(intent, totals, rounds) {
     for (let qi = 0; qi < wave.queries.length && !state.stop; qi++) {
       const q = wave.queries[qi];
       try {
-        const r = await api("/api/search", { query: q, max_results: settings.maxRes, region: settings.region, backend: settings.backend, max_age_months: settings.maxAge });
+        const r = await api("/api/search", { query: q, max_results: settings.maxRes, region: settings.region, backend: settings.backend, max_age_months: settings.maxAge, max_age_days: settings.maxAgeDays });
         let added = 0;
         for (const h of r.hits) if (!hits.has(h.url)) { hits.set(h.url, h); added++; }
         if (r.google_missing && !state.googleHinted) {
@@ -2199,7 +2212,7 @@ async function runPipeline(intent, totals, rounds) {
         const r = await api("/api/process", { intent, items, wave_tag: tag, page_timeout_s: settings.timeout,
           respect_robots: settings.robots, snippet_fallback: settings.snippet,
           extraction: settings.extraction, plan_queries: waves.flatMap((w) => w.queries),
-          max_age_months: settings.maxAge, role_keywords: plan.role_keywords || [], locations: plan.locations || [],
+          max_age_months: settings.maxAge, max_age_days: settings.maxAgeDays, role_keywords: plan.role_keywords || [], locations: plan.locations || [],
           only_interested: settings.onlyInterested, enrich: settings.useLeadDb, require_both: settings.requireBoth,
           category: runCategory() });
         for (const k of ["crawled", "blocked", "failed", "records", "dropped"]) stats[k] += r.stats[k];
@@ -2227,7 +2240,7 @@ async function runPipeline(intent, totals, rounds) {
         }
         logEv("saved", `Batch ${b + 1}: ${r.stats.pages_read ?? r.stats.sent_to_gemini} pages read (${r.stats.sent_to_gemini} by AI) → ${r.stats.records} candidates saved` +
           ` (${r.stats.with_phone || 0} with phone, ${r.stats.with_email || 0} with email, ${r.stats.dated || 0} dated)` +
-          (r.stats.too_old ? ` · ${r.stats.too_old} skipped as older than ${settings.maxAge} months` : "") +
+          (r.stats.too_old ? ` · ${r.stats.too_old} skipped as older than ${ageLabel()}` : "") +
           (r.stats.not_interested ? ` · ${r.stats.not_interested} skipped (no interest shown)` : "") +
           (r.stats.off_target ? ` · ${r.stats.off_target} skipped (wrong location)` : "") +
           (r.stats.recruiters ? ` · ${r.stats.recruiters} HR / recruiters / job ads left out` : "") +

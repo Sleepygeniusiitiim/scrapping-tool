@@ -231,8 +231,7 @@ async def process(ai, spec: QuerySpec, items: List[dict], keys: Dict[str, str], 
                 continue
             kept.append(u)
             stats["units"] += 1
-            if not orgs and dates.older_than(u.date or d.date, max(1, round((spec.max_age_days or 0) / 30))
-                                             if spec.max_age_days else 0):
+            if not orgs and dates.older_than(u.date or d.date, 0, int(spec.max_age_days or 0)):
                 stats["too_old"] += 1
                 continue
             context = f"{d.title}\n{u.text}" if u.kind in ("post", "snippet", "answer", "organization") else u.text
@@ -800,7 +799,7 @@ async def _classic(ai, spec: QuerySpec, docs: List[RawDocument], hits: Dict[str,
                                   rule_extractor.keywords_from(intent, settings.get("plan_queries") or [])))
     from .models import concrete_places
     places = concrete_places(spec.destination) or concrete_places(spec.origin)
-    months = max(1, round(spec.max_age_days / 30)) if spec.max_age_days else 0
+    days = int(spec.max_age_days or 0)
     jobs = []
     for d in docs:
         if not d.units:
@@ -820,7 +819,7 @@ async def _classic(ai, spec: QuerySpec, docs: List[RawDocument], hits: Dict[str,
         recs, _, used_ai, _ = r
         ai_calls += used_ai
         for rec in recs:
-            if dates.older_than(rec.activity_date, months):
+            if dates.older_than(rec.activity_date, 0, days):
                 stats["too_old"] += 1
                 continue
             if settings.get("only_interested") and not rec.shows_interest:

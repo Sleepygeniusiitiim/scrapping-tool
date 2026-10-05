@@ -210,6 +210,7 @@ def search_query(
     backend: str = "auto",
     timeout: int = 15,
     max_age_months: int = 0,
+    max_age_days: int = 0,
 ) -> QueryOutcome:
     """
     Run ONE query. Never raises: failures are reported on the outcome.
@@ -220,7 +221,8 @@ def search_query(
     outcome = QueryOutcome(query=query)
     for attempt in range(2):
         try:
-            timelimit = None if not max_age_months else ("m" if max_age_months <= 1 else "y")
+            days = max_age_days or (round(max_age_months * 30.5) if max_age_months else 0)
+            timelimit = None if not days else "d" if days <= 1 else "w" if days <= 7 else "m" if days <= 31 else "y"
             raw = DDGS(timeout=timeout).text(
                 query, region=region, safesearch="off", max_results=max_results, backend=backend,
                 timelimit=timelimit,

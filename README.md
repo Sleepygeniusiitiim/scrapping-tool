@@ -552,6 +552,13 @@ Expect fewer and less precise results than Google through Serper (the engines be
 and some block cloud servers — running it on an office / home connection works best). If SearXNG is down, the
 app skips it for 30 minutes and says so in the log.
 
+## Time window: presets or custom days
+
+⚙️ Search settings → **Only leads active in the last**: 1, 2, 3, 6 or 12 months, 2 years, any time — or **Custom
+number of days…** (e.g. 1, 6, 7, 15). The window is applied to every search engine's own date filter (Google:
+past N days; DuckDuckGo / Brave / SearXNG: past day / week / month / year, the nearest one that covers it) and
+then exactly: posts and comments older than N days are dropped by both page readers (leads with no date are kept).
+
 ## 📁 Categories and “Looking for”
 
 On the Search page, **Looking for** tells the AI what kind of search this is — 👤 candidates (people interested

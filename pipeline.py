@@ -426,12 +426,12 @@ async def plan_search(gemini: Gemini, intent: str, num_waves: int, queries_per_w
 
 
 def run_query(query: str, max_results: int, region: str, backend: str, keys: Optional[dict] = None,
-              max_age_months: int = 0) -> dict:
+              max_age_months: int = 0, max_age_days: int = 0) -> dict:
     """backend: auto (DuckDuckGo + a Google API when one has a key) | duckduckgo | google |
     all (every configured engine in parallel, results merged by reciprocal-rank fusion)."""
     keys = keys or {}
     if backend == "all":
-        return _run_query_fanout(query, max_results, region, keys, max_age_months)
+        return _run_query_fanout(query, max_results, region, keys, max_age_months, max_age_days)
     token = scrapedo_token(keys)
     if token:
         keys = {**keys, "scrapedo": token}
@@ -453,11 +453,11 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
     if backend != "google" or not google_apis:
         ddg_backend = "duckduckgo" if backend == "duckduckgo" else "auto"
         add(search_query(query, max_results=max_results, region=region, backend=ddg_backend,
-                         max_age_months=max_age_months), "ddg")
+                         max_age_months=max_age_months, max_age_days=max_age_days), "ddg")
         if backend in ("auto", "google") and not google_apis:
             # No Google API key: try Google's own results page for free (often refused from cloud IPs).
             add(search_query(query, max_results=max_results, region=region, backend="google",
-                             max_age_months=max_age_months), "google-free")
+                             max_age_months=max_age_months, max_age_days=max_age_days), "google-free")
     # Google finds pages DuckDuckGo misses (Reddit, Quora, forums), so auto always adds it when possible.
     # The first configured API is used; if it fails (no credits, bad key) the next one is tried.
     if backend in ("auto", "google"):
@@ -468,14 +468,14 @@ def run_query(query: str, max_results: int, region: str, backend: str, keys: Opt
                     integrations.mark_exhausted("scrapedo", outcome.error)
             else:
                 found, err, limited = integrations.web_search(name, keys, query, max_results, region,
-                                                              max_age_months, extras)
+                                                              max_age_months, extras, max_age_days)
                 outcome = _Outcome(found, err, limited)
             add(outcome, name)
             if not outcome.error:
                 break
         if backend == "google" and google_apis and not hits:
             add(search_query(query, max_results=max_results, region=region, backend="auto",
-                             max_age_months=max_age_months), "ddg")
+                             max_age_months=max_age_months, max_age_days=max_age_days), "ddg")
 
     return {
         "query": query,
@@ -500,7 +500,8 @@ def _dedupe_extras(extras: dict) -> dict:
             "questions": [q for q in extras.get("questions", []) if q.get("question")][:8]}
 
 
-def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max_age_months: int) -> dict:
+def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max_age_months: int,
+                      max_age_days: int = 0) -> dict:
     """Every configured engine at once (DuckDuckGo, Serper, Google CSE, SerpApi, Brave, Scrape.do) — each one
     indexes pages the others miss. Results are merged with reciprocal-rank fusion: a page ranked high by
     several engines comes first."""
@@ -514,13 +515,13 @@ def _run_query_fanout(query: str, max_results: int, region: str, keys: dict, max
     def one(name: str):
         if name == "ddg":
             r = search_query(query, max_results=max_results, region=region, backend="auto",
-                             max_age_months=max_age_months)
+                             max_age_months=max_age_months, max_age_days=max_age_days)
             return name, [{"url": h.url, "title": h.title, "snippet": h.snippet, "date": getattr(h, "date", None)}
                           for h in r.hits], r.error
         if name == "scrapedo":
             r = google_search_scrapedo(query, token, max_results=max_results, region=region)
             return name, [{"url": h.url, "title": h.title, "snippet": h.snippet} for h in r.hits], r.error
-        found, err, _ = integrations.web_search(name, keys, query, max_results, region, max_age_months, extras)
+        found, err, _ = integrations.web_search(name, keys, query, max_results, region, max_age_months, extras, max_age_days)
         o = _Outcome(found, err, False)
         return name, [{"url": h.url, "title": h.title, "snippet": h.snippet, "date": getattr(h, "date", None)}
                       for h in o.hits], err
@@ -860,7 +861,7 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
                         keys: Optional[dict] = None, max_age_months: int = 0,
                         role_keywords: Optional[List[str]] = None, locations: Optional[List[str]] = None,
                         only_interested: bool = False, enrich: bool = False, require_both: bool = True,
-                        category: str = "") -> dict:
+                        category: str = "", max_age_days: int = 0) -> dict:
     """items: [{url, title, snippet}] — record, fetch, extract, save (tagged with `category` when given)."""
     urls = [i["url"] for i in items]
     hits: Dict[str, dict] = {i["url"]: i for i in items}
@@ -926,7 +927,7 @@ async def process_batch(gemini: Gemini, intent: str, items: List[dict], wave_tag
         dropped += d
         off_target += off
         ai_pages += used_ai
-        fresh = [x for x in recs if not dates.older_than(x.activity_date, max_age_months)]
+        fresh = [x for x in recs if not dates.older_than(x.activity_date, max_age_months, max_age_days)]
         too_old += len(recs) - len(fresh)
         if only_interested:
             keen = [x for x in fresh if x.shows_interest]

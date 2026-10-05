@@ -204,3 +204,33 @@ def test_category_create_and_multi_search(monkeypatch):
         pass
     categories.searches(["Gulf welders", "Kuwait drivers"])
     assert calls[-1][1] == (["Gulf welders", "Kuwait drivers"], 200)
+
+
+def test_custom_days_window(monkeypatch):
+    import datetime as dt
+    import dates
+    import httpx
+    import integrations
+    today = dt.date.today()
+    eight_days_ago = (today - dt.timedelta(days=8)).isoformat()
+    assert dates.older_than(eight_days_ago, 0, 7) and not dates.older_than(eight_days_ago, 0, 15)
+    assert not dates.older_than(eight_days_ago, 1)                       # months still work
+    integrations._EXHAUSTED.clear()
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.host, dict(request.url.params), request.content))
+        if request.url.host == "google.serper.dev":
+            return httpx.Response(200, json={"organic": []})
+        return httpx.Response(200, json={"results": []})
+
+    real = httpx.Client
+    monkeypatch.setattr(integrations.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler)))
+    integrations.web_search("serper", {"serper": "k"}, "q", 10, "in-en", 0, None, 7)
+    assert b'"tbs": "qdr:d7"' in seen[-1][2] or b'"tbs":"qdr:d7"' in seen[-1][2]
+    integrations.web_search("searxng", {"searxng": "http://x"}, "q", 10, "in-en", 0, None, 7)
+    assert seen[-1][1]["time_range"] == "week"
+    integrations.web_search("searxng", {"searxng": "http://x"}, "q", 10, "in-en", 0, None, 1)
+    assert seen[-1][1]["time_range"] == "day"
+    integrations.web_search("serper", {"serper": "k"}, "q", 10, "in-en", 2)   # preset months unchanged
+    assert b"qdr:m2" in seen[-1][2]

@@ -176,14 +176,17 @@ def _serpapi_extras(data: dict, extras: dict) -> None:
 
 
 def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, region: str,
-               max_age_months: int = 0, extras: Optional[dict] = None) -> Tuple[List[dict], Optional[str], bool]:
+               max_age_months: int = 0, extras: Optional[dict] = None,
+               max_age_days: int = 0) -> Tuple[List[dict], Optional[str], bool]:
     """(hits, error, rate_limited) from one search API. max_age_months > 0 restricts to recent pages.
     `extras` (optional dict) receives what Google shows besides the organic results, as SerpApi / Serper return
     it: entities (local pack businesses with phone / website / address, the knowledge panel with phone,
     website and founders), questions ("People also ask" with their answer links) and related searches."""
     gl = _gl(region)
     n = max(1, min(max_results, 100))
-    tbs = {"tbs": f"qdr:m{max_age_months}"} if max_age_months else {}
+    # the window in days (custom days win; else months) → each engine's own time filter
+    days = int(max_age_days or (round(max_age_months * 30.5) if max_age_months else 0))
+    tbs = ({"tbs": f"qdr:d{days}"} if max_age_days else {"tbs": f"qdr:m{max_age_months}"}) if days else {}
     ex = extras if extras is not None else {}
     for k in ("entities", "questions", "related"):
         ex.setdefault(k, [])
@@ -233,7 +236,8 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
                     r = c.get("https://www.googleapis.com/customsearch/v1", params={
                         "key": keys["google_cse_key"], "cx": keys["google_cse_cx"], "q": query,
                         "num": 10, "start": start, "gl": gl,
-                        **({"dateRestrict": f"m{max_age_months}"} if max_age_months else {})})
+                        **(({"dateRestrict": f"d{days}"} if max_age_days else {"dateRestrict": f"m{max_age_months}"})
+                           if days else {})})
                     page = _ok(r).get("items", [])
                     items += [(i.get("link"), i.get("title"), i.get("snippet"), _cse_date(i)) for i in page]
                     if len(page) < 10:
@@ -242,12 +246,13 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
                 r = c.get("https://api.search.brave.com/res/v1/web/search",
                           headers={"X-Subscription-Token": keys["brave"], "Accept": "application/json"},
                           params={"q": query, "count": min(n, 20), "country": gl.upper(),
-                                  **({"freshness": "pm" if max_age_months <= 1 else "py"} if max_age_months else {})})
+                                  **({"freshness": "pd" if days <= 1 else "pw" if days <= 7 else "pm" if days <= 31
+                                      else "py"} if days else {})})
                 items = [(i.get("url"), i.get("title"), re.sub(r"<[^>]+>", "", i.get("description") or ""),
                           i.get("page_age") or i.get("age"))
                          for i in (_ok(r).get("web") or {}).get("results", [])]
             elif name == "searxng":
-                items = _searxng(c, keys["searxng"], query, pages, region, max_age_months, ex)
+                items = _searxng(c, keys["searxng"], query, pages, region, days, ex)
             else:
                 return [], f"unknown search service {name}", False
     except _HTTPFail as exc:
@@ -266,7 +271,7 @@ def web_search(name: str, keys: Dict[str, str], query: str, max_results: int, re
     return hits[:n], None, False
 
 
-def _searxng(c: httpx.Client, base: str, query: str, pages: int, region: str, max_age_months: int,
+def _searxng(c: httpx.Client, base: str, query: str, pages: int, region: str, days: int,
              ex: dict) -> list:
     """SearXNG (self-hosted meta-search: DuckDuckGo, Brave, Mojeek, Qwant, Startpage… in one query, no keys).
     Needs `json` in the instance's search.formats (the bundled searxng/settings.yml has it)."""
@@ -279,7 +284,8 @@ def _searxng(c: httpx.Client, base: str, query: str, pages: int, region: str, ma
     for page in range(1, pages + 1):
         r = c.get(f"{base}/search", params={
             "q": query, "format": "json", "pageno": page, "language": lang, "safesearch": 0,
-            **({"time_range": "month" if max_age_months <= 1 else "year"} if max_age_months else {})},
+            **({"time_range": "day" if days <= 1 else "week" if days <= 7 else "month" if days <= 31 else "year"}
+               if days else {})},
             headers={"Accept": "application/json"})
         if r.status_code == 403:
             raise _HTTPFail(403, "the instance refuses JSON — add `json` to search.formats in its settings.yml")
