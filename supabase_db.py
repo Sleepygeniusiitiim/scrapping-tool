@@ -14,6 +14,8 @@ automatic connection retry and schema initialization.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import datetime
 import logging
 import os
@@ -52,8 +54,70 @@ _WRITE_CHUNK = 200
 _RETRIES = 3
 
 _database_url: Optional[str] = None
-_schema_ready: bool = False
+_schema_ready: set = set()          # schemas whose base tables exist (one per organization)
 _lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Organizations: every organization's data lives in its own PostgreSQL schema ("org_<id>"); the master
+# workspace is "public". The schema of the current request / job is a context variable, and every
+# transaction starts with SET LOCAL search_path — transaction-scoped, so it is safe with Neon's pooled
+# (PgBouncer transaction-mode) connections, where a session-level SET could leak to another client.
+# ---------------------------------------------------------------------------
+_SCHEMA_NAME = re.compile(r"^(public|org_[a-z0-9_]{1,48})$")
+_current_schema: contextvars.ContextVar = contextvars.ContextVar("db_schema", default="public")
+
+
+def current_schema() -> str:
+    return _current_schema.get()
+
+
+def set_schema(name: str):
+    """Make `name` the schema of this request / task (returns a token for reset)."""
+    if not _SCHEMA_NAME.match(name or ""):
+        raise SupabaseError(f"invalid schema name {name!r}")
+    return _current_schema.set(name)
+
+
+@contextlib.contextmanager
+def use_schema(name: str):
+    token = set_schema(name)
+    try:
+        yield
+    finally:
+        _current_schema.reset(token)
+
+
+def _scoped_cursor(base):
+    class Scoped(base):
+        def _scope(self):
+            sch = getattr(self.connection, "tenant_schema", "public")
+            if sch != "public" and self.connection.get_transaction_status() == \
+                    psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+                base.execute(self, f'SET LOCAL search_path TO "{sch}", public')
+
+        def execute(self, query, vars=None):
+            self._scope()
+            return base.execute(self, query, vars)
+
+        def executemany(self, query, vars_list):
+            self._scope()
+            return base.executemany(self, query, vars_list)
+    Scoped.__name__ = "Scoped" + base.__name__
+    return Scoped
+
+
+_SCOPED = {}
+
+
+class _TenantConnection(psycopg2.extensions.connection):
+    """A connection whose every transaction runs in the organization's schema."""
+    tenant_schema = "public"
+
+    def cursor(self, *args, **kwargs):
+        base = kwargs.pop("cursor_factory", None) or psycopg2.extensions.cursor
+        if base not in _SCOPED:
+            _SCOPED[base] = _scoped_cursor(base)
+        return super().cursor(*args, cursor_factory=_SCOPED[base], **kwargs)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS scraped_urls (
@@ -140,14 +204,14 @@ def _resolve_database_url(url: Optional[str] = None) -> str:
 
 def init_supabase(url: Optional[str] = None, key: Optional[str] = None) -> str:
     """Configure the Neon PostgreSQL database URL and ensure schema tables exist."""
-    global _database_url, _schema_ready
+    global _database_url
     resolved = _resolve_database_url(url)
     if not resolved:
         raise SupabaseError("DATABASE_URL (Neon PostgreSQL connection string) is required.")
     with _lock:
         if _database_url != resolved:
             _database_url = resolved
-            _schema_ready = False
+            _schema_ready.clear()
     _ensure_schema()
     return _database_url
 
@@ -159,23 +223,28 @@ def _connect():
     global _database_url
     if not _database_url:
         _database_url = _resolve_database_url()
-    return psycopg2.connect(_database_url, connect_timeout=15)
+    conn = psycopg2.connect(_database_url, connect_timeout=15, connection_factory=_TenantConnection)
+    conn.tenant_schema = current_schema()
+    return conn
 
 
 def _ensure_schema() -> None:
-    global _schema_ready
-    if _schema_ready:
+    sch = current_schema()
+    if sch in _schema_ready:
         return
     with _lock:
-        if _schema_ready:
+        if sch in _schema_ready:
             return
         def _run():
             with _connect() as conn:
                 with conn.cursor() as cur:
+                    if sch != "public":
+                        cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{sch}"')
+                        conn.commit()
                     cur.execute(SCHEMA_SQL)
                 conn.commit()
         _with_retry(_run, "Initializing Neon DB schema")
-        _schema_ready = True
+        _schema_ready.add(sch)
 
 
 def _with_retry(fn, what: str):

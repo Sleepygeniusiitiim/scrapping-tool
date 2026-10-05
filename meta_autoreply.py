@@ -58,20 +58,18 @@ CREATE TABLE IF NOT EXISTS meta_threads (
 );
 CREATE INDEX IF NOT EXISTS idx_meta_threads_recipient ON meta_threads (dm_recipient_id);
 """
-_ready = False
+_ready: set = set()
 
 
 def _q(sql: str, params=None, fetch: str = ""):
-    global _ready
     db._ensure_schema()
 
     def run():
-        global _ready
         with db._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                if not _ready:
+                if db.current_schema() not in _ready:
                     cur.execute(SCHEMA)
-                    _ready = True
+                    _ready.add(db.current_schema())
                 cur.execute(sql, params)
                 out = cur.fetchall() if fetch == "all" else cur.fetchone() if fetch == "one" else None
             conn.commit()

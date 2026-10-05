@@ -28,16 +28,15 @@ CREATE TABLE IF NOT EXISTS do_not_contact (
 CREATE INDEX IF NOT EXISTS idx_dnc_phone ON do_not_contact (phone_key);
 CREATE INDEX IF NOT EXISTS idx_dnc_email ON do_not_contact (lower(email));
 """
-_ready = False
+_ready: set = set()          # schemas (organizations) whose tables exist
 _lock = threading.Lock()
 _cache: Dict[str, set] = {}
 
 
 def _q(sql: str, params=None, fetch: str = ""):
-    global _ready
-    if not _ready:
+    if db.current_schema() not in _ready:
         with _lock:
-            if not _ready:
+            if db.current_schema() not in _ready:
                 db._ensure_schema()
 
                 def mk():
@@ -46,7 +45,7 @@ def _q(sql: str, params=None, fetch: str = ""):
                             cur.execute(SCHEMA)
                         conn.commit()
                 db._with_retry(mk, "Creating do-not-contact table")
-                _ready = True
+                _ready.add(db.current_schema())
 
     def run():
         with db._connect() as conn:

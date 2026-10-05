@@ -34,10 +34,29 @@ The app is pre-configured to connect to Neon DB using `psycopg2-binary` and auto
    | Name | Value |
    |---|---|
    | `DATABASE_URL` | your Neon connection string (Neon dashboard → Connect) |
-   | `APP_PASSWORD` | a long random password of your choice (required — there is no built-in default) |
+   | `APP_PASSWORD` | a long random password of your choice (required — there is no built-in default). This is the **owner** sign-in |
+   | `SECRET_KEY` | a long random string that encrypts the API keys saved for organizations — set once, never change it |
    | `GEMINI_API_KEY` | AI Studio (`AIza…`) or Vertex express (`AQ.…`) key (can also be entered directly in the UI) |
 
-3. Redeploy so the variables take effect. Open the site, enter your APP_PASSWORD, and click **Test connections**.
+3. Redeploy so the variables take effect. Open the site, sign in with an empty email and your APP_PASSWORD, and click
+   **Test connections**.
+
+## Organizations, users and API keys
+
+- **Owner** (you): sign in with an empty email + `APP_PASSWORD`. Settings → *Organizations & users* creates
+  organizations (with their first admin), resets passwords, disables users or organizations, and sets API keys —
+  the **master keys** (used by every organization that has not saved its own) and each organization's own keys.
+  *Save this page's keys as master keys* copies the keys entered in this browser to the server in one click. The
+  selector at the top switches you into any organization to see and work with its data.
+- **Organization admin**: signs in with email + password; enrols users of their own organization (members or other
+  admins), resets their passwords, disables them. Cannot see or change API keys.
+- **Member**: signs in with email + password and runs searches, leads, lists and outreach for their organization.
+
+Each organization's data lives in its own Postgres schema (`org_<id>`), so one organization can never read
+another's; the owner's own data stays in `public`. Keys a request uses: the organization's saved key, else the
+master key, else the Vercel environment variable. Saved keys are encrypted with `SECRET_KEY` and only the last
+4 characters are ever shown. Background jobs remember their organization: workers run them in its schema with
+its keys.
 
 ## Contact details, comments and Scrape.do
 

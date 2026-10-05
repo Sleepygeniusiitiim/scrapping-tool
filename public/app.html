@@ -284,6 +284,22 @@
     .page-title span, .page-sub, .view > * { opacity: 1 !important; transform: none !important; filter: none !important; }
     .app-bg .bg-video { display: none; }
   }
+  /* ---- accounts: who is signed in, organization switcher, sign-in dialog ---- */
+  .account { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .account select { height: 40px; border-radius: 999px; padding: 0 14px; max-width: 220px; }
+  .acct-chip { color: #fff; font-size: 13px; opacity: .85; white-space: nowrap; max-width: 260px; overflow: hidden;
+    text-overflow: ellipsis; }
+  .account button { height: 40px; border-radius: 999px; padding: 0 16px; }
+  .signin { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.6); backdrop-filter: blur(6px); padding: 16px; }
+  .signin .panel { width: min(420px, 100%); margin: 0; }
+  .signin input { width: 100%; }
+  .adm-table td, .adm-table th { white-space: nowrap; }
+  .adm-actions button { padding: 3px 9px; margin: 2px 4px 2px 0; font-size: 13px; }
+  .key-row { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 1.4fr) auto; gap: 8px; align-items: center;
+    padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .key-row small { color: var(--muted); }
+  @media (max-width: 640px) { .key-row { grid-template-columns: 1fr; } .acct-chip { max-width: 160px; } }
 </style>
 </head>
 <body>
@@ -303,9 +319,26 @@
     <button data-view="settings">Settings</button>
   </nav>
   <a class="home-pill" href="./">Home</a>
+  <div class="account">
+    <select id="orgSwitch" class="hidden" title="Organization you are working in — its data and its API keys" aria-label="Organization"></select>
+    <span class="acct-chip" id="acctChip"></span>
+    <button id="signOutBtn" class="hidden" type="button">Sign out</button>
+  </div>
 </header>
+<div class="signin hidden" id="signin" role="dialog" aria-modal="true" aria-labelledby="signinTitle">
+  <form class="panel" id="signinForm">
+    <h2 id="signinTitle" style="margin-top:0">Sign in</h2>
+    <label for="siEmail">Email</label>
+    <input id="siEmail" type="email" autocomplete="username" placeholder="you@company.com">
+    <label for="siPw" style="margin-top:10px">Password</label>
+    <input id="siPw" type="password" autocomplete="current-password">
+    <p class="status" style="font-size:13px">Owner: leave the email empty and enter the APP_PASSWORD.</p>
+    <button type="submit" class="primary">Sign in</button>
+    <p class="status" id="siOut"></p>
+  </form>
+</div>
 <main>
-  <div class="banner hidden" id="setupBanner">Enter your app password and AI key in <a href="#" data-goto="settings">⚙️ Settings</a> to start.</div>
+  <div class="banner hidden" id="setupBanner">Sign in to start.</div>
 
   <div class="view" data-view="search">
   <header class="page-hero"><h1 class="page-title"><span>Find Leads</span></h1><p class="page-sub">Describe who you need — the agent plans the searches, reads the pages and saves every contact it finds.</p></header>
@@ -645,7 +678,7 @@
   <div class="view hidden" data-view="outreach">
     <header class="page-hero"><h1 class="page-title"><span>Outreach</span></h1><p class="page-sub">Draft, send and track messages to the people you found — and handle their replies.</p></header>
     <section id="tab-outreach">
-    <details class="panel" id="metaBox" style="margin-bottom:12px">
+    <details class="panel" id="metaBox" style="margin-bottom:12px" data-owner-only>
       <summary>🤖 Auto-reply to “interested” comments on your own Instagram / Facebook posts</summary>
       <p class="status">When someone comments “interested” (or similar) on a post from <b>your official</b> Instagram
         Business account or Facebook Page, the tool replies under the comment, sends them a private message asking
@@ -695,14 +728,20 @@
 
   <div class="view hidden" data-view="settings">
     <header class="page-hero"><h1 class="page-title"><span>Settings</span></h1><p class="page-sub">Access, AI providers, search and data services, privacy.</p></header>
+    <div id="adminWrap" class="hidden">
+    <h3 class="sec">🏢 Organizations &amp; users</h3>
+    <section class="panel" id="adminPanel"></section>
+    </div>
     <h3 class="sec">🔐 Access &amp; AI</h3>
     <section class="panel" id="login">
+    <p class="banner hidden" id="keysManaged">🔒 API keys for your organization are managed by the administrator —
+      searches use the keys they saved. Ask them to add or change a key.</p>
     <div class="row">
-      <div style="flex:1;min-width:220px">
+      <div style="flex:1;min-width:220px" data-owner-only>
         <label for="pw">App password (APP_PASSWORD on Vercel)</label>
         <input id="pw" type="password" autocomplete="current-password" placeholder="APP_PASSWORD set on Vercel">
       </div>
-      <div style="flex:0.7;min-width:150px">
+      <div style="flex:0.7;min-width:150px" data-owner-only>
         <label for="llmProvider">AI provider</label>
         <select id="llmProvider">
           <option value="openrouter">OpenRouter</option>
@@ -716,18 +755,18 @@
           <option value="kimi">Kimi / Moonshot (cheap)</option>
         </select>
       </div>
-      <div style="flex:1.4;min-width:240px">
+      <div style="flex:1.4;min-width:240px" data-owner-only>
         <label for="orKey" id="orKeyLabel">API key</label>
         <input id="orKey" type="password" autocomplete="off" placeholder="Uses the server key unless entered here">
       </div>
-      <div style="flex:1;min-width:200px">
+      <div style="flex:1;min-width:200px" data-owner-only>
         <label for="orModel">AI model</label>
         <input id="orModel" list="orModels" autocomplete="off">
         <datalist id="orModels"></datalist>
       </div>
       <button id="testBtn" style="align-self:flex-end">Test connections</button>
     </div>
-    <details style="margin-top:8px">
+    <details style="margin-top:8px" data-owner-only>
       <summary>Gemini key (free tier — also used as a fallback)</summary>
       <div style="margin-top:8px;max-width:520px">
         <label for="geminiKey">Gemini API Key (AIza… or AQ.…)</label>
@@ -735,8 +774,8 @@
       </div>
     </details>
     <details style="margin-top:8px">
-      <summary>Claude key — used only for thinking (understanding the command, planning searches)</summary>
-      <div class="row" style="margin-top:8px">
+      <summary>Claude — used for thinking (understanding the command, planning searches)</summary>
+      <div class="row" style="margin-top:8px" data-owner-only>
         <div style="flex:1.4;min-width:240px">
           <label for="claudeKey">Anthropic API key (sk-ant-…)</label>
           <input id="claudeKey" type="password" autocomplete="off" placeholder="Uses server ANTHROPIC_API_KEY unless entered here">
@@ -754,7 +793,7 @@
         provider above, as before. Ticked: Claude plans and reads. Either way, if Claude fails or runs out of credit the
         provider above takes over.</p>
     </details>
-    <p style="color:var(--muted);font-size:13px;margin:10px 0 0">Automatic fallback: enter keys for as many providers as you like (pick each one in
+    <p style="color:var(--muted);font-size:13px;margin:10px 0 0" data-owner-only>Automatic fallback: enter keys for as many providers as you like (pick each one in
       “AI provider” and paste its key — every key is remembered). The chosen provider is used first; when it
       runs out of credits or hits its limit, the run switches to the next provider with a key
       (Gemini → Groq → Cerebras → Mistral → SambaNova → NVIDIA → GitHub Models → OpenRouter → DeepSeek → Kimi).</p>
@@ -764,10 +803,10 @@
   <section class="panel">
     <details id="intBox" open>
       <summary>Apollo, Lusha, ContactOut, RocketReach · Google search · unblockers — click to show / hide</summary>
-      <p style="color:var(--muted);font-size:13px">Paste API keys (from each service's dashboard → API / Integrations).
+      <p style="color:var(--muted);font-size:13px" data-owner-only>Paste API keys (from each service's dashboard → API / Integrations).
         Keys stay in this browser and are sent only to your own server; Vercel env vars work too. Account
         passwords are not supported — automated logins break these services' terms and get accounts banned.</p>
-      <div id="intFields"></div>
+      <div id="intFields" data-owner-only></div>
       <h3 style="font-size:14px;margin:14px 0 6px">Test the lead databases</h3>
       <p style="color:var(--muted);font-size:13px;margin:0 0 6px">One real lookup in each service that has a key
         (uses one credit each) — shows exactly what each service replies. These services need a LinkedIn profile
@@ -916,30 +955,25 @@ for (const id of ["onlyInterested", "useLeadDb", "requireBoth"]) {
 $("extraction").addEventListener("change", () => store("csa_extraction", $("extraction").value));
 
 // ---------- API ----------
-async function api(path, body) {
+// Signed in as: an organization user (session token) or the owner (APP_PASSWORD, optionally inside an
+// organization chosen in the header). Only the owner's page sends its own API keys; organization users always
+// use the keys their administrator saved on the server.
+const auth = { token: load("csa_token") || "", me: null };
+function signedIn() { return !!(auth.token || $("pw").value.trim()); }
+async function api(path, body, method) {
   const route = path.split("?")[0];          // the route only — the query stays in the URL
   const cleanEndpoint = route.replace(/^\/api\//, "").replace(/^\//, "");
   const url = `${path}${path.includes("?") ? "&" : "?"}__path=${encodeURIComponent(cleanEndpoint)}`;
-  const headers = {
-    "Content-Type": "application/json",
-    "X-App-Password": $("pw").value,
-    "X-Endpoint": route,
-  };
-  const ok = $("orKey").value.trim(), om = $("orModel").value.trim();
-  headers["X-LLM-Provider"] = llmProvider();
-  if (ok) headers["X-LLM-Key"] = ok;
-  if (om) headers["X-LLM-Model"] = om;
-  headers["X-LLM-Keys"] = savedLLM("key");
-  headers["X-LLM-Models"] = savedLLM("model");
-  const gk = $("geminiKey").value.trim();
-  if (gk) headers["X-Gemini-Key"] = gk;
-  const ck = $("claudeKey").value.trim(), cm = $("claudeModel").value.trim();
-  if (ck) headers["X-Claude-Key"] = ck;
-  if (cm) headers["X-Claude-Model"] = cm;
+  const headers = { "Content-Type": "application/json", "X-Endpoint": route };
   if ($("claudeReading").checked) headers["X-Claude-Reading"] = "1";
-  headers["X-Integrations"] = integrationKeys();
+  if (auth.token) headers["Authorization"] = "Bearer " + auth.token;
+  else {
+    headers["X-App-Password"] = $("pw").value;
+    if (load("csa_org")) headers["X-Org"] = load("csa_org");
+    ownerKeyHeaders(headers);
+  }
   const res = await fetch(url, {
-    method: body === undefined ? "GET" : "POST",
+    method: method || (body === undefined ? "GET" : "POST"),
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -952,9 +986,24 @@ async function api(path, body) {
   if (!res.ok) {
     const detail = data && data.detail ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail))
                                        : `HTTP ${res.status}`;
+    if (res.status === 401 && auth.token && route !== "/api/auth/login") signOut(detail);
     const err = new Error(detail); err.status = res.status; throw err;
   }
   return data;
+}
+function ownerKeyHeaders(headers) {
+  const ok = $("orKey").value.trim(), om = $("orModel").value.trim();
+  headers["X-LLM-Provider"] = llmProvider();
+  if (ok) headers["X-LLM-Key"] = ok;
+  if (om) headers["X-LLM-Model"] = om;
+  headers["X-LLM-Keys"] = savedLLM("key");
+  headers["X-LLM-Models"] = savedLLM("model");
+  const gk = $("geminiKey").value.trim();
+  if (gk) headers["X-Gemini-Key"] = gk;
+  const ck = $("claudeKey").value.trim(), cm = $("claudeModel").value.trim();
+  if (ck) headers["X-Claude-Key"] = ck;
+  if (cm) headers["X-Claude-Model"] = cm;
+  headers["X-Integrations"] = integrationKeys();
 }
 
 // ---------- log & stats ----------
@@ -2692,8 +2741,8 @@ $("msgLogBtn").onclick = async () => {
 };
 
 function showView(name) {
-  if (name === "leads" && $("pw").value.trim()) { showStorage(); loadSuggestions(); loadCategories(); }
-  if (name === "search" && $("pw").value.trim()) loadCategories();
+  if (name === "leads" && signedIn()) { showStorage(); loadSuggestions(); loadCategories(); }
+  if (name === "search" && signedIn()) loadCategories();
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("hidden", v.dataset.view !== name));
   document.querySelectorAll("#nav button").forEach((b) => b.toggleAttribute("aria-current", b.dataset.view === name));
   store("csa_view", name);
@@ -2708,7 +2757,7 @@ document.addEventListener("click", (e) => {
   const fromLink = location.hash.slice(1);
   showView(["search", "leads", "lists", "outreach", "settings"].includes(fromLink) ? fromLink : (load("csa_view") || "search"));
 }
-function checkSetup() { $("setupBanner").classList.toggle("hidden", !!$("pw").value.trim()); }
+function checkSetup() { $("setupBanner").classList.toggle("hidden", signedIn()); }
 $("pw").addEventListener("input", checkSetup); checkSetup();
 
 // ---------- presets: one click sets the sensible options for the kind of search ----------
@@ -2760,6 +2809,254 @@ $("purgeBtn").onclick = async () => {
     $("dncOut").textContent = `Erased contact details of ${r.candidates} candidates and ${r.leads} leads older than ${days} days.`;
   } catch (e) { $("dncOut").textContent = "❌ " + e.message; }
 };
+// ---------- accounts: sign-in, organizations, users and their API keys ----------
+function showSignin(on, msg) {
+  $("signin").classList.toggle("hidden", !on);
+  if (msg !== undefined) $("siOut").textContent = msg;
+  if (on) setTimeout(() => $("siEmail").focus(), 50);
+}
+function signOut(msg) {
+  if (auth.token) api("/api/auth/logout", {}).catch(() => {});
+  auth.token = ""; auth.me = null; store("csa_token");
+  if (!msg) { $("pw").value = ""; store("csa_pw"); store("csa_org"); }      // the owner signing out too
+  applyRole(); checkSetup(); showSignin(true, msg || "");
+}
+$("signOutBtn").onclick = () => signOut();
+$("signinForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const email = $("siEmail").value.trim(), pw = $("siPw").value;
+  if (!pw) { $("siOut").textContent = "Enter your password."; return; }
+  $("siOut").textContent = "Signing in…";
+  try {
+    if (email) {
+      const r = await api("/api/auth/login", { email, password: pw });
+      auth.token = r.token; store("csa_token", r.token);
+    } else {
+      auth.token = ""; store("csa_token"); $("pw").value = pw; store("csa_pw", pw);
+    }
+    $("siPw").value = "";
+    await loadMe();
+    if (auth.me) { showSignin(false, ""); checkSetup(); showView(load("csa_view") || "search"); }
+  } catch (err) { $("siOut").textContent = "❌ " + err.message; }
+};
+
+async function loadMe() {
+  if (!signedIn()) { auth.me = null; applyRole(); showSignin(true); return; }
+  try {
+    auth.me = (await api("/api/auth/me")).me;
+    showSignin(false);
+  } catch (e) {
+    if (e.status === 404 && load("csa_org")) { store("csa_org"); return loadMe(); }   // that organization is gone
+    if (e.status === 401) {
+      auth.me = null;
+      if (!auth.token) { $("pw").value = ""; store("csa_pw"); }
+      showSignin(true, e.message);
+    }
+  }
+  applyRole();
+  if (auth.me && auth.me.role === "super") loadOrgSwitch();
+  if (auth.me && auth.me.can_manage_users) renderAdmin();
+}
+function roleName(r) { return { super: "owner", org_admin: "admin", member: "member" }[r] || r; }
+function applyRole() {
+  const me = auth.me || {}, owner = me.role === "super";
+  document.querySelectorAll("[data-owner-only]").forEach((el) => el.classList.toggle("hidden", !!auth.me && !owner));
+  $("keysManaged").classList.toggle("hidden", !auth.me || owner);
+  $("adminWrap").classList.toggle("hidden", !me.can_manage_users);
+  $("orgSwitch").classList.toggle("hidden", !owner);
+  $("signOutBtn").classList.toggle("hidden", !auth.me);
+  $("acctChip").textContent = !me.role ? "" : owner ? "Owner" :
+    `${me.name || me.email} · ${me.org_name} · ${roleName(me.role)}`;
+  $("acctChip").title = me.email || "";
+}
+async function loadOrgSwitch() {
+  try {
+    const orgs = (await api("/api/admin/orgs")).orgs || [];
+    const sel = $("orgSwitch");
+    sel.replaceChildren(new Option("Master workspace (yours)", "master"),
+      ...orgs.map((o) => new Option(o.name + (o.active === false ? " (disabled)" : ""), o.id)));
+    sel.value = load("csa_org") || "master";
+    auth.orgs = orgs;
+  } catch (_) { $("orgSwitch").classList.add("hidden"); }      // no database yet: master only
+}
+$("orgSwitch").onchange = () => {
+  const v = $("orgSwitch").value;
+  store("csa_org", v === "master" ? undefined : v);
+  location.reload();                     // nothing from the previous organization stays on screen
+};
+
+// --- admin panel: the owner manages every organization; an organization admin their own users ---
+function renderAdmin() {
+  const me = auth.me || {}, box = $("adminPanel");
+  if (me.role === "super") {
+    box.innerHTML = `<p class="status" style="margin-top:0">Each organization has its own database and users and can
+      have its own API keys; keys it does not have come from your <b>master keys</b>. Organization admins enrol
+      users but cannot see or change keys. Use the selector at the top to work inside an organization.</p>
+      <div class="row">
+        <div style="flex:1;min-width:180px"><label for="aoName">New organization</label><input id="aoName" placeholder="Company name"></div>
+        <div style="flex:1;min-width:180px"><label for="aoEmail">Its admin's email</label><input id="aoEmail" type="email" placeholder="admin@company.com"></div>
+        <div style="flex:1;min-width:150px"><label for="aoAdminName">Admin's name</label><input id="aoAdminName"></div>
+        <div style="flex:1;min-width:150px"><label for="aoPw">Admin's password (8+)</label><input id="aoPw" type="text" autocomplete="off"></div>
+        <button class="primary" id="aoCreate" style="align-self:flex-end">➕ Create</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="aoMaster">🔑 Master API keys (default for every organization)</button>
+        <button id="aoCopy" title="Saves the keys entered on this page (below) as the master keys, so every organization can use them">⬆️ Save this page's keys as master keys</button>
+      </div>
+      <p class="status" id="aoOut"></p><div id="aoList"></div><div id="aoDetail"></div>`;
+    $("aoCreate").onclick = async () => {
+      try {
+        const r = await api("/api/admin/orgs", { name: $("aoName").value.trim(), admin_email: $("aoEmail").value.trim(),
+          admin_password: $("aoPw").value, admin_name: $("aoAdminName").value.trim() });
+        $("aoOut").textContent = `Created “${r.org.name}”` + (r.admin ? ` with admin ${r.admin.email} — send them the app link and their password.` : ".");
+        ["aoName", "aoEmail", "aoPw", "aoAdminName"].forEach((id) => $(id).value = "");
+        loadOrgs(); loadOrgSwitch();
+      } catch (e) { $("aoOut").textContent = "❌ " + e.message; }
+    };
+    $("aoMaster").onclick = () => keysEditor("master", "Master keys");
+    $("aoCopy").onclick = copyPageKeysToMaster;
+    loadOrgs();
+  } else {
+    box.innerHTML = `<p class="status" style="margin-top:0">Users of <b>${esc(me.org_name)}</b>. They sign in with
+      their email and the password you set; API keys are managed by the administrator.</p><div id="aoDetail"></div>`;
+    usersEditor(me.org_id, me.org_name);
+  }
+}
+async function loadOrgs() {
+  try {
+    const orgs = (await api("/api/admin/orgs")).orgs || [];
+    $("aoList").innerHTML = !orgs.length ? `<p class="status">No organizations yet.</p>` :
+      `<div class="table-wrap"><table class="adm-table"><thead><tr><th>Organization</th><th class="num">Users</th>
+        <th>Own keys</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>` + orgs.map((o) =>
+        `<tr><td>${esc(o.name)}</td><td class="num">${o.users}</td><td>${o.has_keys ? "yes" : "master"}</td>
+         <td>${o.active === false ? "disabled" : "active"}</td><td>${esc((o.created_at || "").slice(0, 10))}</td>
+         <td class="adm-actions"><button data-a="users" data-id="${esc(o.id)}">👥 Users</button><button data-a="keys" data-id="${esc(o.id)}">🔑 Keys</button>
+           <button data-a="open" data-id="${esc(o.id)}">↪ Open its data</button>
+           <button data-a="toggle" data-id="${esc(o.id)}" data-on="${o.active === false ? 1 : 0}">${o.active === false ? "Enable" : "Disable"}</button></td></tr>`).join("") +
+      `</tbody></table></div>`;
+    $("aoList").querySelectorAll("button[data-a]").forEach((b) => b.onclick = async () => {
+      const o = orgs.find((x) => x.id === b.dataset.id);
+      if (b.dataset.a === "users") usersEditor(o.id, o.name);
+      if (b.dataset.a === "keys") keysEditor(o.id, o.name);
+      if (b.dataset.a === "open") { store("csa_org", o.id); location.reload(); }
+      if (b.dataset.a === "toggle") {
+        const on = b.dataset.on === "1";
+        if (!on && !confirm(`Disable “${o.name}”? Its users are signed out and cannot sign in; its data is kept.`)) return;
+        try { await api(`/api/admin/orgs/${o.id}`, { active: on }, "PATCH"); loadOrgs(); loadOrgSwitch(); }
+        catch (e) { $("aoOut").textContent = "❌ " + e.message; }
+      }
+    });
+  } catch (e) { $("aoList").innerHTML = `<p class="status">❌ ${esc(e.message)}</p>`; }
+}
+async function usersEditor(orgId, orgName) {
+  const box = $("aoDetail");
+  box.innerHTML = `<div class="im-card" style="margin-top:12px"><b>👥 Users — ${esc(orgName)}</b>
+    <div class="row" style="margin-top:8px">
+      <div style="flex:1;min-width:180px"><label for="auEmail">Email</label><input id="auEmail" type="email"></div>
+      <div style="flex:1;min-width:150px"><label for="auName">Name</label><input id="auName"></div>
+      <div style="flex:1;min-width:150px"><label for="auPw">Password (8+)</label><input id="auPw" type="text" autocomplete="off"></div>
+      <div style="flex:.7;min-width:130px"><label for="auRole">Role</label><select id="auRole">
+        <option value="member">Member — runs searches</option><option value="org_admin">Admin — also manages users</option></select></div>
+      <button class="primary" id="auAdd" style="align-self:flex-end">➕ Add user</button>
+    </div><p class="status" id="auOut"></p><div id="auList"></div></div>`;
+  const list = async () => {
+    try {
+      const users = (await api(`/api/admin/orgs/${orgId}/users`)).users || [];
+      $("auList").innerHTML = !users.length ? `<p class="status">No users yet.</p>` :
+        `<div class="table-wrap"><table class="adm-table"><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th>
+          <th>Last sign-in</th><th></th></tr></thead><tbody>` + users.map((u) =>
+          `<tr><td>${esc(u.email)}</td><td>${esc(u.name || "")}</td><td>${roleName(u.role)}</td><td>${u.active ? "active" : "disabled"}</td>
+           <td>${esc((u.last_login || "").slice(0, 16).replace("T", " ") || "never")}</td>
+           <td class="adm-actions"><button data-a="pw" data-id="${u.id}">🔁 Reset password</button>
+             <button data-a="role" data-id="${u.id}" data-role="${u.role === "org_admin" ? "member" : "org_admin"}">${u.role === "org_admin" ? "Make member" : "Make admin"}</button>
+             <button data-a="active" data-id="${u.id}" data-on="${u.active ? 0 : 1}">${u.active ? "Disable" : "Enable"}</button></td></tr>`).join("") +
+        `</tbody></table></div>`;
+      $("auList").querySelectorAll("button[data-a]").forEach((b) => b.onclick = async () => {
+        let body;
+        if (b.dataset.a === "pw") { const pw = prompt("New password (at least 8 characters):"); if (!pw) return; body = { password: pw }; }
+        if (b.dataset.a === "role") body = { role: b.dataset.role };
+        if (b.dataset.a === "active") body = { active: b.dataset.on === "1" };
+        try { await api(`/api/admin/users/${b.dataset.id}`, body, "PATCH"); $("auOut").textContent = "Saved."; list(); }
+        catch (e) { $("auOut").textContent = "❌ " + e.message; }
+      });
+    } catch (e) { $("auList").innerHTML = `<p class="status">❌ ${esc(e.message)}</p>`; }
+  };
+  $("auAdd").onclick = async () => {
+    try {
+      const r = await api(`/api/admin/orgs/${orgId}/users`, { email: $("auEmail").value.trim(), name: $("auName").value.trim(),
+        password: $("auPw").value, role: $("auRole").value });
+      $("auOut").textContent = `Added ${r.user.email} — they sign in with this email and password.`;
+      ["auEmail", "auName", "auPw"].forEach((id) => $(id).value = "");
+      list(); if ($("aoList")) loadOrgs();
+    } catch (e) { $("auOut").textContent = "❌ " + e.message; }
+  };
+  list();
+}
+// Every key an organization can have: [section, name, label].
+function keyFields() {
+  return [["", "llm_provider", "Preferred AI provider (" + Object.keys(LLM).join(", ") + ", gemini)"],
+    ...Object.keys(LLM).map((p) => ["llm_keys", p, LLM[p].key]),
+    ["", "gemini_key", "Gemini API key"], ["", "claude_key", "Anthropic (Claude) API key — thinking"],
+    ["", "claude_model", "Claude model (e.g. claude-opus-5-5)"],
+    ...INTEGRATIONS.map(([n, label]) => ["integrations", n, label])];
+}
+async function keysEditor(orgId, name) {
+  const box = $("aoDetail");
+  box.innerHTML = `<div class="im-card" style="margin-top:12px"><b>🔑 API keys — ${esc(name)}</b><p class="status">Loading…</p></div>`;
+  let r;
+  try { r = await api(`/api/admin/orgs/${orgId}/keys`); } catch (e) { box.innerHTML = `<p class="status">❌ ${esc(e.message)}</p>`; return; }
+  const get = (src, sec, n) => (sec ? (src[sec] || {})[n] : src[n]) || "";
+  const isMaster = orgId === "master";
+  box.innerHTML = `<div class="im-card" style="margin-top:12px"><b>🔑 API keys — ${esc(name)}</b>
+    <p class="status">${isMaster ? "Used by every organization that has not saved its own key (and by your master workspace)."
+      : "Leave a field empty to keep what is saved. Keys this organization does not have come from the master keys."}
+      Keys are stored encrypted; only the last 4 characters are ever shown.</p>
+    <div id="keRows"></div><div class="row" style="margin-top:10px"><button class="primary" id="keSave">💾 Save keys</button></div>
+    <p class="status" id="keOut"></p></div>`;
+  $("keRows").innerHTML = keyFields().map(([sec, n, label]) => {
+    const own = get(r.own, sec, n), master = get(r.master, sec, n);
+    const plain = n === "llm_provider" || n === "claude_model";
+    const now = own ? `saved: ${esc(own)}` : (!isMaster && master ? `from master: ${esc(master)}` : "not set");
+    return `<div class="key-row"><label for="ke_${sec}_${n}" style="margin:0">${esc(label)}<br><small>${now}</small></label>
+      <input id="ke_${sec}_${n}" data-sec="${sec}" data-n="${n}" type="${plain ? "text" : "password"}" autocomplete="off" placeholder="${own ? "enter to replace" : "enter to set"}">
+      ${own ? `<button data-clear="${sec}|${n}" style="padding:3px 9px">Remove</button>` : "<span></span>"}</div>`;
+  }).join("");
+  const save = async (body) => {
+    try { await api(`/api/admin/orgs/${orgId}/keys`, body, "PUT"); $("keOut").textContent = "Saved — every user of this organization now uses these keys.";
+      keysEditor(orgId, name); if ($("aoList")) loadOrgs(); }
+    catch (e) { $("keOut").textContent = "❌ " + e.message; }
+  };
+  const bodyFor = (pairs) => {
+    const body = { integrations: {}, llm_keys: {}, llm_models: {} };
+    for (const [sec, n, v] of pairs) { if (sec) body[sec][n] = v; else body[n] = v; }
+    return body;
+  };
+  $("keSave").onclick = () => {
+    const pairs = [...$("keRows").querySelectorAll("input")].filter((i) => i.value.trim())
+      .map((i) => [i.dataset.sec, i.dataset.n, i.value.trim()]);
+    if (!pairs.length) { $("keOut").textContent = "Nothing entered."; return; }
+    save(bodyFor(pairs));
+  };
+  $("keRows").querySelectorAll("button[data-clear]").forEach((b) => b.onclick = () => {
+    const [sec, n] = b.dataset.clear.split("|");
+    if (confirm("Remove this saved key?" + (isMaster ? "" : " The organization then uses the master key, if any."))) save(bodyFor([[sec, n, ""]]));
+  });
+}
+async function copyPageKeysToMaster() {
+  const llmKeys = JSON.parse(savedLLM("key")), llmModels = JSON.parse(savedLLM("model"));
+  const ok = $("orKey").value.trim(); if (ok) llmKeys[llmProvider()] = ok;
+  const body = { integrations: JSON.parse(integrationKeys()), llm_keys: llmKeys, llm_models: llmModels,
+    llm_provider: llmProvider() };
+  if ($("geminiKey").value.trim()) body.gemini_key = $("geminiKey").value.trim();
+  if ($("claudeKey").value.trim()) body.claude_key = $("claudeKey").value.trim();
+  if ($("claudeModel").value.trim()) body.claude_model = $("claudeModel").value.trim();
+  const n = Object.keys(body.integrations).length + Object.keys(llmKeys).length + (body.gemini_key ? 1 : 0) + (body.claude_key ? 1 : 0);
+  if (!n) { $("aoOut").textContent = "No keys are entered on this page."; return; }
+  if (!confirm(`Save ${n} key(s) from this page as the master keys? Organizations without their own keys will use them.`)) return;
+  try { await api("/api/admin/orgs/master/keys", body, "PUT"); $("aoOut").textContent = `Saved ${n} key(s) as master keys.`; }
+  catch (e) { $("aoOut").textContent = "❌ " + e.message; }
+}
+loadMe();
 </script>
 </body>
 </html>

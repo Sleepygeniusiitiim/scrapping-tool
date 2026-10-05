@@ -28,7 +28,11 @@ import psycopg2.extras
 
 import supabase_db as db
 
-_state = {"ready": False, "vector": False, "trgm": False}
+_states: dict = {}        # per schema (organization): {"ready", "vector", "trgm"}
+
+
+def _st() -> dict:
+    return _states.setdefault(db.current_schema(), {"ready": False, "vector": False, "trgm": False})
 _lock = threading.Lock()
 EMBED_BATCH = 64
 RRF_K = 60
@@ -58,14 +62,15 @@ def _try(sql: str) -> bool:
 
 
 def ensure() -> dict:
-    if _state["ready"]:
-        return _state
+    st = _st()
+    if st["ready"]:
+        return st
     with _lock:
-        if _state["ready"]:
-            return _state
+        if st["ready"]:
+            return st
         db._ensure_schema()
-        _state["vector"] = _try("CREATE EXTENSION IF NOT EXISTS vector")
-        _state["trgm"] = _try("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        st["vector"] = _try("CREATE EXTENSION IF NOT EXISTS vector SCHEMA public")
+        st["trgm"] = _try("CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public")
         _exec("""
             CREATE TABLE IF NOT EXISTS search_index (
                 kind TEXT NOT NULL, ref TEXT NOT NULL, body TEXT NOT NULL,
@@ -74,12 +79,12 @@ def ensure() -> dict:
                 PRIMARY KEY (kind, ref));
             CREATE INDEX IF NOT EXISTS idx_search_index_tsv ON search_index USING gin (tsv);""",
               what="Creating search index")
-        if _state["vector"]:
+        if st["vector"]:
             _try("ALTER TABLE search_index ADD COLUMN IF NOT EXISTS embedding vector")
-        if _state["trgm"]:
+        if st["trgm"]:
             _try("CREATE INDEX IF NOT EXISTS idx_search_index_trgm ON search_index USING gin (body gin_trgm_ops)")
-        _state["ready"] = True
-        return _state
+        st["ready"] = True
+        return st
 
 
 # ---------------------------------------------------------------------------

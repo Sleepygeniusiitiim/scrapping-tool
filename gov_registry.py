@@ -56,20 +56,19 @@ CREATE INDEX IF NOT EXISTS idx_gov_records_kind ON gov_records (kind);
 ALTER TABLE im_leads ADD COLUMN IF NOT EXISTS gov_match JSONB;
 """
 TRGM = """
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public;
 CREATE INDEX IF NOT EXISTS idx_gov_records_name_trgm ON gov_records USING gin (name_key gin_trgm_ops);
 """
 
-_ready = False
+_ready: set = set()
 _lock = threading.Lock()
 
 
 def _ensure() -> None:
-    global _ready
-    if _ready:
+    if db.current_schema() in _ready:
         return
     with _lock:
-        if _ready:
+        if db.current_schema() in _ready:
             return
         db._ensure_schema()
         from intent_miner import store
@@ -88,7 +87,7 @@ def _ensure() -> None:
             except Exception:
                 pass
         db._with_retry(run, "Creating government-directory table")
-        _ready = True
+        _ready.add(db.current_schema())
 
 
 def _q(sql: str, params=None, fetch: str = "", what: str = "Government-directory query"):

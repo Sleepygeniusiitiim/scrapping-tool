@@ -70,16 +70,15 @@ CREATE TABLE IF NOT EXISTS im_provider_health (
 );
 """
 
-_ready = False
+_ready: set = set()
 _lock = threading.Lock()
 
 
 def _ensure() -> None:
-    global _ready
-    if _ready:
+    if db.current_schema() in _ready:
         return
     with _lock:
-        if _ready:
+        if db.current_schema() in _ready:
             return
         db._ensure_schema()
 
@@ -89,7 +88,7 @@ def _ensure() -> None:
                     cur.execute(SCHEMA)
                 conn.commit()
         db._with_retry(run, "Creating Intent Miner tables")
-        _ready = True
+        _ready.add(db.current_schema())
 
 
 def _q(sql: str, params=None, fetch: str = "", what: str = "Intent Miner query"):

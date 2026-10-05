@@ -29,15 +29,14 @@ CREATE INDEX IF NOT EXISTS idx_site_suggestions_seen ON site_suggestions (dismis
 """
 MIN_CONTACTS = 3          # at least this many distinct phones + emails on the page
 MAX_KEPT = 300            # contacts kept per page
-_ready = False
+_ready: set = set()          # schemas (organizations) whose tables exist
 _lock = threading.Lock()
 
 
 def _q(sql: str, params=None, fetch: str = ""):
-    global _ready
-    if not _ready:
+    if db.current_schema() not in _ready:
         with _lock:
-            if not _ready:
+            if db.current_schema() not in _ready:
                 db._ensure_schema()
 
                 def mk():
@@ -46,7 +45,7 @@ def _q(sql: str, params=None, fetch: str = ""):
                             cur.execute(SCHEMA)
                         conn.commit()
                 db._with_retry(mk, "Creating suggestions table")
-                _ready = True
+                _ready.add(db.current_schema())
 
     def run():
         with db._connect() as conn:

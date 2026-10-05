@@ -30,7 +30,7 @@ CREATE INDEX IF NOT EXISTS idx_category_searches ON category_searches (category,
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS categories TEXT[] DEFAULT '{}';
 """
 LEADS_SCHEMA = "ALTER TABLE im_leads ADD COLUMN IF NOT EXISTS categories TEXT[] DEFAULT '{}';"
-_ready = False
+_ready: set = set()          # schemas (organizations) whose tables exist
 _lock = threading.Lock()
 
 
@@ -40,10 +40,9 @@ def clean(name: Optional[str]) -> str:
 
 
 def _q(sql: str, params=None, fetch: str = ""):
-    global _ready
-    if not _ready:
+    if db.current_schema() not in _ready:
         with _lock:
-            if not _ready:
+            if db.current_schema() not in _ready:
                 db._ensure_schema()
 
                 def mk():
@@ -59,7 +58,7 @@ def _q(sql: str, params=None, fetch: str = ""):
                                 cur.execute(SCHEMA)
                         conn.commit()
                 db._with_retry(mk, "Creating category tables")
-                _ready = True
+                _ready.add(db.current_schema())
 
     def run():
         with db._connect() as conn:

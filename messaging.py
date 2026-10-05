@@ -41,15 +41,14 @@ CREATE TABLE IF NOT EXISTS outreach_log (
 );
 CREATE INDEX IF NOT EXISTS idx_outreach_log_addr ON outreach_log (channel, to_addr, sent_at DESC);
 """
-_ready = False
+_ready: set = set()          # schemas (organizations) whose tables exist
 _lock = threading.Lock()
 
 
 def _q(sql: str, params=None, fetch: str = ""):
-    global _ready
-    if not _ready:
+    if db.current_schema() not in _ready:
         with _lock:
-            if not _ready:
+            if db.current_schema() not in _ready:
                 db._ensure_schema()
 
                 def mk():
@@ -58,7 +57,7 @@ def _q(sql: str, params=None, fetch: str = ""):
                             cur.execute(SCHEMA)
                         conn.commit()
                 db._with_retry(mk, "Creating outreach log")
-                _ready = True
+                _ready.add(db.current_schema())
 
     def run():
         with db._connect() as conn:

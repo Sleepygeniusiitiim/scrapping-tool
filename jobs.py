@@ -32,21 +32,26 @@ CREATE TABLE IF NOT EXISTS im_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_im_jobs_status ON im_jobs (status, created_at);
 ALTER TABLE im_jobs ADD COLUMN IF NOT EXISTS run_after TIMESTAMPTZ;
+ALTER TABLE im_jobs ADD COLUMN IF NOT EXISTS org_id TEXT;
 CREATE TABLE IF NOT EXISTS im_workers (
     worker TEXT PRIMARY KEY, info JSONB DEFAULT '{}'::jsonb, last_seen TIMESTAMPTZ DEFAULT NOW()
 );
 """
 STALE_MINUTES = 10
 MAX_LOG_LINES = 2000
-_ready = False
+_ready: set = set()
 _lock = threading.Lock()
 
 
 def _q(sql: str, params=None, fetch: str = "", what: str = "Job queue"):
-    global _ready
-    if not _ready:
+    with db.use_schema("public"):          # one queue for all organizations
+        return _q_public(sql, params, fetch, what)
+
+
+def _q_public(sql: str, params=None, fetch: str = "", what: str = "Job queue"):
+    if "public" not in _ready:
         with _lock:
-            if not _ready:
+            if "public" not in _ready:
                 db._ensure_schema()
 
                 def mk():
@@ -55,7 +60,7 @@ def _q(sql: str, params=None, fetch: str = "", what: str = "Job queue"):
                             cur.execute(SCHEMA)
                         conn.commit()
                 db._with_retry(mk, "Creating job tables")
-                _ready = True
+                _ready.add("public")
 
     def run():
         with db._connect() as conn:
@@ -76,35 +81,39 @@ def worker_id() -> str:
 
 
 # ---------------------------------------------------------------------------
-def enqueue(kind: str, command: str, options: dict, run_after_hours: float = 0) -> dict:
-    """Queue a job; with run_after_hours it waits that long before a worker may start it."""
-    return _row(_q("""INSERT INTO im_jobs (kind, command, options, run_after)
-                      VALUES (%s, %s, %s, CASE WHEN %s > 0 THEN NOW() + make_interval(secs => %s) END) RETURNING *""",
-                   (kind, command, json.dumps(options), run_after_hours, run_after_hours * 3600), "one",
+def enqueue(kind: str, command: str, options: dict, run_after_hours: float = 0, org_id: str = "") -> dict:
+    """Queue a job; with run_after_hours it waits that long before a worker may start it. org_id: the
+    organization whose data (schema) and keys the job uses ("" = the master workspace)."""
+    return _row(_q("""INSERT INTO im_jobs (kind, command, options, run_after, org_id)
+                      VALUES (%s, %s, %s, CASE WHEN %s > 0 THEN NOW() + make_interval(secs => %s) END, NULLIF(%s, ''))
+                      RETURNING *""",
+                   (kind, command, json.dumps(options), run_after_hours, run_after_hours * 3600, org_id or ""), "one",
                    "Queuing job"))
 
 
-def get(job_id: str, log_from: int = 0) -> Optional[dict]:
+def get(job_id: str, log_from: int = 0, org_id: str = "") -> Optional[dict]:
     r = _q("""SELECT id, kind, status, command, run_id, stats, error, attempts, cancel_requested, worker, created_at,
                      started_at, finished_at, heartbeat_at, jsonb_array_length(log) AS log_len,
                      COALESCE((SELECT jsonb_agg(e) FROM jsonb_array_elements(log) WITH ORDINALITY AS t(e, i)
                                WHERE i > %s), '[]'::jsonb) AS log
-              FROM im_jobs WHERE id::text = %s""", (log_from, job_id), "one")
+              FROM im_jobs WHERE id::text = %s AND COALESCE(org_id, '') = %s""",
+           (log_from, job_id, org_id or ""), "one")
     return _row(r)
 
 
-def recent(limit: int = 20) -> List[dict]:
+def recent(limit: int = 20, org_id: str = "") -> List[dict]:
     rows = _q("""SELECT id, kind, status, command, run_id, stats, error, created_at, started_at, finished_at, worker,
                         run_after, options->>'rounds' AS rounds, options->>'repeat_hours' AS repeat_hours
-                 FROM im_jobs ORDER BY created_at DESC LIMIT %s""", (limit,), "all")
+                 FROM im_jobs WHERE COALESCE(org_id, '') = %s ORDER BY created_at DESC LIMIT %s""",
+              (org_id or "", limit), "all")
     return [_row(r) for r in rows]
 
 
-def cancel(job_id: str) -> None:
+def cancel(job_id: str, org_id: str = "") -> None:
     _q("""UPDATE im_jobs SET cancel_requested = TRUE,
               status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
               finished_at = CASE WHEN status = 'queued' THEN NOW() ELSE finished_at END
-          WHERE id::text = %s""", (job_id,))
+          WHERE id::text = %s AND COALESCE(org_id, '') = %s""", (job_id, org_id or ""))
 
 
 # --- worker side -------------------------------------------------------------------------------------

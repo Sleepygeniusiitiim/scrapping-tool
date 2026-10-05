@@ -7,6 +7,7 @@ google-genai>=1.51        # thinking_level (Gemini 3.x)
 # DuckDuckGo search: the `duckduckgo-search` package was renamed to `ddgs`.
 ddgs>=9.0
 psycopg2-binary>=2.9.9
+cryptography>=41        # organizations' API keys are stored encrypted (accounts.py)
 python-dotenv>=1.0
 pydantic>=2.7
 httpx>=0.27              # OpenRouter client

@@ -46,6 +46,7 @@ import portal_import  # noqa: E402
 import meta_autoreply  # noqa: E402
 import gov_registry  # noqa: E402
 import ai_router  # noqa: E402
+import accounts  # noqa: E402
 from intent_miner import engine as im_engine, export as im_export, store as im_store  # noqa: E402
 from intent_miner.models import QuerySpec  # noqa: E402
 from intent_miner.understand import understand as im_understand  # noqa: E402
@@ -114,14 +115,82 @@ app.add_middleware(VercelPathNormalizedMiddleware)
 # ---------------------------------------------------------------------------
 # Auth & clients
 # ---------------------------------------------------------------------------
-def require_password(x_app_password: Optional[str] = Header(default=None)) -> None:
-    expected = (os.getenv("APP_PASSWORD") or DEFAULT_APP_PASSWORD).strip()
-    if not expected:
-        raise HTTPException(503, "APP_PASSWORD is not set on the server: add it in the Vercel project's environment "
-                                 "variables and redeploy.")
+def _app_password() -> str:
+    return (os.getenv("APP_PASSWORD") or DEFAULT_APP_PASSWORD).strip()
+
+
+async def require_auth(x_app_password: Optional[str] = Header(default=None), x_org: Optional[str] = Header(default=None),
+                       authorization: Optional[str] = Header(default=None),
+                       x_session: Optional[str] = Header(default=None)) -> dict:
+    """Who is calling, and which organization's data they work in.
+
+    * the owner (super admin): X-App-Password = APP_PASSWORD, optionally X-Org = an organization id to work
+      inside that organization (its data and keys); without it, the master workspace.
+    * an organization's admin / member: Authorization: Bearer <session token from /auth/login> — always and
+      only their own organization.
+
+    Async on purpose: the schema and principal context variables set here then reach the endpoint (and the
+    thread pool running sync endpoints)."""
+    token = (x_session or "").strip()
+    if not token and (authorization or "").lower().startswith("bearer "):
+        token = authorization[7:].strip()
     provided = (x_app_password or "").strip()
-    if not provided or not hmac.compare_digest(provided, expected):
-        raise HTTPException(401, "Wrong password. Use your Vercel APP_PASSWORD.")
+    if provided:
+        expected = _app_password()
+        if not expected:
+            raise HTTPException(503, "APP_PASSWORD is not set on the server: add it in the Vercel project's "
+                                     "environment variables and redeploy.")
+        if not hmac.compare_digest(provided, expected):
+            raise HTTPException(401, "Wrong password. Use your Vercel APP_PASSWORD.")
+        p = {"role": "super", "org_id": None, "org_name": "Master", "user_id": "owner", "email": "",
+             "name": "Owner", "schema": "public"}
+        oid = (x_org or "").strip()
+        if oid and oid != accounts.MASTER:
+            try:
+                org = await run_in_threadpool(accounts.get_org, oid)
+            except db.SupabaseError as exc:
+                raise HTTPException(502, str(exc))
+            if not org:
+                raise HTTPException(404, "No such organization (it may have been removed) — pick another one.")
+            p.update(org_id=org["id"], org_name=org["name"], schema=org["schema_name"])
+    elif token:
+        try:
+            u = await run_in_threadpool(accounts.session_user, token)
+        except db.SupabaseError as exc:
+            raise HTTPException(502, str(exc))
+        if not u:
+            raise HTTPException(401, "Your session has ended — sign in again.")
+        p = {"role": u["role"], "org_id": u["org_id"], "org_name": u.get("org_name") or "", "user_id": u["id"],
+             "email": u["email"], "name": u.get("name") or "", "schema": u["schema_name"]}
+    else:
+        raise HTTPException(401, "Sign in first (email and password, or the owner password).")
+    db.set_schema(p["schema"])
+    accounts.set_principal(p)
+    return p
+
+
+def _me() -> dict:
+    return accounts.principal() or {}
+
+
+def _is_super() -> bool:
+    return _me().get("role") == "super"
+
+
+def _require(*roles: str) -> None:
+    """Allow the owner plus the given organization roles."""
+    if _me().get("role") not in ("super",) + roles:
+        raise HTTPException(403, "Only an administrator can do this.")
+
+
+def _stored() -> dict:
+    """The keys saved for the caller's organization over the master keys (empty when none / no database)."""
+    if not os.getenv("DATABASE_URL"):
+        return {}
+    try:
+        return accounts.effective_settings(_me().get("org_id"))
+    except Exception:
+        return {}
 
 
 def _json_header(value: Optional[str]) -> dict:
@@ -147,8 +216,14 @@ def _gemini(
     """The AI for this request: a fallback chain starting with the provider chosen on the page, then
     every other provider that has a key (on the page or in Vercel env vars), free tiers first. When one
     runs out of credits or limits, the next one takes over."""
-    provider = (x_llm_provider or os.getenv("LLM_PROVIDER") or "").strip().lower()
-    keys, models = _json_header(x_llm_keys), _json_header(x_llm_models)
+    if not _is_super():         # organization users always use the keys their administrator saved
+        x_gemini_key = x_gemini_model = x_openrouter_key = x_openrouter_model = None
+        x_llm_provider = x_llm_key = x_llm_model = x_llm_keys = x_llm_models = None
+    st = _stored()
+    provider = (x_llm_provider or st.get("llm_provider") or os.getenv("LLM_PROVIDER") or "").strip().lower()
+    keys = {**{k.lower(): v for k, v in (st.get("llm_keys") or {}).items() if v},
+            **({"gemini": st["gemini_key"]} if st.get("gemini_key") else {}), **_json_header(x_llm_keys)}
+    models = {**{k.lower(): v for k, v in (st.get("llm_models") or {}).items() if v}, **_json_header(x_llm_models)}
     if x_openrouter_key and provider in ("", "openrouter"):                  # older pages
         keys.setdefault("openrouter", x_openrouter_key.strip())
         if x_openrouter_model:
@@ -185,11 +260,21 @@ def _gemini(
     return AIChain(entries)
 
 
+def _claude(x_claude_key: Optional[str], x_claude_model: Optional[str]) -> tuple:
+    """Claude key + model: the owner's page, else the organization's / master saved ones (then
+    ANTHROPIC_API_KEY, applied by ai_router)."""
+    st = _stored()
+    page_key = (x_claude_key or "").strip() if _is_super() else ""
+    page_model = (x_claude_model or "").strip() if _is_super() else ""
+    return page_key or st.get("claude_key", ""), page_model or st.get("claude_model", "")
+
+
 def _thinker(gemini=Depends(_gemini), x_claude_key: Optional[str] = Header(default=None),
              x_claude_model: Optional[str] = Header(default=None)):
     """The AI for the thinking steps only (understanding the command, planning searches): Claude first when
-    its key is set on the page or as ANTHROPIC_API_KEY, then the usual chain. Page reading never uses it."""
-    return ai_router.reasoning(gemini, (x_claude_key or "").strip(), (x_claude_model or "").strip())
+    it has a key (saved, on the owner's page or ANTHROPIC_API_KEY), then the usual chain. Page reading never
+    uses it."""
+    return ai_router.reasoning(gemini, *_claude(x_claude_key, x_claude_model))
 
 
 def _reader(gemini=Depends(_gemini), x_claude_reading: Optional[str] = Header(default=None),
@@ -197,13 +282,15 @@ def _reader(gemini=Depends(_gemini), x_claude_reading: Optional[str] = Header(de
     """The AI for reading pages / classifying / fit checks: the usual chain, or Claude first when the page's
     “Use Claude for reading” box is ticked."""
     if (x_claude_reading or "").strip() == "1":
-        return ai_router.reasoning(gemini, (x_claude_key or "").strip(), (x_claude_model or "").strip())
+        return ai_router.reasoning(gemini, *_claude(x_claude_key, x_claude_model))
     return gemini
 
 
 def _keys(x_integrations: Optional[str] = Header(default=None)) -> dict:
-    """Third-party service keys (search, unblock, enrichment) from the page, falling back to env vars."""
-    return integrations.resolve_keys(_json_header_raw(x_integrations))
+    """Third-party service keys (search, unblock, enrichment): the owner's page, then the organization's saved
+    keys, then the master keys, then env vars."""
+    page = _json_header_raw(x_integrations) if _is_super() else {}
+    return integrations.resolve_keys({**(_stored().get("integrations") or {}), **page})
 
 
 def _json_header_raw(value: Optional[str]) -> dict:
@@ -224,7 +311,7 @@ def _db(x_database_url: Optional[str] = Header(default=None)) -> None:
         raise HTTPException(500, str(exc))
 
 
-auth = [Depends(require_password)]
+auth = [Depends(require_auth)]
 router = APIRouter(dependencies=auth)
 
 
@@ -325,11 +412,13 @@ async def health(
         out["gemini"] = await gem.ping()
     except Exception as exc:
         out["gemini_error"] = str(getattr(exc, "detail", exc))
-    claude_key = (x_claude_key or os.getenv("ANTHROPIC_API_KEY", "")).strip()
+    claude_key, claude_model = _claude(x_claude_key, x_claude_model)
+    claude_key = claude_key or os.getenv("ANTHROPIC_API_KEY", "").strip()
+    out["workspace"] = {k: _me().get(k) for k in ("role", "org_id", "org_name")}
     if claude_key:
         try:
             from claude_client import Claude
-            out["claude"] = await Claude(claude_key, model=(x_claude_model or "").strip()).ping()
+            out["claude"] = await Claude(claude_key, model=claude_model).ping()
         except Exception as exc:
             out["claude_error"] = str(exc)[:300]
     return out
@@ -391,6 +480,7 @@ def suggestions_dismiss_ep(body: dict):
 @router.post("/privacy/purge")
 def privacy_purge(body: dict):
     """Erase individuals' contact details older than N days (businesses are kept)."""
+    _require("org_admin")
     import privacy
     _db()
     return _im_db(privacy.purge, int(body.get("days") or 180))
@@ -692,9 +782,14 @@ class IMSalesforceIn(BaseModel):
 
 def _im_keys(keys: dict, x_llm_keys: Optional[str], x_gemini_key: Optional[str]) -> dict:
     """Integration keys plus the AI keys usable for embeddings (Mistral / Gemini)."""
-    llm = _json_header(x_llm_keys)
-    return {**keys, **{k: v for k, v in (("mistral", llm.get("mistral")),
-                                          ("gemini", (x_gemini_key or "").strip())) if v}}
+    st = _stored()
+    llm = {**{k.lower(): v for k, v in (st.get("llm_keys") or {}).items() if v},
+           **({"gemini": st["gemini_key"]} if st.get("gemini_key") else {})}
+    if _is_super():
+        llm.update(_json_header(x_llm_keys))
+        if (x_gemini_key or "").strip():
+            llm["gemini"] = x_gemini_key.strip()
+    return {**keys, **{k: v for k, v in (("mistral", llm.get("mistral")), ("gemini", llm.get("gemini"))) if v}}
 
 
 def _im_db(fn, *a):
@@ -1100,6 +1195,7 @@ def gov_datasets():
 
 @router.post("/gov/delete")
 def gov_delete(body: dict):
+    _require("org_admin")
     _db()
     name = str(body.get("dataset") or "").strip()
     if not name:
@@ -1162,11 +1258,11 @@ def job_create(body: JobIn, x_integrations: Optional[str] = Header(default=None)
     opts = body.model_dump(exclude={"command", "use_page_keys"})
     opts["llm_provider"] = (x_llm_provider or "").strip()
     opts["claude_reading"] = (x_claude_reading or "").strip() == "1"
-    if body.use_page_keys:        # stored with the job only until it finishes (then erased)
+    if body.use_page_keys and _is_super():   # stored with the job only until it finishes (then erased)
         opts["keys"] = _json_header_raw(x_integrations)
         opts["llm_keys"] = {**_json_header(x_llm_keys), **({"gemini": x_gemini_key.strip()} if x_gemini_key else {}),
                             **({"claude": x_claude_key.strip()} if x_claude_key else {})}
-    job = _im_db(jobs.enqueue, "run", body.command, opts)
+    job = _im_db(jobs.enqueue, "run", body.command, opts, 0, _me().get("org_id") or "")
     if body.category:
         import categories
         _im_db(categories.log_search, body.category, body.command, body.target, "background job", str(job["id"]))
@@ -1177,14 +1273,14 @@ def job_create(body: JobIn, x_integrations: Optional[str] = Header(default=None)
 def job_list():
     import jobs
     _db()
-    return {"jobs": _im_db(jobs.recent, 20), "workers": _im_db(jobs.workers)}
+    return {"jobs": _im_db(jobs.recent, 20, _me().get("org_id") or ""), "workers": _im_db(jobs.workers)}
 
 
 @router.get("/jobs/{job_id}")
 def job_get(job_id: str, log_from: int = 0):
     import jobs
     _db()
-    job = _im_db(jobs.get, job_id, max(0, log_from))
+    job = _im_db(jobs.get, job_id, max(0, log_from), _me().get("org_id") or "")
     if not job:
         raise HTTPException(404, "No such job")
     return {"job": job}
@@ -1194,7 +1290,7 @@ def job_get(job_id: str, log_from: int = 0):
 def job_cancel(job_id: str):
     import jobs
     _db()
-    _im_db(jobs.cancel, job_id)
+    _im_db(jobs.cancel, job_id, _me().get("org_id") or "")
     return {"ok": True}
 
 
@@ -1203,7 +1299,8 @@ def job_index():
     """Queue embedding the whole search index on a worker (no time limit there)."""
     import jobs
     _db()
-    return {"job": _im_db(jobs.enqueue, "index", "embed the search index", {}), "workers": _im_db(jobs.workers)}
+    return {"job": _im_db(jobs.enqueue, "index", "embed the search index", {}, 0, _me().get("org_id") or ""),
+            "workers": _im_db(jobs.workers)}
 
 
 # ---------------------------------------------------------------------------
@@ -1304,6 +1401,7 @@ class MetaSettingsIn(BaseModel):
 
 @router.get("/meta/status")
 def meta_status(request: Request):
+    _require()
     _db()
     try:
         return {"env": meta_autoreply.env_status(), "settings": meta_autoreply.get_settings(),
@@ -1314,6 +1412,7 @@ def meta_status(request: Request):
 
 @router.post("/meta/settings")
 def meta_settings(body: MetaSettingsIn):
+    _require()
     _db()
     values = {k: ("1" if v else "0") if k == "enabled" else v for k, v in body.model_dump().items() if v is not None}
     try:
@@ -1463,9 +1562,178 @@ async def outreach_reply(body: ReplyIn, gemini=Depends(_gemini)):
 
 # Mount routes at both `/api/*` and root `/*` so Vercel serverless rewrites
 # always resolve regardless of how `@vercel/python` sets `scope["path"]`.
+# ---------------------------------------------------------------------------
+# Sign-in, organizations, users and their API keys
+# ---------------------------------------------------------------------------
+auth_public = APIRouter()
+
+
+class LoginIn(BaseModel):
+    email: str = Field(..., max_length=200)
+    password: str = Field(..., max_length=200)
+
+
+def _accounts(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except accounts.AccessError as exc:
+        raise HTTPException(exc.status, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except db.SupabaseError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@auth_public.post("/auth/login")
+def auth_login(body: LoginIn):
+    """Organization admins and members: email + password → a session token (sent as Authorization: Bearer)."""
+    _db()
+    return _accounts(accounts.login, body.email, body.password)
+
+
+@router.get("/auth/me")
+def auth_me():
+    me = dict(_me())
+    me.pop("schema", None)
+    me["can_manage_users"] = me.get("role") in ("super", "org_admin")
+    me["can_edit_keys"] = me.get("role") == "super"
+    return {"me": me}
+
+
+@router.post("/auth/logout")
+def auth_logout(authorization: Optional[str] = Header(default=None), x_session: Optional[str] = Header(default=None)):
+    token = (x_session or "").strip() or ((authorization or "")[7:].strip()
+                                          if (authorization or "").lower().startswith("bearer ") else "")
+    if token:
+        _accounts(accounts.logout, token)
+    return {"ok": True}
+
+
+class OrgIn(BaseModel):
+    name: str = Field("", max_length=120)
+    active: Optional[bool] = None
+    admin_email: str = Field("", max_length=200)      # optional first admin, created with the organization
+    admin_password: str = Field("", max_length=200)
+    admin_name: str = Field("", max_length=120)
+
+
+class UserIn(BaseModel):
+    email: str = Field("", max_length=200)
+    password: str = Field("", max_length=200)
+    name: Optional[str] = Field(None, max_length=120)
+    role: Optional[str] = Field(None, pattern="^(org_admin|member)$")
+    active: Optional[bool] = None
+
+
+class KeysIn(BaseModel):
+    """A field sent as "" clears that saved key; a field left out keeps it."""
+    integrations: dict = Field(default_factory=dict)
+    llm_keys: dict = Field(default_factory=dict)
+    llm_models: dict = Field(default_factory=dict)
+    llm_provider: Optional[str] = Field(None, max_length=40)
+    claude_key: Optional[str] = Field(None, max_length=400)
+    claude_model: Optional[str] = Field(None, max_length=120)
+    gemini_key: Optional[str] = Field(None, max_length=400)
+
+
+@router.get("/admin/orgs")
+def admin_orgs():
+    """The owner: every organization. An organization admin / member: their own."""
+    _db()
+    if _is_super():
+        return {"orgs": _accounts(accounts.list_orgs)}
+    org = _accounts(accounts.get_org, _me()["org_id"])
+    return {"orgs": [org] if org else []}
+
+
+@router.post("/admin/orgs")
+def admin_org_create(body: OrgIn):
+    _require()
+    _db()
+    if body.admin_email and len(body.admin_password) < 8:      # check the admin before creating anything
+        raise HTTPException(400, "The admin's password needs at least 8 characters.")
+    org = _accounts(accounts.create_org, body.name)
+    admin = None
+    if body.admin_email:
+        admin = _accounts(accounts.create_user, org["id"], body.admin_email, body.admin_password, "org_admin",
+                          body.admin_name, "owner")
+    return {"org": org, "admin": admin}
+
+
+@router.patch("/admin/orgs/{org_id}")
+def admin_org_update(org_id: str, body: OrgIn):
+    _require()
+    _db()
+    return {"org": _accounts(accounts.rename_org, org_id, body.name, body.active)}
+
+
+def _org_scope(org_id: str) -> str:
+    """The owner may manage any organization; an organization admin only their own."""
+    _require("org_admin")
+    if not _is_super() and org_id != _me().get("org_id"):
+        raise HTTPException(403, "You can only manage your own organization.")
+    if not _accounts(accounts.get_org, org_id):
+        raise HTTPException(404, "No such organization.")
+    return org_id
+
+
+@router.get("/admin/orgs/{org_id}/users")
+def admin_users(org_id: str):
+    _db()
+    return {"users": _accounts(accounts.list_users, _org_scope(org_id))}
+
+
+@router.post("/admin/orgs/{org_id}/users")
+def admin_user_create(org_id: str, body: UserIn):
+    _db()
+    _org_scope(org_id)
+    role = body.role or "member"
+    return {"user": _accounts(accounts.create_user, org_id, body.email, body.password, role, body.name or "",
+                              _me().get("user_id") or "")}
+
+
+@router.patch("/admin/users/{user_id}")
+def admin_user_update(user_id: str, body: UserIn):
+    _db()
+    u = _accounts(accounts.get_user, user_id)
+    if not u:
+        raise HTTPException(404, "No such user.")
+    _org_scope(u["org_id"])
+    if user_id == _me().get("user_id") and (body.active is False or (body.role and body.role != u["role"])):
+        raise HTTPException(400, "You cannot disable yourself or change your own role.")
+    return {"user": _accounts(accounts.update_user, user_id, name=body.name, role=body.role, active=body.active,
+                              password=body.password or None)}
+
+
+@router.get("/admin/orgs/{org_id}/keys")
+def admin_org_keys(org_id: str):
+    """The owner only: which keys an organization has saved (masked) and which it inherits from the master."""
+    _require()
+    _db()
+    if org_id != accounts.MASTER and not _accounts(accounts.get_org, org_id):
+        raise HTTPException(404, "No such organization.")
+    own = _accounts(accounts.get_settings, org_id, True)
+    master = _accounts(accounts.get_settings, accounts.MASTER, True) if org_id != accounts.MASTER else {}
+    return {"own": accounts.masked(own), "master": accounts.masked(master)}
+
+
+@router.put("/admin/orgs/{org_id}/keys")
+def admin_org_keys_save(org_id: str, body: KeysIn):
+    _require()
+    _db()
+    if org_id != accounts.MASTER and not _accounts(accounts.get_org, org_id):
+        raise HTTPException(404, "No such organization.")
+    data = body.model_dump(exclude_none=True)
+    return {"own": _accounts(accounts.save_settings, org_id, data, "owner")}
+
+
 app.include_router(router, prefix="/api")
 app.include_router(router, prefix="")
 app.include_router(meta_public, prefix="/api")
+app.include_router(auth_public, prefix="/api")
+app.include_router(auth_public, prefix="")
 
 # Local development: serve the page from the same server (Vercel serves public/ itself).
 if not os.getenv("VERCEL"):

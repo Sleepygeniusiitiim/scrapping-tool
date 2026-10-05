@@ -38,6 +38,7 @@ os.environ.setdefault("RUNTIME", "worker")
 import ai_router  # noqa: E402
 import integrations  # noqa: E402
 import jobs  # noqa: E402
+import supabase_db as db  # noqa: E402
 
 POLL_S = float(os.getenv("WORKER_POLL_SECONDS", "5"))
 EMBED_EVERY_S = 300
@@ -54,11 +55,24 @@ async def run_job(job: dict, wid: str) -> None:
     from intent_miner import runner
     job_id = str(job["id"])
     opts = job.get("options") or {}
-    keys = integrations.resolve_keys(opts.get("keys") or {})
-    llm_keys = opts.get("llm_keys") or {}
+    org_id = job.get("org_id") or ""
+    # The organization's own keys, then the master keys (saved by the owner), then this worker's env vars;
+    # keys sent from the owner's page with the job win over all of them.
+    try:
+        import accounts
+        stored = accounts.effective_settings(org_id or None)
+    except Exception as exc:
+        print(f"[{job_id[:8]}] stored keys unavailable: {exc}", flush=True)
+        stored = {}
+    keys = integrations.resolve_keys({**(stored.get("integrations") or {}), **(opts.get("keys") or {})})
+    llm_keys = {**(stored.get("llm_keys") or {}),
+                **{k: v for k, v in (("gemini", stored.get("gemini_key")), ("claude", stored.get("claude_key"))) if v},
+                **(opts.get("llm_keys") or {})}
+    opts = {**opts, "llm_keys": llm_keys}
     keys.update({k: v for k, v in (("mistral", llm_keys.get("mistral") or os.getenv("MISTRAL_API_KEY")),
                                    ("gemini", llm_keys.get("gemini") or os.getenv("GEMINI_API_KEY"))) if v})
-    ai = ai_router.hosted_chain(llm_keys, opts.get("llm_provider", "")) or ai_router.bulk(None)
+    ai = ai_router.hosted_chain(llm_keys, opts.get("llm_provider") or stored.get("llm_provider", "")) \
+        or ai_router.bulk(None)
     buf: list = []
     state = {"cancel": False, "last": 0.0}
 
@@ -96,7 +110,7 @@ async def run_job(job: dict, wid: str) -> None:
         hours = float(opts.get("repeat_hours") or 0)
         if hours and not state["cancel"] and job["kind"] == "run":     # scheduled repeat: queue the next one
             nxt = {k: v for k, v in opts.items() if k not in ("keys", "llm_keys")}
-            new = jobs.enqueue("run", job.get("command") or "", nxt, run_after_hours=hours)
+            new = jobs.enqueue("run", job.get("command") or "", nxt, run_after_hours=hours, org_id=org_id)
             print(f"next run of this job queued for +{hours:g} h: {new['id']}", flush=True)
     except Exception as exc:
         pumper.cancel()
@@ -121,7 +135,20 @@ async def main() -> None:
             continue
         if job:
             print(f"claimed {job['id']} ({job['kind']}): {str(job.get('command'))[:80]}", flush=True)
-            await run_job(job, wid)
+            schema = "public"
+            if job.get("org_id"):
+                try:
+                    import accounts
+                    org = accounts.get_org(job["org_id"])
+                    schema = org["schema_name"] if org else ""
+                except Exception as exc:
+                    print(f"organization lookup failed: {exc}", flush=True)
+                    schema = ""
+            if not schema:                   # never run an organization's job against another's data
+                jobs.update(str(job["id"]), status="failed", error="organization not found")
+                continue
+            with db.use_schema(schema):      # every table this job reads or writes is the organization's
+                await run_job(job, wid)
             continue
         if time.time() - last_embed > EMBED_EVERY_S:       # idle: keep the semantic index embedded
             last_embed = time.time()
