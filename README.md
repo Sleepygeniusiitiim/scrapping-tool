@@ -9,7 +9,7 @@ Streamlit version with headless-Chromium crawling is in [`legacy-streamlit/`](le
 for running on your own machine.
 
 ```
-browser (public/index.html) drives the run step by step:
+browser (public/app.html — the landing page public/index.html links to it) drives the run step by step:
   POST /api/plan     Gemini 2.5 Flash: multi-wave dork plan
   POST /api/search   one DuckDuckGo query → canonicalised URLs     (×N, 1–2.5 s jitter)
   POST /api/dedup    drop URLs already in Neon DB `scraped_urls`
@@ -648,5 +648,6 @@ Open http://127.0.0.1:8000 — the page and the API are served together locally.
 | `fetcher.py` | HTTP fetch, robots.txt, HTML → text, login-wall detection |
 | `pipeline.py` | plan / search / dedup / process-batch steps |
 | `api/index.py` | FastAPI app (Vercel function), password & Gemini header check |
-| `public/index.html` | UI: run controls, live progress, filters, editing, CSV / JSON export |
+| `public/index.html`, `styles.css`, `main.js` | Landing page (full-screen video, links into the app) |
+| `public/app.html` | The app: run controls, live progress, filters, editing, CSV / JSON export |
 | `vercel.json` | function duration + `/api/*` routing |

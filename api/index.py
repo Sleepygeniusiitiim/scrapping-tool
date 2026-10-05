@@ -65,8 +65,8 @@ class VercelPathNormalizedMiddleware:
     When Vercel rewrites `/api/<route>` to `/api/index`, `@vercel/python` may
     set `scope["path"]` to `/api/index` or `/index` instead of `/api/<route>`.
     This middleware restores the original `/api/<route>` path from:
-      1. `X-Endpoint` request header (sent by public/index.html)
-      2. `__path` query parameter (sent by vercel.json rewrite & public/index.html)
+      1. `X-Endpoint` request header (sent by public/app.html)
+      2. `__path` query parameter (sent by vercel.json rewrite & public/app.html)
       3. `x-matched-path` / `x-now-route-matches` Vercel headers
     """
 
