@@ -71,6 +71,15 @@ def _q(sql: str, params=None, fetch: str = ""):
     return db._with_retry(run, "Categories")
 
 
+def create(name: str) -> str:
+    """Add a category before any search uses it (the Search page's “➕ Create a new category”)."""
+    cat = clean(name)
+    if not cat:
+        raise ValueError("Give the category a name.")
+    _q("INSERT INTO search_categories (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (cat,))
+    return cat
+
+
 def log_search(category: str, command: str, target: str = "", mode: str = "", run_id: str = "") -> None:
     cat = clean(category)
     if not cat:
@@ -125,7 +134,9 @@ def listing() -> List[dict]:
     return out
 
 
-def searches(category: str, limit: int = 200) -> List[dict]:
+def searches(category, limit: int = 200) -> List[dict]:
+    """Searches of one category, or of several (a list)."""
+    names = [clean(c) for c in (category if isinstance(category, (list, tuple)) else [category]) if clean(c)]
     rows = _q("""SELECT id, category, command, target, mode, run_id, started_at FROM category_searches
-                 WHERE category = %s ORDER BY started_at DESC LIMIT %s""", (clean(category), limit), "all")
+                 WHERE category = ANY(%s) ORDER BY started_at DESC LIMIT %s""", (names, limit), "all")
     return [db._serialize_row(dict(r)) for r in rows]

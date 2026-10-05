@@ -558,8 +558,11 @@ On the Search page, **Looking for** tells the AI what kind of search this is —
 in jobs), 🏢 employers & businesses (companies, HR, management — B2B), or let the AI decide (commands about HR /
 management / companies that are hiring are always treated as B2B). **Category** (optional, e.g. “Foreign employers
 hiring”) tags every contact and lead the search saves, for page runs, classic runs and background jobs alike.
-In Leads, **📁 Category** filters everything to one category — its searches (with command, type and date), its
-contacts, its leads, “Show everything saved” and the CSV downloads.
+Pick an existing category from the list, or choose **➕ Create a new category…**, type the name and press Create
+(a typed name is also used if you start without pressing Create). In Leads, **📁 Categories** lets you tick one,
+several or all categories, and **All data / Last run only** chooses everything they ever found or only what each
+category's latest run (or batch of rounds) found. The choice drives the searches list, contacts, leads, “Show
+everything saved”, the CSV downloads and 📣 messaging.
 
 ## 📣 WhatsApp (Pinnacle) and email (Brevo) to a run's leads
 

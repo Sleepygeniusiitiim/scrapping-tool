@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request  # noqa: E402
+from fastapi import Query, APIRouter, Depends, FastAPI, Header, HTTPException, Request  # noqa: E402
 from fastapi.responses import PlainTextResponse  # noqa: E402
 from fastapi.concurrency import run_in_threadpool  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
@@ -708,10 +708,22 @@ def categories_ep():
 
 
 @router.get("/categories/searches")
-def category_searches_ep(name: str):
+def category_searches_ep(name: str = "", names: List[str] = Query(default=[])):
     import categories
     _db()
-    return {"searches": _im_db(categories.searches, name)}
+    return {"searches": _im_db(categories.searches, [n for n in names if n] or [name])}
+
+
+@router.post("/categories")
+def category_create_ep(body: dict):
+    """Create a category up front (before the first search that uses it)."""
+    import categories
+    _db()
+    try:
+        name = _im_db(categories.create, str(body.get("name") or ""))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"name": name, "categories": _im_db(categories.listing)}
 
 
 class MessagePlanIn(BaseModel):
@@ -823,10 +835,11 @@ async def im_process_ep(body: IMProcessIn, gemini=Depends(_reader), keys: dict =
 
 @router.get("/im/leads")
 def im_leads_ep(min_score: int = 0, run_id: str = "", offset: int = 0, limit: int = 2000, category: str = "",
-                since: str = "", until: str = ""):
+                since: str = "", until: str = "", categories: List[str] = Query(default=[])):
     _db()
+    cats = [c for c in categories if c] or ([category] if category else [])
     return {"leads": _im_db(im_store.list_leads, min_score, max(1, min(limit, 5000)), run_id, max(0, offset),
-                            category, since, until)}
+                            cats, since, until)}
 
 
 @router.get("/storage")

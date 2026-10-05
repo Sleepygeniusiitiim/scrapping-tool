@@ -189,3 +189,18 @@ def test_routes_with_a_query_string_are_found():
              "query_string": b"x=1&__path=" + quote("categories/searches?name=A").encode()}
     asyncio.run(mw(scope, None, None))
     assert seen["path"] == "/api/categories/searches"
+
+
+def test_category_create_and_multi_search(monkeypatch):
+    import categories
+    calls = []
+    monkeypatch.setattr(categories, "_q", lambda sql, params=None, fetch="": calls.append((sql.split()[0], params)) or [])
+    assert categories.create("  Foreign   employers hiring ") == "Foreign employers hiring"
+    assert calls[-1][1] == ("Foreign employers hiring",)
+    try:
+        categories.create("   ")
+        assert False
+    except ValueError:
+        pass
+    categories.searches(["Gulf welders", "Kuwait drivers"])
+    assert calls[-1][1] == (["Gulf welders", "Kuwait drivers"], 200)

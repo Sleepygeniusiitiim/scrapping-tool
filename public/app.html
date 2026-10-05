@@ -220,6 +220,16 @@
   .banner { background: var(--warn-bg); color: var(--warn); border: 1px solid rgba(242,192,99,.25); border-radius: 18px;
     padding: 10px 18px; text-align: center; }
   .banner a { color: #fff; }
+  .cat-pick { margin-top: 0; position: relative; }
+  .cat-pick > summary { list-style: none; background: rgba(10,10,11,.85); border: 1px solid var(--line-strong); border-radius: 12px;
+    padding: 10px 36px 10px 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+  .cat-pick > summary::-webkit-details-marker { display: none; }
+  .cat-pick > summary::after { content: "▾"; position: absolute; right: 14px; color: var(--muted); }
+  .cat-checks { position: absolute; z-index: 5; left: 0; right: 0; margin-top: 6px; max-height: 300px; overflow: auto;
+    padding: 8px; border-radius: 14px; background: #161618; border: 1px solid var(--line-strong); box-shadow: var(--shadow); }
+  .cat-checks label { display: flex !important; gap: 8px; align-items: flex-start; padding: 7px 8px; border-radius: 10px; cursor: pointer; }
+  .cat-checks label:hover { background: rgba(255,255,255,.05); }
+  .cat-checks .cat-meta { color: var(--muted); font-size: 12px; display: block; }
   a { color: #fff; text-underline-offset: 3px; }
 
   /* ---- forms ---- */
@@ -321,9 +331,16 @@
         </select>
       </div>
       <div style="flex:1;min-width:200px">
-        <label for="catInput">Category (optional) — tags everything this search saves</label>
-        <input id="catInput" list="catList" autocomplete="off" maxlength="60" placeholder="e.g. Foreign employers hiring">
-        <datalist id="catList"></datalist>
+        <label for="catSelect">Category (optional) — tags everything this search saves</label>
+        <select id="catSelect">
+          <option value="">— No category —</option>
+          <option value="__new__">➕ Create a new category…</option>
+        </select>
+        <div class="row hidden" id="catNewRow" style="margin-top:8px;flex-wrap:nowrap">
+          <input id="catNew" maxlength="60" autocomplete="off" placeholder="e.g. Foreign employers hiring">
+          <button id="catCreateBtn" type="button">Create</button>
+        </div>
+        <span class="status" id="catNewOut"></span>
       </div>
     </div>
     <details class="adv" id="advBox"><summary>⚙️ Search settings — sources, mode, depth, filters</summary>
@@ -427,8 +444,14 @@
   <section class="panel" id="storagePanel">
     <p class="status" id="storageInfo" style="margin-top:0">💾 Checking what is saved in the database…</p>
     <div class="row" style="margin-bottom:8px">
-      <div style="min-width:240px"><label for="catFilter">📁 Category</label>
-        <select id="catFilter"><option value="">All categories</option></select></div>
+      <div style="min-width:280px;flex:1"><label>📁 Categories</label>
+        <details class="cat-pick" id="catPick"><summary id="catSummary">All categories</summary>
+          <div class="cat-checks" id="catChecks"><p class="status">No categories yet — create one on the Search page.</p></div>
+        </details></div>
+      <div role="radiogroup" aria-label="Which data" style="align-self:flex-end;display:flex;gap:16px;flex-wrap:wrap;flex-shrink:0;padding-bottom:10px">
+        <label style="white-space:nowrap"><input type="radio" name="catMode" value="all" checked style="width:auto;margin-right:6px">All data</label>
+        <label style="white-space:nowrap"><input type="radio" name="catMode" value="last" style="width:auto;margin-right:6px">Last run only</label>
+      </div>
       <span class="status" id="catInfo" style="align-self:flex-end"></span>
     </div>
     <div id="catSearches"></div>
@@ -1038,9 +1061,9 @@ function buildView(container, getRecords, key) {
     const c = selCountry.value.toLowerCase(), s = selSkill.value.toLowerCase(),
           role = roleIn.value.trim().toLowerCase(), p = selPlatform.value;
     const win = windows.find((w) => w.label === selWhen.value);
-    const cat = key === "db" ? state.catFilter : "";
+    const useCat = key === "db";
     return getRecords().filter((r) =>
-      (!cat || asList(r.categories).includes(cat)) &&
+      (!useCat || catMatch(r, r.discovered_at)) &&
       (!win || inWindow(r.discovered_at, win)) &&
       (!c || asList(r.target_countries).some((x) => x.toLowerCase() === c)) &&
       (!s || asList(r.skills).some((x) => x.toLowerCase() === s)) &&
@@ -1050,7 +1073,7 @@ function buildView(container, getRecords, key) {
 
   function render() {
     shown = mergeCb.checked ? mergeDupes(filtered()) : filtered();
-    if (key === "db") { state.dbShown = shown; state.dbShownLabel = [selWhen.value, state.catFilter && `category “${state.catFilter}”`].filter(Boolean).join(" · "); }
+    if (key === "db") { state.dbShown = shown; state.dbShownLabel = [selWhen.value, catLabel()].filter(Boolean).join(" · "); }
     info.textContent = `${shown.length} of ${getRecords().length} records` +
       (key === "db" ? " · click a cell to edit, lists are separated with ;" : "");
     table.replaceChildren();
@@ -1358,7 +1381,9 @@ function imSettings(main, intent, planQueries) {
     verify_fit: true, strict_requirements: $("strictReq").checked, expand_related: $("expandRelated").checked,
     category: runCategory() };
 }
-function runCategory() { return $("catInput").value.trim().slice(0, 60); }
+// the chosen category; a name typed under “➕ Create a new category” counts even if Create wasn't pressed
+function runCategory() { const v = $("catSelect").value;
+  return (v === "__new__" ? $("catNew").value : v).trim().slice(0, 60); }
 function esc(t) { const d = document.createElement("div"); d.textContent = t == null ? "" : String(t); return d.innerHTML; }
 function imRenderSpec(spec) {
   const li = (a) => (a || []).map((x) => `<code>${esc(x)}</code>`).join(" ") || "—";
@@ -1793,9 +1818,11 @@ $("govMatchBtn").onclick = async () => {
 
 $("imLoad").onclick = async () => {
   try {
-    const r = await api(`/api/im/leads?min_score=${Number($("imMin").value) || 0}&category=${encodeURIComponent(state.catFilter || "")}`);
+    const r = await api(`/api/im/leads?min_score=${Number($("imMin").value) || 0}${catQuery()}`);
     im.leads.clear(); r.leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
-    imRenderLeads(); pinView(state.catFilter ? `saved intent leads in “${state.catFilter}”` : "saved intent leads");
+    r.leads = r.leads.filter((L) => catMatch(L, L.last_seen));
+    im.leads.clear(); r.leads.forEach((L) => im.leads.set(L.id, L)); imRenderLeads();
+    pinView(catLabel() ? `saved intent leads — ${catLabel()}` : "saved intent leads");
   } catch (e) { alert(e.message); }
 };
 $("imExport").querySelectorAll("button[data-f]").forEach((btn) => btn.onclick = async () => {
@@ -2349,8 +2376,8 @@ async function showStorage() {
 async function allIntentLeads() {
   const out = [];
   for (let off = 0; ; off += 2000) {
-    const r = await api(`/api/im/leads?min_score=0&limit=2000&offset=${off}&category=${encodeURIComponent(state.catFilter || "")}`);
-    out.push(...r.leads);
+    const r = await api(`/api/im/leads?min_score=0&limit=2000&offset=${off}${catQuery()}`);
+    out.push(...r.leads.filter((L) => catMatch(L, L.last_seen)));
     $("backupOut").textContent = `${out.length} intent leads loaded…`;
     if (r.leads.length < 2000) return out;
   }
@@ -2371,9 +2398,8 @@ $("showAllSaved").onclick = async () => {
     const leads = await allIntentLeads();
     im.leads.clear(); leads.forEach((L) => im.leads.set(L.id, L)); im.runId = ""; $("imOnlyRun").checked = false;
     $("imMin").value = 0; imRenderLeads();
-    pinView(state.catFilter ? `everything saved in category “${state.catFilter}” (all runs)` : "everything saved (all runs, any score)");
-    $("backupOut").textContent = `Showing all ${leads.length} intent leads (every run, any score` +
-      (state.catFilter ? `, category “${state.catFilter}”)` : ")") + ".";
+    pinView(catLabel() ? `everything saved — ${catLabel()}` : "everything saved (all runs, any score)");
+    $("backupOut").textContent = `Showing ${leads.length} intent leads (` + (catLabel() || "every run, any score") + ").";
     state.runFilter = ""; document.querySelector('[data-tab="db"]').click(); $("loadDb").onclick();
   } catch (e) { $("backupOut").textContent = "❌ " + e.message; }
 };
@@ -2407,9 +2433,9 @@ $("backupAll").onclick = async () => {
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
   try {
     $("backupOut").textContent = "Loading every saved contact…";
-    const cat = state.catFilter || "";
-    const tag = cat ? "_" + cat.replace(/[^\w-]+/g, "_").slice(0, 40) : "";
-    const cands = (await api("/api/candidates")).candidates.filter((r) => !cat || asList(r.categories).includes(cat));
+    const cat = (state.catFilters || []).join("+");
+    const tag = cat ? "_" + cat.replace(/[^\w+-]+/g, "_").slice(0, 60) + (state.catMode === "last" ? "_last_run" : "") : "";
+    const cands = (await api("/api/candidates")).candidates.filter((r) => catMatch(r, r.discovered_at));
     saveFile(toCsv(cands), `${cat ? "contacts" : "all_contacts"}${tag}_${stamp}.csv`);
     const leads = await allIntentLeads();
     saveFile(toCsv(leads), `${cat ? "intent_leads" : "all_intent_leads"}${tag}_${stamp}.csv`);
@@ -2464,42 +2490,113 @@ function noteSuggested(list, wave) {
 }
 
 // ---------- 📁 categories ----------
+// Leads page: several categories (none ticked = all) and "all data" or "last run only" (each category's own
+// latest run). Search page: pick a category or create one.
+state.catFilters = []; state.catMode = "all"; state.catInfoByName = {};
+function catLabel() {
+  const c = state.catFilters || [];
+  if (!c.length) return state.catMode === "last" ? "last run of each category" : "";
+  return (c.length === 1 ? `category “${c[0]}”` : `categories ${c.map((x) => `“${x}”`).join(", ")}`) +
+    (state.catMode === "last" ? " — last run only" : " — all data");
+}
+function catQuery() { return (state.catFilters || []).map((c) => `&categories=${encodeURIComponent(c)}`).join(""); }
+// does this contact / lead belong to the chosen categories (and, in "last run" mode, to their latest run)?
+function catMatch(r, when) {
+  const chosen = state.catFilters || [];
+  const mine = asList(r.categories);
+  const cats = chosen.length ? chosen.filter((c) => mine.includes(c)) : (state.catMode === "last" ? mine : ["*"]);
+  if (!cats.length) return false;
+  if (state.catMode !== "last") return true;
+  const t = Date.parse(when || "");
+  return cats.some((c) => { const last = (state.catInfoByName[c] || {}).last_search;
+    return last && t >= Date.parse(last) - 5000; });      // both times are the server's: no clock slack needed
+}
 async function loadCategories() {
   try {
     const cats = (await api("/api/categories")).categories || [];
-    $("catList").replaceChildren(...cats.map((c) => new Option(c.name, c.name)));
-    const keep = $("catFilter").value;
-    $("catFilter").replaceChildren(new Option("All categories", ""), ...cats.map((c) =>
-      new Option(`${c.name} — ${c.searches} searches · ${c.contacts} contacts · ${c.leads} leads`, c.name)));
-    if (cats.some((c) => c.name === keep)) $("catFilter").value = keep;
+    state.catInfoByName = Object.fromEntries(cats.map((c) => [c.name, c]));
+    // Search page select
+    const keep = $("catSelect").value || load("csa_category") || "";
+    $("catSelect").replaceChildren(new Option("— No category —", ""), ...cats.map((c) => new Option(c.name, c.name)),
+      new Option("➕ Create a new category…", "__new__"));
+    $("catSelect").value = cats.some((c) => c.name === keep) ? keep : "";
+    // Leads page checklist
+    state.catFilters = (state.catFilters || []).filter((c) => state.catInfoByName[c]);
+    $("catChecks").replaceChildren();
+    if (!cats.length) { $("catChecks").innerHTML = '<p class="status">No categories yet — create one on the Search page.</p>'; }
+    else {
+      const all = document.createElement("label");
+      all.innerHTML = `<input type="checkbox" data-all ${state.catFilters.length ? "" : "checked"}><span><b>All categories</b></span>`;
+      $("catChecks").appendChild(all);
+      for (const c of cats) {
+        const l = document.createElement("label");
+        l.innerHTML = `<input type="checkbox" data-cat="${esc(c.name)}" ${state.catFilters.includes(c.name) ? "checked" : ""}>` +
+          `<span>${esc(c.name)}<span class="cat-meta">${c.searches} searches · ${c.contacts} contacts · ${c.leads} leads` +
+          `${c.last_search ? " · last run " + esc(c.last_search.slice(0, 10)) : ""}</span></span>`;
+        $("catChecks").appendChild(l);
+      }
+    }
+    catSummary();
     return cats;
   } catch (_) { return []; }
 }
+function catSummary() {
+  const c = state.catFilters;
+  $("catSummary").textContent = !c.length ? "All categories" : c.length === 1 ? c[0] : `${c.length} categories: ${c.join(", ")}`;
+}
+$("catChecks").addEventListener("change", (e) => {
+  const box = e.target;
+  if (box.dataset.all !== undefined) {
+    if (box.checked) $("catChecks").querySelectorAll("[data-cat]").forEach((x) => { x.checked = false; });
+  } else {
+    $("catChecks").querySelector("[data-all]").checked = !$("catChecks").querySelector("[data-cat]:checked");
+  }
+  state.catFilters = [...$("catChecks").querySelectorAll("[data-cat]:checked")].map((x) => x.dataset.cat);
+  catSummary(); showCategory();
+});
+document.querySelectorAll('input[name="catMode"]').forEach((r) => r.addEventListener("change", () => {
+  state.catMode = document.querySelector('input[name="catMode"]:checked').value; showCategory();
+}));
 async function showCategory() {
-  const name = $("catFilter").value;
-  state.catFilter = name;
+  const names = state.catFilters || [];
   $("catSearches").replaceChildren();
-  $("catInfo").textContent = name ? "Contacts, leads, “Show everything”, downloads and the saved-contacts table now show only this category." : "";
-  if (name) {
+  $("catInfo").textContent = catLabel() ? `Showing ${catLabel()} — contacts, leads, “Show everything”, downloads and messaging all use it.` : "";
+  if (names.length) {
     try {
-      const list = (await api(`/api/categories/searches?name=${encodeURIComponent(name)}`)).searches || [];
+      const list = (await api(`/api/categories/searches?${names.map((n) => "names=" + encodeURIComponent(n)).join("&")}`)).searches || [];
       const box = document.createElement("div"); box.className = "im-card"; box.style.padding = "8px 12px";
-      box.innerHTML = `<b>Searches in “${esc(name)}” (${list.length})</b>` + list.slice(0, 50).map((x) =>
+      box.innerHTML = `<b>Searches in ${esc(names.join(", "))} (${list.length})</b>` + list.slice(0, 60).map((x) =>
         `<div style="font-size:13px;margin-top:4px">${esc((x.started_at || "").slice(0, 16).replace("T", " "))} · ` +
+        `${names.length > 1 ? "📁 " + esc(x.category) + " · " : ""}` +
         `${x.target === "organizations" ? "🏢" : x.target === "people" ? "👤" : "🤖"} ${esc(x.mode || "")} · ${esc((x.command || "").slice(0, 160))}</div>`).join("");
       $("catSearches").appendChild(box);
     } catch (e) { $("catInfo").textContent = "❌ " + e.message; }
   }
-  if (state.dbRecords) buildView($("dbView"), () => state.dbRecords, "db");
-  if (name) $("showAllSaved").onclick();
+  await $("showAllSaved").onclick();             // contacts + leads for the choice (no category ticked = everything)
 }
-$("catFilter").onchange = showCategory;
-$("unpinBtn").onclick = () => { unpinView(); state.catFilter = ""; $("catFilter").value = ""; showCategory(); };
-$("catInput").value = load("csa_category") || "";
-$("catInput").addEventListener("change", () => store("csa_category", runCategory()));
+$("unpinBtn").onclick = () => { unpinView(); state.catFilters = []; state.catMode = "all";
+  document.querySelector('input[name="catMode"][value="all"]').checked = true; loadCategories().then(showCategory); };
+// Search page: choose / create
+$("catSelect").addEventListener("change", () => {
+  const v = $("catSelect").value;
+  $("catNewRow").classList.toggle("hidden", v !== "__new__");
+  if (v === "__new__") { $("catNew").focus(); return; }
+  store("csa_category", v);
+});
+$("catCreateBtn").onclick = async () => {
+  const name = $("catNew").value.trim();
+  if (!name) { $("catNewOut").textContent = "Type a name first."; return; }
+  try {
+    const r = await api("/api/categories", { name });
+    store("csa_category", r.name);
+    await loadCategories();
+    $("catSelect").value = r.name; $("catNew").value = ""; $("catNewRow").classList.add("hidden");
+    $("catNewOut").textContent = `✅ Category “${r.name}” created — this search will be saved under it.`;
+  } catch (e) { $("catNewOut").textContent = "❌ " + e.message; }
+};
+$("catNew").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("catCreateBtn").onclick(); } });
 $("lookingFor").value = load("csa_looking_for") || "";
 $("lookingFor").addEventListener("change", () => store("csa_looking_for", $("lookingFor").value));
-$("catInput").addEventListener("focus", () => { if (!$("catList").children.length && $("pw").value.trim()) loadCategories(); }, { once: true });
 
 
 // ---------- 📣 WhatsApp (Pinnacle) & email (Brevo) to the leads shown ----------
@@ -2583,6 +2680,7 @@ $("msgLogBtn").onclick = async () => {
 
 function showView(name) {
   if (name === "leads" && $("pw").value.trim()) { showStorage(); loadSuggestions(); loadCategories(); }
+  if (name === "search" && $("pw").value.trim()) loadCategories();
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("hidden", v.dataset.view !== name));
   document.querySelectorAll("#nav button").forEach((b) => b.toggleAttribute("aria-current", b.dataset.view === name));
   store("csa_view", name);

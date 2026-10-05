@@ -319,7 +319,7 @@ def upsert_leads(run_id: str, leads: List[dict]) -> List[dict]:
 
 
 def list_leads(min_score: int = 0, limit: int = 1000, run_id: str = "", offset: int = 0,
-               category: str = "", since: str = "", until: str = "") -> List[dict]:
+               category="", since: str = "", until: str = "") -> List[dict]:
     """since / until (ISO times): leads saved — found or found again — in that window (a run or a batch)."""
     where, params = ["l.lead_score >= %s"], [min_score]
     if since:
@@ -331,11 +331,12 @@ def list_leads(min_score: int = 0, limit: int = 1000, run_id: str = "", offset: 
     if run_id:
         where.append("l.run_id::text = ANY(%s)")
         params.append([x for x in run_id.split(",") if x])
-    if category:
+    cats = [c for c in (category if isinstance(category, (list, tuple)) else [category]) if c]
+    if cats:
         import categories
         categories._q("SELECT 1")                          # makes sure the categories column exists
-        where.append("%s = ANY(COALESCE(l.categories, '{}'))")
-        params.append(category)
+        where.append("COALESCE(l.categories, '{}') && %s::text[]")      # in any of the chosen categories
+        params.append(cats)
     rows = _q(f"""SELECT l.*, COALESCE((SELECT jsonb_agg(jsonb_build_object('url', s.url, 'source', s.source,
                           'kind', s.unit_kind, 'date', s.activity_date, 'score', s.score) ORDER BY s.score DESC)
                           FROM im_lead_sources s WHERE s.lead_key = l.lead_key), '[]'::jsonb) AS sources
