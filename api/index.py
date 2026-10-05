@@ -714,6 +714,64 @@ def category_searches_ep(name: str):
     return {"searches": _im_db(categories.searches, name)}
 
 
+class MessagePlanIn(BaseModel):
+    records: List[dict] = Field(..., max_length=5000)
+    channels: List[str] = Field(default_factory=lambda: ["whatsapp", "email"])
+    only_interested: bool = True
+    skip_days: int = Field(30, ge=0, le=365)
+
+
+class MessageSendIn(BaseModel):
+    channel: str = Field(..., pattern="^(whatsapp|email)$")
+    recipients: List[dict] = Field(..., min_length=1, max_length=25)
+    campaign: str = Field("", max_length=200)
+    template_id: str = Field("", max_length=120)
+    placeholders: List[str] = Field(default_factory=list, max_length=20)
+    subject: str = Field("", max_length=200)
+    body: str = Field("", max_length=5000)
+    opt_out: str = Field("", max_length=300)
+    role: str = Field("", max_length=120)
+    skip_days: int = Field(30, ge=0, le=365)
+
+
+@router.post("/messaging/plan")
+def messaging_plan_ep(body: MessagePlanIn):
+    """Who would get a WhatsApp / an email (after do-not-contact, interest and recently-messaged checks)."""
+    import messaging
+    _db()
+    chans = [c for c in body.channels if c in ("whatsapp", "email")]
+    return _im_db(messaging.plan, body.records, chans, body.only_interested, body.skip_days)
+
+
+@router.post("/messaging/send")
+def messaging_send_ep(body: MessageSendIn, keys: dict = Depends(_keys)):
+    """Send one batch (≤25) through Pinnacle (WhatsApp) or Brevo (email). Recipients are re-checked here, so a
+    stale page can't message someone who opted out or was messaged meanwhile."""
+    import messaging
+    _db()
+    if body.channel == "whatsapp" and not body.template_id.strip():
+        raise HTTPException(400, "Enter the approved WhatsApp template ID from the Pinnacle console.")
+    if body.channel == "email" and not (body.subject.strip() and body.body.strip()):
+        raise HTTPException(400, "Enter the email subject and message.")
+    if body.channel == "email" and not body.opt_out.strip():
+        raise HTTPException(400, "Keep an opt-out line in the email (e.g. “Reply STOP and we won't contact you again”).")
+    checked = _im_db(messaging.plan, body.recipients, [body.channel], False, body.skip_days)[body.channel]
+    if not checked:
+        return {"sent": 0, "failed": 0, "results": [], "note": "everyone in this batch was opted out, "
+                                                               "already messaged or has no address"}
+    return _im_db(lambda: messaging.send_batch(
+        keys, body.channel, checked, body.campaign, template_id=body.template_id.strip(),
+        placeholders=body.placeholders, subject=body.subject, body=body.body, opt_out=body.opt_out,
+        defaults={"role": body.role}))
+
+
+@router.get("/messaging/log")
+def messaging_log_ep(limit: int = 200, campaign: str = ""):
+    import messaging
+    _db()
+    return {"log": _im_db(messaging.log, max(1, min(limit, 2000)), campaign)}
+
+
 @router.post("/command-kind")
 def command_kind_ep(body: dict):
     """Cheap, no-AI check: does the command ask for the hiring side (employers / HR / management)?"""

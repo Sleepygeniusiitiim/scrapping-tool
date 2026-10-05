@@ -561,6 +561,26 @@ hiring”) tags every contact and lead the search saves, for page runs, classic 
 In Leads, **📁 Category** filters everything to one category — its searches (with command, type and date), its
 contacts, its leads, “Show everything saved” and the CSV downloads.
 
+## 📣 WhatsApp (Pinnacle) and email (Brevo) to a run's leads
+
+Leads → **📣 Message these leads** sends to the contacts the saved-contacts table shows — so pick the run, batch or
+category first (🆕 Contacts from the last run, 📁 Category, “Found in”). **Preview** shows how many get a WhatsApp
+and an email and an example of the personalised message; **Send** goes out in batches of 25.
+
+* **WhatsApp — Pinnacle** (`PINNACLE_API_KEY`, `PINNACLE_WABA_NUMBER`; optional `PINNACLE_API_URL`, default
+  `https://lsq.pinnacle.in/api/v1/sendmessage`). Sends an **approved template** (business-initiated WhatsApp
+  messages must use one): template ID + placeholders in order, e.g. `{first_name} | {role}`.
+* **Email — Brevo** (`BREVO_API_KEY`, `BREVO_SENDER_EMAIL` — a sender verified in Brevo, `BREVO_SENDER_NAME`).
+  Subject and message with tokens `{first_name} {name} {role} {location} {platform}`; an opt-out line is always
+  added.
+* Always on: the do-not-contact list is checked, people messaged on the same channel in the last 30 days (adjustable)
+  are skipped, “only people who said they're interested” is on by default, and every send is logged
+  (`outreach_log`, **🧾 Sent log**). Sent contacts are marked `outreach_status = sent`.
+
+Messaging people who didn't opt in can break WhatsApp's Business policy, Brevo's terms (accounts get suspended) and
+India's DPDP Act — keep it to people who publicly asked to be contacted, honour STOP replies (add them with
+🚫 Do not contact), and keep volumes reasonable.
+
 ## LinkedIn pages
 
 LinkedIn refuses most logged-out, automated visits. The app tries, in order: the page itself (paced one at a time,

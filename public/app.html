@@ -441,6 +441,37 @@
       <span class="status" id="backupOut"></span>
     </div>
   </section>
+  <section class="panel" id="msgPanel">
+    <h3 class="sec" style="margin-top:0">📣 Message these leads — WhatsApp (Pinnacle) &amp; email (Brevo)</h3>
+    <p class="status" style="margin-top:0">Messages the contacts the saved-contacts table below shows right now — pick a run, batch or
+      category first (🆕 Contacts from the last run, 📁 Category, or “Found in” in the table). People on the do-not-contact
+      list, people messaged recently and (if ticked) people who didn't say they're interested are left out automatically.</p>
+    <div class="row">
+      <label><input type="checkbox" id="msgWa" checked>WhatsApp</label>
+      <label><input type="checkbox" id="msgEm" checked>Email</label>
+      <label><input type="checkbox" id="msgInterested" checked>only people who said they're interested</label>
+      <label>skip anyone messaged in the last <input id="msgSkip" type="number" min="0" max="365" value="30" style="width:76px;margin:0 6px"> days</label>
+    </div>
+    <div class="grid" style="margin-top:10px">
+      <div><label for="msgTpl">WhatsApp template ID (approved in Pinnacle)</label><input id="msgTpl" placeholder="e.g. 1234567"></div>
+      <div><label for="msgPh">Template placeholders, in order, separated by |</label><input id="msgPh" placeholder="{first_name} | {role}"></div>
+      <div><label for="msgRole">Role (fills {role} when a lead has none)</label><input id="msgRole" placeholder="e.g. TIG Welder"></div>
+      <div><label for="msgCampaign">Campaign name (for the sent log)</label><input id="msgCampaign" placeholder="e.g. Saudi welders — Oct"></div>
+    </div>
+    <label for="msgSubject" style="margin-top:10px">Email subject</label>
+    <input id="msgSubject" placeholder="{role} jobs abroad — are you still interested?">
+    <label for="msgBody" style="margin-top:10px">Email message — tokens: {first_name} {name} {role} {location} {platform}</label>
+    <textarea id="msgBody" rows="6" placeholder="Hi {first_name},&#10;&#10;We saw you're interested in {role} jobs abroad…"></textarea>
+    <label for="msgOptOut" style="margin-top:10px">Opt-out line (added to every email)</label>
+    <input id="msgOptOut" value="You're receiving this because you shared your contact publicly about job opportunities. Reply STOP and we won't contact you again.">
+    <div class="row" style="margin-top:12px">
+      <button id="msgPreview">👀 Preview recipients</button>
+      <button id="msgSend" class="primary">📣 Send</button>
+      <button id="msgLogBtn">🧾 Sent log</button>
+      <span class="status" id="msgStatus"></span>
+    </div>
+    <div id="msgOut"></div>
+  </section>
   <section class="panel" id="sugPanel">
     <h3 class="sec" style="margin-top:0">💡 Suggested sites</h3>
     <p class="status" style="margin-top:0">Pages a run read that list many phone numbers / emails but gave few or no leads
@@ -1019,6 +1050,7 @@ function buildView(container, getRecords, key) {
 
   function render() {
     shown = mergeCb.checked ? mergeDupes(filtered()) : filtered();
+    if (key === "db") { state.dbShown = shown; state.dbShownLabel = [selWhen.value, state.catFilter && `category “${state.catFilter}”`].filter(Boolean).join(" · "); }
     info.textContent = `${shown.length} of ${getRecords().length} records` +
       (key === "db" ? " · click a cell to edit, lists are separated with ;" : "");
     table.replaceChildren();
@@ -1191,6 +1223,11 @@ const INTEGRATIONS = [
   ["reddit_client_id", "Reddit app client id", "reddit.com/prefs/apps → create app (script) → id under the name", "Reddit API (Intent Miner)"],
   ["reddit_client_secret", "Reddit app secret", "reddit.com/prefs/apps → secret", "Reddit API (Intent Miner)"],
   ["datagov", "data.gov.in API key", "data.gov.in → sign up / log in → My Account → API key (free)", "Government datasets (India)"],
+  ["pinnacle_api_key", "Pinnacle WhatsApp API key", "from your Pinnacle / Pinbot console", "Messaging — WhatsApp & email"],
+  ["pinnacle_waba_number", "Pinnacle WhatsApp Business number", "with country code, e.g. 919876543210", "Messaging — WhatsApp & email"],
+  ["brevo_api_key", "Brevo API key", "Brevo → SMTP & API → API keys (xkeysib-…)", "Messaging — WhatsApp & email"],
+  ["brevo_sender_email", "Brevo sender email", "a sender verified in Brevo, e.g. careers@yourdomain.com", "Messaging — WhatsApp & email"],
+  ["brevo_sender_name", "Brevo sender name", "e.g. Magic Billion Careers", "Messaging — WhatsApp & email"],
   ["salesforce_instance_url", "Salesforce instance URL", "https://yourcompany.my.salesforce.com", "Salesforce (Intent Miner export)"],
   ["salesforce_token", "Salesforce access token", "OAuth access token of a user allowed to create Leads", "Salesforce (Intent Miner export)"],
 ];
@@ -2463,6 +2500,86 @@ $("catInput").addEventListener("change", () => store("csa_category", runCategory
 $("lookingFor").value = load("csa_looking_for") || "";
 $("lookingFor").addEventListener("change", () => store("csa_looking_for", $("lookingFor").value));
 $("catInput").addEventListener("focus", () => { if (!$("catList").children.length && $("pw").value.trim()) loadCategories(); }, { once: true });
+
+
+// ---------- 📣 WhatsApp (Pinnacle) & email (Brevo) to the leads shown ----------
+const MSG_FIELDS = ["msgTpl", "msgPh", "msgRole", "msgCampaign", "msgSubject", "msgBody", "msgOptOut", "msgSkip"];
+MSG_FIELDS.forEach((id) => { const v = load("csa_" + id); if (v !== null && v !== "") $(id).value = v;
+  $(id).addEventListener("change", () => store("csa_" + id, $(id).value)); });
+function msgChannels() { return [$("msgWa").checked && "whatsapp", $("msgEm").checked && "email"].filter(Boolean); }
+function msgRecords() {
+  return (state.dbShown || []).map((r) => ({ name: r.name, phone: r.phone, email: r.email, shows_interest: r.shows_interest,
+    source_url: r.source_url, current_role: r.current_role, current_location: r.current_location, platform: r.platform,
+    profile_url: r.profile_url }));
+}
+function msgFill(t, r) {
+  const name = (r.name || "").trim(), first = name.split(/\s+/)[0] || "there";
+  const v = { name: name || "there", first_name: first, role: r.current_role || $("msgRole").value.trim(),
+    location: r.current_location || "", platform: r.platform || "", source_url: (r.source_url || "").split("#")[0] };
+  return (t || "").replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
+}
+async function msgPlan() {
+  const recs = msgRecords();
+  if (!recs.length) throw new Error("No contacts shown — load the saved contacts and pick a run, batch or category first.");
+  const chans = msgChannels();
+  if (!chans.length) throw new Error("Tick WhatsApp and/or Email.");
+  return api("/api/messaging/plan", { records: recs, channels: chans, only_interested: $("msgInterested").checked,
+    skip_days: Number($("msgSkip").value) || 0 });
+}
+function msgShowPlan(p) {
+  const sk = p.skipped || {}, why = Object.entries(sk).filter(([, n]) => n).map(([k, n]) => `${n} ${k.replace(/_/g, " ")}`).join(" · ");
+  const sample = (p.whatsapp[0] || p.email[0]);
+  const ph = $("msgPh").value.split("|").map((x) => x.trim()).filter(Boolean);
+  $("msgOut").innerHTML = `<div class="im-card"><b>From ${esc(state.dbShownLabel || "the contacts shown")}:</b>
+    <div style="margin-top:6px">💬 WhatsApp: <b>${p.whatsapp.length}</b> · ✉️ Email: <b>${p.email.length}</b>${why ? ` · left out: ${esc(why)}` : ""}</div>` +
+    (sample ? `<div class="status" style="margin-top:8px">Example for ${esc(sample.name || sample.to)}:</div>` +
+      (p.whatsapp.length ? `<div class="im-quote">WhatsApp template ${esc($("msgTpl").value || "?")} · placeholders: ${esc(ph.map((x) => msgFill(x, sample)).join(" | ") || "none")}</div>` : "") +
+      (p.email.length ? `<div class="im-quote"><b>${esc(msgFill($("msgSubject").value, sample))}</b><br>${esc(msgFill($("msgBody").value, sample)).replace(/\n/g, "<br>")}<br><small>${esc($("msgOptOut").value)}</small></div>` : "")
+      : "") + `</div>`;
+}
+$("msgPreview").onclick = async () => {
+  try { $("msgStatus").textContent = "Checking recipients…"; msgShowPlan(await msgPlan()); $("msgStatus").textContent = ""; }
+  catch (e) { $("msgStatus").textContent = "❌ " + e.message; }
+};
+$("msgSend").onclick = async () => {
+  let p;
+  try { p = await msgPlan(); msgShowPlan(p); } catch (e) { $("msgStatus").textContent = "❌ " + e.message; return; }
+  const wa = $("msgWa").checked ? p.whatsapp : [], em = $("msgEm").checked ? p.email : [];
+  if (wa.length && !$("msgTpl").value.trim()) { $("msgStatus").textContent = "❌ Enter the approved WhatsApp template ID."; return; }
+  if (em.length && !($("msgSubject").value.trim() && $("msgBody").value.trim())) { $("msgStatus").textContent = "❌ Enter the email subject and message."; return; }
+  if (!wa.length && !em.length) { $("msgStatus").textContent = "Nobody to message after the checks."; return; }
+  if (!confirm(`Send ${wa.length ? wa.length + " WhatsApp message(s)" : ""}${wa.length && em.length ? " and " : ""}${em.length ? em.length + " email(s)" : ""} now?`)) return;
+  const common = { campaign: $("msgCampaign").value.trim() || (state.dbShownLabel || "").slice(0, 200), role: $("msgRole").value.trim(),
+    skip_days: Number($("msgSkip").value) || 0 };
+  const total = { sent: 0, failed: 0, errors: [] };
+  $("msgSend").disabled = true;
+  try {
+    for (const [channel, list] of [["whatsapp", wa], ["email", em]]) {
+      for (let i = 0; i < list.length; i += 25) {
+        $("msgStatus").textContent = `Sending ${channel} ${i + 1}–${Math.min(i + 25, list.length)} of ${list.length}…`;
+        const r = await api("/api/messaging/send", { ...common, channel, recipients: list.slice(i, i + 25),
+          template_id: $("msgTpl").value.trim(), placeholders: $("msgPh").value.split("|").map((x) => x.trim()).filter(Boolean),
+          subject: $("msgSubject").value, body: $("msgBody").value, opt_out: $("msgOptOut").value });
+        total.sent += r.sent; total.failed += r.failed;
+        (r.results || []).filter((x) => x.status !== "sent").forEach((x) => total.errors.push(`${x.to}: ${x.error}`));
+        if ((r.results || []).some((x) => /401|403|not set/.test(x.error || ""))) break;     // bad key: stop this channel
+      }
+    }
+    $("msgStatus").textContent = `Done: ${total.sent} sent, ${total.failed} failed.`;
+    if (total.errors.length) $("msgOut").insertAdjacentHTML("beforeend",
+      `<div class="im-card"><b>Failed (${total.errors.length})</b>${total.errors.slice(0, 30).map((e) => `<div class="status">${esc(e)}</div>`).join("")}</div>`);
+  } catch (e) { $("msgStatus").textContent = "❌ " + e.message; }
+  finally { $("msgSend").disabled = false; }
+};
+$("msgLogBtn").onclick = async () => {
+  try {
+    const camp = $("msgCampaign").value.trim();
+    const rows = (await api(`/api/messaging/log?limit=300&campaign=${encodeURIComponent(camp)}`)).log || [];
+    $("msgOut").innerHTML = `<div class="im-card"><b>Sent log${camp ? ` — ${esc(camp)}` : ""} (${rows.length})</b>` + rows.map((r) =>
+      `<div style="font-size:13px;margin-top:4px">${esc((r.sent_at || "").slice(0, 16).replace("T", " "))} · ${r.channel === "whatsapp" ? "💬" : "✉️"} ` +
+      `${esc(r.name || "")} ${esc(r.to_addr)} · <b>${esc(r.status)}</b>${r.error ? ` — ${esc(r.error.slice(0, 120))}` : ""}</div>`).join("") + `</div>`;
+  } catch (e) { $("msgStatus").textContent = "❌ " + e.message; }
+};
 
 function showView(name) {
   if (name === "leads" && $("pw").value.trim()) { showStorage(); loadSuggestions(); loadCategories(); }

@@ -49,6 +49,11 @@ SERVICES: Dict[str, Tuple[str, str, str]] = {
     "reddit_client_id": ("REDDIT_CLIENT_ID", "Reddit API app client id", "source"),
     "reddit_client_secret": ("REDDIT_CLIENT_SECRET", "Reddit API app secret", "source"),
     "datagov": ("DATA_GOV_IN_KEY", "data.gov.in API key (government datasets)", "source"),
+    "pinnacle_api_key": ("PINNACLE_API_KEY", "Pinnacle WhatsApp API key", "messaging"),
+    "pinnacle_waba_number": ("PINNACLE_WABA_NUMBER", "Pinnacle WhatsApp Business number (WABA, with country code)", "messaging"),
+    "brevo_api_key": ("BREVO_API_KEY", "Brevo API key (v3)", "messaging"),
+    "brevo_sender_email": ("BREVO_SENDER_EMAIL", "Brevo sender email (verified in Brevo)", "messaging"),
+    "brevo_sender_name": ("BREVO_SENDER_NAME", "Brevo sender name", "messaging"),
     "salesforce_instance_url": ("SALESFORCE_INSTANCE_URL", "Salesforce instance URL", "crm"),
     "salesforce_token": ("SALESFORCE_ACCESS_TOKEN", "Salesforce access token", "crm"),
 }
@@ -109,6 +114,9 @@ def summary(keys: Dict[str, str]) -> Dict[str, List[str]]:
         (["YouTube API"] if keys.get("youtube") else [])
     kinds["verify"] = [n for n in ("hunter", "zerobounce", "neverbounce") if keys.get(n)] + \
         (["remote SMTP verifier"] if os.getenv("SMTP_VERIFY_URL") else [])
+    kinds["messaging"] = (["whatsapp (Pinnacle)"] if keys.get("pinnacle_api_key") and keys.get("pinnacle_waba_number")
+                          else []) + (["email (Brevo)"] if keys.get("brevo_api_key") and keys.get("brevo_sender_email")
+                                      else [])
     kinds["crm"] = ["salesforce"] if keys.get("salesforce_instance_url") and keys.get("salesforce_token") else []
     return kinds
 
