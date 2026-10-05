@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://db.onlinewebfonts.com/c/8cb707a9b8a73f8a7403336b861c3074?family=BubbledotICG-FinePos" rel="stylesheet">
 <style>
   :root {
     --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f9fafb; --text: #16181d; --muted: #667085; --line: #e4e7ec;
@@ -136,45 +137,168 @@
     .nav { width: 100%; overflow-x: auto; flex-wrap: nowrap; } .nav button { white-space: nowrap; }
     main { padding: 14px 12px 64px; } .panel, .hero { padding: 14px; }
   }
-  /* ---- professional skin (matches the landing page): Inter, monochrome accent, pill nav ---- */
-  :root { --accent: #111111; --accent-2: #f1f1f2; --accent-text: #ffffff; --radius: 14px;
-    --shadow: 0 4px 14px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04); }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) { --bg: #000000; --panel: #121214; --panel-2: #1a1a1d; --line: #2a2a2e;
-      --accent: #ffffff; --accent-2: #28282a; --accent-text: #000000; --text: #f2f2f3; --muted: #8e8e8e; --code: #1a1a1d; }
+  /* =====================================================================================
+     Landing-page look for the whole app (same palette, type, pills and video as index.html).
+     Styling only — no markup or behaviour depends on it.
+     ===================================================================================== */
+  @font-face { font-family: "Geist Pixel Circle"; src: url("fonts/GeistPixel-Circle.woff2") format("woff2");
+    font-weight: 400; font-display: swap; }
+  :root:not([data-theme="zz"]) {
+    color-scheme: dark;
+    --bg: #000000; --panel: rgba(22, 22, 24, 0.78); --panel-solid: #161618; --panel-2: rgba(40, 40, 42, 0.72);
+    --text: #f4f4f5; --muted: #8e8e8e; --line: rgba(255, 255, 255, 0.09); --line-strong: rgba(255, 255, 255, 0.18);
+    --accent: #ffffff; --accent-2: #28282a; --accent-text: #000000;
+    --ok: #5fd9a8; --ok-bg: rgba(95, 217, 168, 0.12); --warn: #f2c063; --warn-bg: rgba(242, 192, 99, 0.12);
+    --err: #ff8a80; --err-bg: rgba(255, 138, 128, 0.12); --code: #0c0c0d;
+    --pill-dark: #28282a; --sign-in-text: #c8c8c8; --nav-text: #2e2e2e;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.35); --nav-shadow: 0 4px 14px rgba(0, 0, 0, 0.16); --radius: 20px;
+    --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+    --font-display: "BubbledotICG-FinePos", "Geist Pixel Circle", monospace;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
   }
-  :root[data-theme="dark"] { --bg: #000000; --panel: #121214; --panel-2: #1a1a1d; --line: #2a2a2e;
-    --accent: #ffffff; --accent-2: #28282a; --accent-text: #000000; --text: #f2f2f3; --muted: #8e8e8e; --code: #1a1a1d; }
-  body { font-family: "Inter", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased;
+  body { background: #000; color: var(--text); font-family: var(--font-sans); -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale; letter-spacing: -0.005em; }
-  .brand { text-decoration: none; color: inherit; }
-  .brand .logo { width: 40px; height: 40px; border-radius: 50%; background: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.16);
-    transition: transform .3s cubic-bezier(.22,1,.36,1); }
+  /* the landing video, dimmed so the app stays readable */
+  .app-bg { position: fixed; inset: 0; z-index: 0; background: #000; overflow: hidden; pointer-events: none; }
+  .app-bg .bg-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.55; }
+  .app-bg::after { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(0,0,0,.55) 0%, rgba(0,0,0,.78) 40%, rgba(0,0,0,.9) 100%); }
+  .topbar, main { position: relative; z-index: 1; }
+
+  /* ---- header: logo · white nav pill · dark pill (as on the landing page) ---- */
+  .topbar { justify-content: center; gap: clamp(14px, 2.4vw, 24px); padding: clamp(12px, 2vh, 20px) clamp(14px, 3vw, 32px);
+    background: linear-gradient(180deg, rgba(0,0,0,.7), rgba(0,0,0,0)); border-bottom: 0; backdrop-filter: none;
+    animation: slideDown .7s var(--ease) both; }
+  .brand { margin-right: 0; text-decoration: none; color: inherit; flex-shrink: 0; }
+  .brand .logo { width: clamp(40px, 4.4vw, 46px); height: clamp(40px, 4.4vw, 46px); border-radius: 50%; background: #fff;
+    box-shadow: var(--nav-shadow); transition: transform .3s var(--ease); }
   .brand:hover .logo { transform: scale(1.04); }
   .brand .logo img { width: 72%; height: 72%; object-fit: contain; display: block; }
-  .brand b { letter-spacing: -0.01em; }
-  .nav { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px; box-shadow: var(--shadow); }
-  .nav button { border-radius: 999px; font-weight: 500; letter-spacing: -0.01em; }
-  .nav button[aria-current] { background: var(--accent); color: var(--accent-text); }
-  .nav button[aria-current] .count { background: var(--accent-text); color: var(--accent); }
+  .brand-text { display: none; }
+  .nav { flex: 0 1 560px; height: clamp(44px, 5.2vw, 48px); flex-wrap: nowrap; justify-content: space-between; align-items: center;
+    padding: 4px 8px; gap: 2px; border: 0; border-radius: 999px; background: #fff; box-shadow: var(--nav-shadow); }
+  .nav button { position: relative; border: 0; background: transparent; color: var(--nav-text); opacity: .5;
+    padding: 8px clamp(8px, 1.3vw, 16px); border-radius: 999px; font-weight: 500; font-size: clamp(13px, 1.4vw, 15px);
+    letter-spacing: -0.01em; white-space: nowrap; transition: opacity .25s ease; }
+  .nav button:hover { background: transparent; color: var(--nav-text); opacity: .75; border-color: transparent; }
+  .nav button[aria-current], .nav button[aria-current]:hover { background: transparent; color: var(--nav-text); opacity: 1; }
+  .nav button[aria-current]::after { content: ""; position: absolute; left: 50%; bottom: 5px; width: 3px; height: 3px;
+    margin-left: -1.5px; border-radius: 50%; background: #000; box-shadow: -5px 0 0 #000, 5px 0 0 #000; }
+  .nav .count { background: #000; color: #fff; margin-left: 4px; }
+  .nav button[aria-current] .count { background: #000; color: #fff; }
+  .home-pill { flex-shrink: 0; display: inline-flex; align-items: center; height: clamp(44px, 5.2vw, 48px);
+    padding: 0 clamp(18px, 2.2vw, 24px); border-radius: 999px; background: var(--pill-dark); color: var(--sign-in-text);
+    font-weight: 500; font-size: clamp(13px, 1.4vw, 15px); text-decoration: none; box-shadow: var(--nav-shadow);
+    transition: background .25s ease, color .25s ease, transform .25s var(--ease); }
+  .home-pill:hover { background: #323234; color: #fff; transform: translateY(-1px); }
+
+  /* ---- page titles: the landing headline, smaller ---- */
+  main { max-width: 1180px; padding: clamp(8px, 2vh, 20px) clamp(14px, 3vw, 28px) 96px; }
+  .page-hero { text-align: center; margin: clamp(14px, 4vh, 40px) auto clamp(18px, 3.4vh, 34px); max-width: 860px; }
+  .page-title { margin: 0; font-family: var(--font-display); font-weight: 400; color: #fff;
+    font-size: clamp(30px, 5.2vw, 64px); line-height: 1.08; letter-spacing: -0.04em; }
+  .page-title span { display: block; opacity: 0; transform: translateY(14px); animation: headlineFade .85s var(--ease) .1s forwards; }
+  .page-sub { margin: clamp(10px, 1.8vh, 16px) auto 0; max-width: min(560px, 92%); color: #d0d0d0; opacity: .8;
+    font-size: clamp(14.5px, calc(1.2vw + 2pt), 18px); line-height: 1.55;
+    animation: reveal .85s var(--ease) .2s both; }
+  .view:not(.hidden) > *:not(.page-hero) { animation: reveal .7s var(--ease) both; animation-delay: .15s; }
+
+  /* ---- headings ---- */
+  h1, h2 { color: #fff; }
+  h2 { font-size: clamp(17px, 1.6vw, 20px); font-weight: 600; letter-spacing: -0.02em; margin: 30px 0 12px; }
+  h3.sec { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .08em; }
+  .sub, .status { color: var(--muted); }
+
+  /* ---- surfaces: dark glass ---- */
+  .panel, details.panel-d, .im-card, .card, .table-wrap {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+  .panel { padding: clamp(16px, 2.2vw, 24px); }
+  details.adv { background: var(--panel-2); border: 1px solid var(--line); border-radius: 16px; }
+  .im-card { border-radius: 18px; }
+  .im-quote { background: rgba(255,255,255,.04); border-left-color: #fff; }
+  .banner { background: var(--warn-bg); color: var(--warn); border: 1px solid rgba(242,192,99,.25); border-radius: 18px;
+    padding: 10px 18px; text-align: center; }
+  .banner a { color: #fff; }
+  a { color: #fff; text-underline-offset: 3px; }
+
+  /* ---- forms ---- */
+  label { color: var(--muted); }
+  input, select, textarea { background: rgba(10,10,11,.85); color: var(--text); border: 1px solid var(--line-strong);
+    border-radius: 12px; padding: 10px 12px; }
+  select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, #8e8e8e 50%),
+    linear-gradient(135deg, #8e8e8e 50%, transparent 50%); background-position: calc(100% - 18px) 55%, calc(100% - 13px) 55%;
+    background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
+  input:focus, select:focus, textarea:focus { border-color: rgba(255,255,255,.6); box-shadow: 0 0 0 3px rgba(255,255,255,.12); }
+  input::placeholder, textarea::placeholder { color: #6b6b70; }
+  .hero textarea#intent { font-size: 16px; border-radius: 16px; min-height: 104px; }
+  input[type=checkbox] { accent-color: #fff; }
+
+  /* ---- buttons: dark pills; primary = the landing CTA ---- */
+  button { background: var(--pill-dark); color: var(--sign-in-text); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 999px; padding: 9px 18px; font-weight: 500;
+    transition: background .25s ease, color .25s ease, transform .25s var(--ease), box-shadow .3s ease; }
+  button:hover:not(:disabled) { background: #323234; color: #fff; border-color: rgba(255,255,255,.16); transform: translateY(-1px); }
+  button.primary { background: #fff; color: #000; border-color: #fff; font-weight: 600; padding: 12px 26px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.15), 0 0 22px rgba(255,255,255,.32), 0 0 44px rgba(255,255,255,.12); }
+  button.primary:hover:not(:disabled) { background: #fff; color: #000; transform: translateY(-2px) scale(1.02); filter: none;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.25), 0 0 30px rgba(255,255,255,.48), 0 0 64px rgba(255,255,255,.2); }
+  .chip { background: var(--pill-dark); border-radius: 999px; }
+  .chip.on, .tabs button[aria-selected=true] { background: #fff; color: #000; border-color: #fff; }
+
+  /* ---- tables & log ---- */
+  .table-wrap { padding: 0; overflow: auto; }
+  th { background: rgba(28,28,30,.96); color: var(--muted); border-bottom-color: var(--line-strong); }
+  td { border-bottom-color: var(--line); }
+  tr:hover td { background: rgba(255,255,255,.03); }
+  td[contenteditable=true]:focus { background: rgba(255,255,255,.06); }
+  pre.log { background: rgba(5,5,6,.9); border: 1px solid var(--line); border-radius: 16px; color: #d6d6d8; }
+  .badge, .im-tier { border-color: var(--line-strong); }
+
+  /* ---- motion ---- */
+  @keyframes slideDown { from { opacity: 0; transform: translateY(-18px); } to { opacity: 1; transform: none; } }
+  @keyframes headlineFade { to { opacity: 1; transform: none; } }
+  @keyframes reveal { from { opacity: 0; transform: translateY(16px) scale(.99); filter: blur(4px); }
+    to { opacity: 1; transform: none; filter: blur(0); } }
+
+  /* ---- mobile ---- */
+  @media (max-width: 720px) {
+    .topbar { flex-wrap: wrap; justify-content: space-between; }
+    .nav { order: 3; flex: 1 1 100%; height: 46px; overflow-x: auto; justify-content: flex-start; scrollbar-width: none; }
+    .nav::-webkit-scrollbar { display: none; }
+    .home-pill { height: 44px; }
+    .page-title { letter-spacing: -0.07em; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .page-title span, .page-sub, .view > * { opacity: 1 !important; transform: none !important; filter: none !important; }
+    .app-bg .bg-video { display: none; }
+  }
 </style>
 </head>
 <body>
 
+<div class="app-bg" aria-hidden="true">
+  <video class="bg-video" autoplay muted loop playsinline>
+    <source src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260809_012548_ef22562c-c0ae-4816-ad9d-f8922af4e6a7.mp4" type="video/mp4">
+  </video>
+</div>
 <header class="topbar">
-  <a class="brand" href="./" title="Home"><span class="logo"><img src="assets/logo.webp" alt="" width="52" height="52"></span><div><b>Sourcing Agent</b><small>find people &amp; businesses · get their contacts</small></div></a>
+  <a class="brand" href="./" title="Home"><span class="logo"><img src="assets/logo.webp" alt="" width="52" height="52"></span><div class="brand-text"><b>Sourcing Agent</b><small>find people &amp; businesses · get their contacts</small></div></a>
   <nav class="nav" id="nav">
-    <button data-view="search" aria-current="page">🚀 Search</button>
-    <button data-view="leads">📋 Leads <span class="count" id="navLeads"></span></button>
-    <button data-view="lists">🏛️ Lists &amp; lookups</button>
-    <button data-view="outreach">✉️ Outreach</button>
-    <button data-view="settings">⚙️ Settings</button>
+    <button data-view="search" aria-current="page">Search</button>
+    <button data-view="leads">Leads <span class="count" id="navLeads"></span></button>
+    <button data-view="lists">Lists</button>
+    <button data-view="outreach">Outreach</button>
+    <button data-view="settings">Settings</button>
   </nav>
+  <a class="home-pill" href="./">Home</a>
 </header>
 <main>
   <div class="banner hidden" id="setupBanner">Enter your app password and AI key in <a href="#" data-goto="settings">⚙️ Settings</a> to start.</div>
 
   <div class="view" data-view="search">
+  <header class="page-hero"><h1 class="page-title"><span>Find Leads</span></h1><p class="page-sub">Describe who you need — the agent plans the searches, reads the pages and saves every contact it finds.</p></header>
   <section class="panel hero">
     <div class="hero-head">
       <h2>What are you looking for?</h2>
@@ -297,6 +421,7 @@
   </div>
 
   <div class="view hidden" data-view="leads">
+  <header class="page-hero"><h1 class="page-title"><span>Your Leads</span></h1><p class="page-sub">Every person and business your searches found — filter by run, batch or category, review and export.</p></header>
   <h2>🧠 Qualified leads <span style="font-size:13px;color:var(--muted);font-weight:400">— intent-scored
     leads with evidence from the same run</span></h2>
   <section class="panel" id="storagePanel">
@@ -404,7 +529,7 @@
   </div>
 
   <div class="view hidden" data-view="lists">
-    <h2>Lists &amp; lookups</h2>
+    <header class="page-hero"><h1 class="page-title"><span>Lists &amp; Lookups</span></h1><p class="page-sub">Official registers, businesses by name and pasted links — turned into leads with contacts.</p></header>
     <p class="status">Complete lists come from official registers; specific businesses and posts can be looked up directly.</p>
     <details class="panel-d" open id="govBox"><summary>🏛️ Government &amp; official lists — import, match, make leads</summary>
       <p class="status">Import public lists published by government bodies, then every lead (from new runs, or with the
@@ -463,7 +588,7 @@
   </div>
 
   <div class="view hidden" data-view="outreach">
-    <h2>Outreach</h2>
+    <header class="page-hero"><h1 class="page-title"><span>Outreach</span></h1><p class="page-sub">Draft, send and track messages to the people you found — and handle their replies.</p></header>
     <section id="tab-outreach">
     <details class="panel" id="metaBox" style="margin-bottom:12px">
       <summary>🤖 Auto-reply to “interested” comments on your own Instagram / Facebook posts</summary>
@@ -514,7 +639,7 @@
   </div>
 
   <div class="view hidden" data-view="settings">
-    <h2>Settings</h2>
+    <header class="page-hero"><h1 class="page-title"><span>Settings</span></h1><p class="page-sub">Access, AI providers, search and data services, privacy.</p></header>
     <h3 class="sec">🔐 Access &amp; AI</h3>
     <section class="panel" id="login">
     <div class="row">
